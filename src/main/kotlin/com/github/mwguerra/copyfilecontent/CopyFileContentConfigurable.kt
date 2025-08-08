@@ -3,6 +3,16 @@ package com.github.mwguerra.copyfilecontent
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.fileChooser.FileChooser
+import com.intellij.openapi.fileChooser.FileChooserDescriptor
+import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
+import com.intellij.openapi.fileChooser.ex.FileChooserDialogImpl
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.VfsUtil
+import com.intellij.ide.util.TreeFileChooser
+import com.intellij.ide.util.TreeFileChooserFactory
+import com.intellij.psi.PsiFile
+import com.intellij.psi.PsiDirectory
 import com.intellij.ui.IdeBorderFactory
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.*
@@ -12,7 +22,12 @@ import com.intellij.util.ui.JBUI
 import java.awt.*
 import javax.swing.*
 import javax.swing.table.DefaultTableModel
+import javax.swing.table.DefaultTableCellRenderer
+import javax.swing.table.TableCellRenderer
+import javax.swing.table.TableCellEditor
 import com.intellij.ui.RoundedLineBorder
+import com.intellij.icons.AllIcons
+import java.io.File
 
 class CopyFileContentConfigurable(private val project: Project) : Configurable {
     private var settings: CopyFileContentSettings? = null
@@ -63,16 +78,35 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
         isVisible = false
     }
     private val showNotificationCheckBox = JBCheckBox("Show notification after copying")
-    private val useFilenameFiltersCheckBox = JBCheckBox("Enable file extension filtering")
-    private val tableModel = DefaultTableModel()
-    private val table = JBTable(tableModel)
-    private val addButton = JButton("Add")
+    private val useFiltersCheckBox = JBCheckBox("Enable filtering")
+    private val useIncludeFiltersCheckBox = JBCheckBox("Enable include rules")
+    private val useExcludeFiltersCheckBox = JBCheckBox("Enable exclude rules")
+    
+    private val filterTableModel = object : DefaultTableModel() {
+        override fun isCellEditable(row: Int, column: Int): Boolean = column == 0  // Only checkbox column is editable
+        override fun getColumnClass(columnIndex: Int): Class<*> {
+            return when (columnIndex) {
+                0 -> java.lang.Boolean::class.java  // Enabled checkbox
+                else -> super.getColumnClass(columnIndex)
+            }
+        }
+    }
+    private val filterTable = JBTable(filterTableModel)
+    private val addIncludePathButton = JButton("Include Path/File")
+    private val addExcludePathButton = JButton("Exclude Path/File") 
+    private val addIncludePatternButton = JButton("Include Pattern")
+    private val addExcludePatternButton = JButton("Exclude Pattern")
     private val removeButton = JButton("Remove")
-    private val filenameFiltersPanel = createFilenameFiltersPanel()
+    private val filtersPanel = createFiltersPanel()
 
     init {
-        tableModel.addColumn("File Extensions")
-        setupTable()
+        filterTableModel.addColumn("Enabled")  // Checkbox
+        filterTableModel.addColumn("Type")  // Icon
+        filterTableModel.addColumn("Action")  // Include/Exclude
+        filterTableModel.addColumn("Filter")  // Path or Extension
+        
+        setupFilterTable()
+        setupFilterTableRenderers()
 
         setMaxFilesCheckBox.addActionListener {
             val maxFilesSelected = setMaxFilesCheckBox.isSelected
@@ -80,36 +114,186 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
             warningLabel.isVisible = !maxFilesSelected
         }
 
-        useFilenameFiltersCheckBox.addActionListener {
-            filenameFiltersPanel.isVisible = useFilenameFiltersCheckBox.isSelected
-            updateInfoLabelVisibility()
-        }
-    }
-
-    private fun updateInfoLabelVisibility() {
-        infoLabel.isVisible = useFilenameFiltersCheckBox.isSelected && tableModel.rowCount == 0
-    }
-
-    private fun setupTable() {
-        settings?.state?.filenameFilters?.forEach {
-            tableModel.addRow(arrayOf(it))
-        }
-
-        addButton.addActionListener {
-            val extension = Messages.showInputDialog("Enter file extension:", "Add Filter", null)
-            if (!extension.isNullOrBlank()) {
-                tableModel.addRow(arrayOf(extension.trim()))
-                updateInfoLabelVisibility()
+        useFiltersCheckBox.addActionListener {
+            val enabled = useFiltersCheckBox.isSelected
+            useIncludeFiltersCheckBox.isVisible = enabled
+            useExcludeFiltersCheckBox.isVisible = enabled
+            filtersPanel.isVisible = enabled
+            if (!enabled) {
+                useIncludeFiltersCheckBox.isSelected = true
+                useExcludeFiltersCheckBox.isSelected = true
             }
+        }
+        
+        useIncludeFiltersCheckBox.addActionListener {
+            updateFilterTableState()
+        }
+        
+        useExcludeFiltersCheckBox.addActionListener {
+            updateFilterTableState()
+        }
+    }
+
+    private fun updateFilterTableState() {
+        // Update filter table based on checkbox states
+        filterTable.repaint()
+    }
+
+    private fun setupFilterTable() {
+        // Load existing filter rules
+        settings?.state?.filterRules?.forEach { rule ->
+            val icon = when (rule.type) {
+                CopyFileContentSettings.FilterType.PATH -> getPathIcon(rule.value)
+                CopyFileContentSettings.FilterType.PATTERN -> AllIcons.FileTypes.Any_type
+            }
+            val actionText = when (rule.action) {
+                CopyFileContentSettings.FilterAction.INCLUDE -> "Include"
+                CopyFileContentSettings.FilterAction.EXCLUDE -> "Exclude"
+            }
+            filterTableModel.addRow(arrayOf(rule.enabled, icon, actionText, rule.value))
+        }
+
+        // Setup button listeners
+        addIncludePathButton.addActionListener {
+            showPathChooser(CopyFileContentSettings.FilterAction.INCLUDE)
+        }
+        
+        addExcludePathButton.addActionListener {
+            showPathChooser(CopyFileContentSettings.FilterAction.EXCLUDE)
+        }
+        
+        addIncludePatternButton.addActionListener {
+            showPatternDialog(CopyFileContentSettings.FilterAction.INCLUDE)
+        }
+        
+        addExcludePatternButton.addActionListener {
+            showPatternDialog(CopyFileContentSettings.FilterAction.EXCLUDE)
         }
 
         removeButton.addActionListener {
-            val selectedRow = table.selectedRow
-            if (selectedRow != -1) {
-                tableModel.removeRow(selectedRow)
-                updateInfoLabelVisibility()
+            val selectedRows = filterTable.selectedRows
+            if (selectedRows.isNotEmpty()) {
+                // Remove rows from bottom to top to maintain correct indices
+                selectedRows.sortedDescending().forEach { row ->
+                    filterTableModel.removeRow(row)
+                }
             }
         }
+    }
+    
+    private fun showPathChooser(action: CopyFileContentSettings.FilterAction) {
+        val projectRoot = com.intellij.openapi.roots.ProjectRootManager.getInstance(project).contentRoots.firstOrNull()
+        
+        // Use FileChooserDescriptor with project scope
+        val descriptor = FileChooserDescriptor(true, true, false, false, false, true)
+        descriptor.title = "Select Files or Folders to ${if (action == CopyFileContentSettings.FilterAction.INCLUDE) "Include" else "Exclude"}"
+        descriptor.description = "Choose files or folders from the project"
+        projectRoot?.let { descriptor.roots = listOf(it) }
+        
+        // Use FileChooserDialog with project scope
+        val dialog = com.intellij.openapi.fileChooser.ex.FileChooserDialogImpl(descriptor, project)
+        val selectedFiles = dialog.choose(project, projectRoot)
+        
+        selectedFiles.forEach { virtualFile ->
+            val relativePath = projectRoot?.let { VfsUtil.getRelativePath(virtualFile, it, '/') }
+            val pathToAdd = relativePath ?: virtualFile.path
+            
+            addFilterRule(action, pathToAdd, virtualFile.isDirectory)
+        }
+    }
+    
+    private fun addFilterRule(action: CopyFileContentSettings.FilterAction, value: String, isDirectory: Boolean) {
+        // Check if not already in table
+        var exists = false
+        for (i in 0 until filterTableModel.rowCount) {
+            if (filterTableModel.getValueAt(i, 3) == value && 
+                filterTableModel.getValueAt(i, 2) == (if (action == CopyFileContentSettings.FilterAction.INCLUDE) "Include" else "Exclude")) {
+                exists = true
+                break
+            }
+        }
+        if (!exists) {
+            val icon = if (isDirectory) AllIcons.Nodes.Folder else AllIcons.FileTypes.Any_type
+            val actionText = if (action == CopyFileContentSettings.FilterAction.INCLUDE) "Include" else "Exclude"
+            filterTableModel.addRow(arrayOf(true, icon, actionText, value))
+        }
+    }
+    
+    private fun showPatternDialog(action: CopyFileContentSettings.FilterAction) {
+        val pattern = Messages.showInputDialog(
+            "Enter file name pattern (e.g., *.java, Test*.kt, .*\\.xml):\nSupports wildcards (* and ?) and regex", 
+            "Add ${if (action == CopyFileContentSettings.FilterAction.INCLUDE) "Include" else "Exclude"} Pattern", 
+            null
+        )
+        if (!pattern.isNullOrBlank()) {
+            // Check if not already in table
+            var exists = false
+            for (i in 0 until filterTableModel.rowCount) {
+                if (filterTableModel.getValueAt(i, 3) == pattern && 
+                    filterTableModel.getValueAt(i, 2) == (if (action == CopyFileContentSettings.FilterAction.INCLUDE) "Include" else "Exclude")) {
+                    exists = true
+                    break
+                }
+            }
+            if (!exists) {
+                val icon = AllIcons.FileTypes.Any_type
+                val actionText = if (action == CopyFileContentSettings.FilterAction.INCLUDE) "Include" else "Exclude"
+                filterTableModel.addRow(arrayOf(true, icon, actionText, pattern))
+            }
+        }
+    }
+    
+    
+    private fun getPathIcon(path: String): Icon {
+        // Check if path exists and is directory or file
+        val projectRoot = com.intellij.openapi.roots.ProjectRootManager.getInstance(project).contentRoots.firstOrNull()
+        val fullPath = if (path.startsWith("/")) {
+            File(path)
+        } else {
+            projectRoot?.let { File(it.path, path) } ?: File(path)
+        }
+        
+        return when {
+            !fullPath.exists() -> AllIcons.FileTypes.Unknown
+            fullPath.isDirectory -> AllIcons.Nodes.Folder
+            else -> AllIcons.FileTypes.Any_type
+        }
+    }
+    
+    private fun setupFilterTableRenderers() {
+        // Checkbox column
+        filterTable.columnModel.getColumn(0).apply {
+            preferredWidth = 60
+            maxWidth = 60
+        }
+        
+        // Icon/Type column  
+        filterTable.columnModel.getColumn(1).apply {
+            preferredWidth = 30
+            maxWidth = 30
+            cellRenderer = object : DefaultTableCellRenderer() {
+                override fun getTableCellRendererComponent(
+                    table: JTable?, value: Any?, isSelected: Boolean,
+                    hasFocus: Boolean, row: Int, column: Int
+                ): Component {
+                    val label = super.getTableCellRendererComponent(
+                        table, "", isSelected, hasFocus, row, column
+                    ) as JLabel
+                    label.icon = value as? Icon
+                    label.horizontalAlignment = JLabel.CENTER
+                    return label
+                }
+            }
+        }
+        
+        // Action column
+        filterTable.columnModel.getColumn(2).apply {
+            preferredWidth = 80
+            maxWidth = 80
+        }
+        
+        // Filter value column takes remaining space
+        filterTable.columnModel.getColumn(3).preferredWidth = 320
     }
 
     override fun createComponent(): JComponent {
@@ -117,8 +301,13 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
 
         maxFilesField.isVisible = setMaxFilesCheckBox.isSelected
         warningLabel.isVisible = !setMaxFilesCheckBox.isSelected
-        filenameFiltersPanel.isVisible = useFilenameFiltersCheckBox.isSelected
-        infoLabel.isVisible = useFilenameFiltersCheckBox.isSelected && tableModel.rowCount == 0
+        filtersPanel.isVisible = useFiltersCheckBox.isSelected
+        useIncludeFiltersCheckBox.isVisible = useFiltersCheckBox.isSelected
+        useExcludeFiltersCheckBox.isVisible = useFiltersCheckBox.isSelected
+        if (!useFiltersCheckBox.isSelected) {
+            useIncludeFiltersCheckBox.isSelected = true
+            useExcludeFiltersCheckBox.isSelected = true
+        }
 
         return FormBuilder.createFormBuilder()
             .addComponentFillVertically(createSection("Text structure of what's going to the clipboard") {
@@ -130,8 +319,20 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
             .addComponentFillVertically(createSection("Constraints for copying") {
                 it.add(createInlinePanel(createWrappedCheckBoxPanel(setMaxFilesCheckBox), maxFilesField))
                 it.add(createInlinePanel(JLabel(), warningLabel))
-                it.add(createInlinePanel(createWrappedCheckBoxPanel(useFilenameFiltersCheckBox), filenameFiltersPanel))
-                it.add(createInlinePanel(JLabel(), infoLabel))
+                it.add(Box.createVerticalStrut(10))
+                
+                // Filtering section
+                val filteringPanel = JPanel(BorderLayout())
+                val filterHeader = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+                filterHeader.add(useFiltersCheckBox)
+                filterHeader.add(Box.createHorizontalStrut(20))
+                filterHeader.add(useIncludeFiltersCheckBox)
+                filterHeader.add(Box.createHorizontalStrut(10))
+                filterHeader.add(useExcludeFiltersCheckBox)
+                filteringPanel.add(filterHeader, BorderLayout.NORTH)
+                filteringPanel.add(filtersPanel, BorderLayout.CENTER)
+                
+                it.add(filteringPanel)
             }, 0)
             .addComponentFillVertically(createSection("Information on what has been copied") {
                 it.add(showNotificationCheckBox)
@@ -252,15 +453,18 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
         }
     }
 
-    private fun createFilenameFiltersPanel(): JPanel {
+    private fun createFiltersPanel(): JPanel {
         val panel = JPanel(BorderLayout())
 
-        val scrollPane = JBScrollPane(table)
-        scrollPane.preferredSize = Dimension(250, 100)
+        val scrollPane = JBScrollPane(filterTable)
+        scrollPane.preferredSize = Dimension(600, 200)
         panel.add(scrollPane, BorderLayout.CENTER)
 
         val buttonPanel = JPanel(FlowLayout(FlowLayout.LEFT))
-        buttonPanel.add(addButton)
+        buttonPanel.add(addIncludePathButton)
+        buttonPanel.add(addExcludePathButton)
+        buttonPanel.add(addIncludePatternButton)
+        buttonPanel.add(addExcludePatternButton)
         buttonPanel.add(removeButton)
         panel.add(buttonPanel, BorderLayout.SOUTH)
 
@@ -280,8 +484,27 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
 
     override fun isModified(): Boolean {
         return settings?.let {
-            val currentFilters = List(tableModel.rowCount) { row -> tableModel.getValueAt(row, 0) as String }
-            it.state.filenameFilters != currentFilters ||
+            val currentRules = mutableListOf<CopyFileContentSettings.FilterRule>()
+            
+            for (i in 0 until filterTableModel.rowCount) {
+                val enabled = filterTableModel.getValueAt(i, 0) as Boolean
+                val actionText = filterTableModel.getValueAt(i, 2) as String
+                val value = filterTableModel.getValueAt(i, 3) as String
+                
+                val action = if (actionText == "Include") 
+                    CopyFileContentSettings.FilterAction.INCLUDE 
+                else 
+                    CopyFileContentSettings.FilterAction.EXCLUDE
+                    
+                val type = if (value.contains("*") || value.contains("?") || value.startsWith(".")) 
+                    CopyFileContentSettings.FilterType.PATTERN 
+                else 
+                    CopyFileContentSettings.FilterType.PATH
+                    
+                currentRules.add(CopyFileContentSettings.FilterRule(type, action, value, enabled))
+            }
+            
+            it.state.filterRules != currentRules ||
                     headerFormatArea.text != it.state.headerFormat ||
                     preTextArea.text != it.state.preText ||
                     postTextArea.text != it.state.postText ||
@@ -289,13 +512,35 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
                     setMaxFilesCheckBox.isSelected != it.state.setMaxFileCount ||
                     (setMaxFilesCheckBox.isSelected && maxFilesField.text.toIntOrNull() != it.state.fileCountLimit) ||
                     showNotificationCheckBox.isSelected != it.state.showCopyNotification ||
-                    useFilenameFiltersCheckBox.isSelected != it.state.useFilenameFilters
+                    useFiltersCheckBox.isSelected != it.state.useFilters ||
+                    useIncludeFiltersCheckBox.isSelected != it.state.useIncludeFilters ||
+                    useExcludeFiltersCheckBox.isSelected != it.state.useExcludeFilters
         } ?: false
     }
 
     override fun apply() {
         settings?.let {
-            it.state.filenameFilters = List(tableModel.rowCount) { row -> tableModel.getValueAt(row, 0) as String }
+            val rules = mutableListOf<CopyFileContentSettings.FilterRule>()
+            
+            for (i in 0 until filterTableModel.rowCount) {
+                val enabled = filterTableModel.getValueAt(i, 0) as Boolean
+                val actionText = filterTableModel.getValueAt(i, 2) as String
+                val value = filterTableModel.getValueAt(i, 3) as String
+                
+                val action = if (actionText == "Include") 
+                    CopyFileContentSettings.FilterAction.INCLUDE 
+                else 
+                    CopyFileContentSettings.FilterAction.EXCLUDE
+                    
+                val type = if (value.contains("*") || value.contains("?") || value.startsWith(".")) 
+                    CopyFileContentSettings.FilterType.PATTERN 
+                else 
+                    CopyFileContentSettings.FilterType.PATH
+                    
+                rules.add(CopyFileContentSettings.FilterRule(type, action, value, enabled))
+            }
+            
+            it.state.filterRules = rules
             it.state.headerFormat = headerFormatArea.text
             it.state.preText = preTextArea.text
             it.state.postText = postTextArea.text
@@ -303,7 +548,9 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
             it.state.setMaxFileCount = setMaxFilesCheckBox.isSelected
             it.state.fileCountLimit = maxFilesField.text.toIntOrNull() ?: 50
             it.state.showCopyNotification = showNotificationCheckBox.isSelected
-            it.state.useFilenameFilters = useFilenameFiltersCheckBox.isSelected
+            it.state.useFilters = useFiltersCheckBox.isSelected
+            it.state.useIncludeFilters = useIncludeFiltersCheckBox.isSelected
+            it.state.useExcludeFilters = useExcludeFiltersCheckBox.isSelected
         }
     }
 
@@ -318,15 +565,28 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
             setMaxFilesCheckBox.isSelected = it.state.setMaxFileCount
             maxFilesField.text = it.state.fileCountLimit.toString()
             showNotificationCheckBox.isSelected = it.state.showCopyNotification
-            useFilenameFiltersCheckBox.isSelected = it.state.useFilenameFilters
-            tableModel.setRowCount(0)
-            it.state.filenameFilters.forEach { filter ->
-                tableModel.addRow(arrayOf(filter))
+            useFiltersCheckBox.isSelected = it.state.useFilters
+            useIncludeFiltersCheckBox.isSelected = it.state.useIncludeFilters
+            useExcludeFiltersCheckBox.isSelected = it.state.useExcludeFilters
+            
+            filterTableModel.setRowCount(0)
+            it.state.filterRules.forEach { rule ->
+                val icon = when (rule.type) {
+                    CopyFileContentSettings.FilterType.PATH -> getPathIcon(rule.value)
+                    CopyFileContentSettings.FilterType.PATTERN -> AllIcons.FileTypes.Any_type
+                }
+                val actionText = when (rule.action) {
+                    CopyFileContentSettings.FilterAction.INCLUDE -> "Include"
+                    CopyFileContentSettings.FilterAction.EXCLUDE -> "Exclude"
+                }
+                filterTableModel.addRow(arrayOf(rule.enabled, icon, actionText, rule.value))
             }
+            
             maxFilesField.isVisible = it.state.setMaxFileCount
             warningLabel.isVisible = !it.state.setMaxFileCount
-            filenameFiltersPanel.isVisible = it.state.useFilenameFilters
-            updateInfoLabelVisibility()
+            filtersPanel.isVisible = it.state.useFilters
+            useIncludeFiltersCheckBox.isEnabled = it.state.useFilters
+            useExcludeFiltersCheckBox.isEnabled = it.state.useFilters
         }
     }
 }

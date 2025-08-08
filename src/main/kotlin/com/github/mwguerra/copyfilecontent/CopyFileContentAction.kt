@@ -125,12 +125,66 @@ class CopyFileContentAction : AnAction() {
         copiedFilePaths.add(fileRelativePath)
 
         var content = ""
-
-        // If filename filters are enabled and the file extension does not match any filter, return early
-        if (settings.state.useFilenameFilters) {
-            if (settings.state.filenameFilters.none { filter -> file.name.endsWith(filter) }) {
-                logger.info("Skipping file: ${file.name} - Extension does not match any filter")
-                return ""
+        
+        // Check filters if enabled
+        if (settings.state.useFilters) {
+            val projectRoot = getRepositoryRoot(project)
+            val fileRelativePathFromRoot = projectRoot?.let { VfsUtil.getRelativePath(file, it, '/') }
+            val fileAbsolutePath = file.path
+            
+            // Get enabled filter rules
+            val enabledRules = settings.state.filterRules.filter { it.enabled }
+            val includeRules = enabledRules.filter { it.action == CopyFileContentSettings.FilterAction.INCLUDE }
+            val excludeRules = enabledRules.filter { it.action == CopyFileContentSettings.FilterAction.EXCLUDE }
+            
+            // Check excludes first (if exclude filters are enabled)
+            if (settings.state.useExcludeFilters && excludeRules.isNotEmpty()) {
+                val isExcluded = excludeRules.any { rule ->
+                    when (rule.type) {
+                        CopyFileContentSettings.FilterType.PATTERN -> {
+                            matchesPattern(file.name, rule.value)
+                        }
+                        CopyFileContentSettings.FilterType.PATH -> {
+                            if (rule.value.startsWith("/")) {
+                                fileAbsolutePath.startsWith(rule.value) || fileAbsolutePath == rule.value
+                            } else {
+                                fileRelativePathFromRoot != null && (
+                                    fileRelativePathFromRoot.startsWith(rule.value) ||
+                                    fileRelativePathFromRoot == rule.value
+                                )
+                            }
+                        }
+                    }
+                }
+                if (isExcluded) {
+                    logger.info("Skipping file: ${file.name} - File is excluded")
+                    return ""
+                }
+            }
+            
+            // Check includes if specified (if include filters are enabled)
+            if (settings.state.useIncludeFilters && includeRules.isNotEmpty()) {
+                val matchesInclude = includeRules.any { rule ->
+                    when (rule.type) {
+                        CopyFileContentSettings.FilterType.PATTERN -> {
+                            matchesPattern(file.name, rule.value)
+                        }
+                        CopyFileContentSettings.FilterType.PATH -> {
+                            if (rule.value.startsWith("/")) {
+                                fileAbsolutePath.startsWith(rule.value) || fileAbsolutePath == rule.value
+                            } else {
+                                fileRelativePathFromRoot != null && (
+                                    fileRelativePathFromRoot.startsWith(rule.value) ||
+                                    fileRelativePathFromRoot == rule.value
+                                )
+                            }
+                        }
+                    }
+                }
+                if (!matchesInclude) {
+                    logger.info("Skipping file: ${file.name} - File does not match any include rule")
+                    return ""
+                }
             }
         }
 
@@ -152,6 +206,62 @@ class CopyFileContentAction : AnAction() {
     private fun processDirectory(directory: VirtualFile, fileContents: MutableList<String>, copiedFilePaths: MutableSet<String>, project: Project, addExtraLine: Boolean): String {
         val directoryContent = StringBuilder()
         val settings = CopyFileContentSettings.getInstance(project) ?: return ""
+        
+        // Check if directory should be processed based on filters
+        if (settings.state.useFilters) {
+            val projectRoot = getRepositoryRoot(project)
+            val dirRelativePath = projectRoot?.let { VfsUtil.getRelativePath(directory, it, '/') }
+            val dirAbsolutePath = directory.path
+            
+            // Get enabled filter rules
+            val enabledRules = settings.state.filterRules.filter { it.enabled }
+            val includePathRules = enabledRules.filter { 
+                it.action == CopyFileContentSettings.FilterAction.INCLUDE && 
+                it.type == CopyFileContentSettings.FilterType.PATH 
+            }
+            val excludePathRules = enabledRules.filter { 
+                it.action == CopyFileContentSettings.FilterAction.EXCLUDE && 
+                it.type == CopyFileContentSettings.FilterType.PATH 
+            }
+            
+            // Check excludes first
+            if (settings.state.useExcludeFilters && excludePathRules.isNotEmpty()) {
+                val isExcluded = excludePathRules.any { rule ->
+                    if (rule.value.startsWith("/")) {
+                        dirAbsolutePath.startsWith(rule.value) || dirAbsolutePath == rule.value
+                    } else {
+                        dirRelativePath != null && (
+                            dirRelativePath.startsWith(rule.value) ||
+                            dirRelativePath == rule.value
+                        )
+                    }
+                }
+                if (isExcluded) {
+                    logger.info("Skipping directory: ${directory.name} - Directory is excluded")
+                    return ""
+                }
+            }
+            
+            // Check includes if specified
+            if (settings.state.useIncludeFilters && includePathRules.isNotEmpty()) {
+                val shouldProcess = includePathRules.any { rule ->
+                    if (rule.value.startsWith("/")) {
+                        dirAbsolutePath.startsWith(rule.value) || 
+                        rule.value.startsWith(dirAbsolutePath)
+                    } else {
+                        dirRelativePath != null && (
+                            dirRelativePath.startsWith(rule.value) ||
+                            rule.value.startsWith(dirRelativePath) ||
+                            dirRelativePath == rule.value
+                        )
+                    }
+                }
+                if (!shouldProcess) {
+                    logger.info("Skipping directory: ${directory.name} - Directory does not match any include path")
+                    return ""
+                }
+            }
+        }
 
         for (childFile in directory.children) {
             if (settings.state.setMaxFileCount && fileCount >= settings.state.fileCountLimit) {
@@ -193,6 +303,23 @@ class CopyFileContentAction : AnAction() {
     private fun getRepositoryRoot(project: Project): VirtualFile? {
         val projectRootManager = ProjectRootManager.getInstance(project)
         return projectRootManager.contentRoots.firstOrNull()
+    }
+    
+    private fun matchesPattern(fileName: String, pattern: String): Boolean {
+        return try {
+            // Convert wildcard pattern to regex if needed
+            val regexPattern = if (pattern.contains("*") || pattern.contains("?")) {
+                pattern.replace(".", "\\.")
+                    .replace("*", ".*")
+                    .replace("?", ".")
+            } else {
+                pattern
+            }
+            fileName.matches(Regex(regexPattern))
+        } catch (e: Exception) {
+            // If pattern is invalid, try simple contains match
+            fileName.contains(pattern)
+        }
     }
 
     companion object {

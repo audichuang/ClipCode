@@ -17,12 +17,31 @@ class CopyFileContentSettings : PersistentStateComponent<CopyFileContentSettings
         var preText: String = "",
         var postText: String = "",
         var fileCountLimit: Int = 30,
-        var filenameFilters: List<String> = listOf(),
+        var filterRules: List<FilterRule> = listOf(),  // Combined filter rules
         var addExtraLineBetweenFiles: Boolean = true,
         var setMaxFileCount: Boolean = true,
         var showCopyNotification: Boolean = true,
-        var useFilenameFilters: Boolean = false
+        var useFilters: Boolean = false,  // Master switch for filtering
+        var useIncludeFilters: Boolean = true,  // Enable include filters
+        var useExcludeFilters: Boolean = true   // Enable exclude filters
     )
+    
+    data class FilterRule(
+        val type: FilterType = FilterType.PATH,  // PATH or PATTERN
+        val action: FilterAction = FilterAction.INCLUDE,  // INCLUDE or EXCLUDE
+        val value: String = "",  // The path or extension
+        val enabled: Boolean = true  // Individual enable/disable
+    )
+    
+    enum class FilterType {
+        PATH,
+        PATTERN  // File name pattern (regex or wildcard)
+    }
+    
+    enum class FilterAction {
+        INCLUDE,
+        EXCLUDE
+    }
 
     private var myState = State()
 
