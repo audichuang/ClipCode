@@ -65,5 +65,15 @@
                 description="Copy folder and file content to the clipboard.">
             <add-to-group group-id="CopyReferencePopupGroup" anchor="after" relative-to-action="CopyPaths"/>
         </action>
+        
+        <!-- Paste and Restore Files Action -->
+        <action id="PasteAndRestoreFilesAction"
+                class="com.github.mwguerra.copyfilecontent.PasteAndRestoreFilesAction"
+                text="Paste and Restore Files from Clipboard"
+                description="Parse clipboard content and restore files to the project.">
+            <add-to-group group-id="CutCopyPasteGroup" anchor="after" relative-to-action="CopyFileContentContentsAction"/>
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="after" relative-to-action="$Paste"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift alt V"/>
+        </action>
     </actions>
 </idea-plugin>
