@@ -1,0 +1,69 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <version>0.1.4</version>
+
+    <id>com.github.mwguerra.copyfilecontent</id>
+    <depends>com.intellij.modules.platform</depends>
+
+    <name>Copy File Content</name>
+    <vendor email="mwguerra@gmail.com" url="https://mwguerra.com">Marcelo W. Guerra</vendor>
+
+    <!-- https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html -->
+    <description><![CDATA[
+    <p>The "Copy File Content" plugin enhances your workflow by allowing you to quickly copy the contents of selected files and directories to the clipboard, formatted according to customizable settings.</p>
+    <h2>This plugin is useful for:</h2>
+    <ul>
+        <li>Developers who frequently need to share their code via chat applications.</li>
+        <li>Developers who need to copy their code to build context for LLM apps like ChatGPT, Gemini, or Sapiens Chat.</li>
+    </ul>
+    <h2>Main features:</h2>
+    <ul>
+        <li>Copy the content of multiple files or directories to the clipboard.</li>
+        <li>Customizable text structure, including pre-text, file header text, and post-text.</li>
+        <li>Configurable file copying constraints (default is 30 files) to prevent memory issues with larger folders.</li>
+        <li>Optional file extension filters to specify which files should be copied.</li>
+        <li>Information on the copied items, including the number of files copied, total lines, total words, and an estimate of tokens (considering words and punctuation).</li>
+    </ul>
+    ]]>
+    </description>
+
+    <change-notes><![CDATA[
+    <h2>Features</h2>
+    <ul>
+      <li>Add copy file content from open tabs.</li>
+    </ul>
+    ]]>
+    </change-notes>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="Copy File Content" displayType="BALLOON" isLogByDefault="true" />
+
+        <projectConfigurable
+            id="CopyFileContentConfigurable"
+            displayName="Copy File Content Settings"
+            instance="com.github.mwguerra.copyfilecontent.CopyFileContentConfigurable"/>
+    </extensions>
+    <actions>
+        <!-- For general IntelliJ IDEs -->
+        <action id="CopyFileContentContentsAction"
+                class="com.github.mwguerra.copyfilecontent.CopyFileContentAction"
+                text="Copy File Content to Clipboard"
+                description="Copy folder and file content to the clipboard.">
+            <add-to-group group-id="CutCopyPasteGroup" anchor="after" relative-to-action="CopyPaths"/>
+        </action>
+        <action id="CopyAllOpenTabsAction"
+                class="com.github.mwguerra.copyfilecontent.CopyAllOpenTabsAction"
+                text="Copy All Open Tabs Content to Clipboard"
+                description="Copy the content of all open editor tabs to the clipboard.">
+            <add-to-group group-id="EditorTabPopupMenu" anchor="after" relative-to-action="CopyPaths"/>
+        </action>
+
+        <!-- For Rider -->
+        <action id="CopyFileContentContentsActionRider"
+                class="com.github.mwguerra.copyfilecontent.CopyFileContentAction"
+                text="Copy File Content to Clipboard"
+                description="Copy folder and file content to the clipboard.">
+            <add-to-group group-id="CopyReferencePopupGroup" anchor="after" relative-to-action="CopyPaths"/>
+        </action>
+    </actions>
+</idea-plugin>
