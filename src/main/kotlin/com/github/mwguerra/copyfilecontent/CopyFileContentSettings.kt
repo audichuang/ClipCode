@@ -17,7 +17,8 @@ class CopyFileContentSettings : PersistentStateComponent<CopyFileContentSettings
         var preText: String = "",
         var postText: String = "",
         var fileCountLimit: Int = 30,
-        var filterRules: List<FilterRule> = listOf(),  // Combined filter rules
+        var maxFileSizeKB: Int = 500,  // Maximum file size in KB (default 500KB)
+        var filterRules: MutableList<FilterRule> = mutableListOf(),  // Combined filter rules
         var addExtraLineBetweenFiles: Boolean = true,
         var setMaxFileCount: Boolean = true,
         var showCopyNotification: Boolean = true,
@@ -27,10 +28,10 @@ class CopyFileContentSettings : PersistentStateComponent<CopyFileContentSettings
     )
     
     data class FilterRule(
-        val type: FilterType = FilterType.PATH,  // PATH or PATTERN
-        val action: FilterAction = FilterAction.INCLUDE,  // INCLUDE or EXCLUDE
-        val value: String = "",  // The path or extension
-        val enabled: Boolean = true  // Individual enable/disable
+        var type: FilterType = FilterType.PATH,  // PATH or PATTERN
+        var action: FilterAction = FilterAction.INCLUDE,  // INCLUDE or EXCLUDE
+        var value: String = "",  // The path or extension
+        var enabled: Boolean = true  // Individual enable/disable
     )
     
     enum class FilterType {

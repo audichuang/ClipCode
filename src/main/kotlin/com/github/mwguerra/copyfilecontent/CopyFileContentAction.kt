@@ -1,4 +1,3 @@
-// file: src/main/kotlin/com/github/mwguerra/copyfilecontent/CopyFileContentAction.kt
 package com.github.mwguerra.copyfilecontent
 
 import com.intellij.notification.NotificationAction
@@ -188,7 +187,8 @@ class CopyFileContentAction : AnAction() {
             }
         }
 
-        if (!isBinaryFile(file) && file.length <= 100 * 1024) {
+        val maxFileSizeBytes = settings.state.maxFileSizeKB * 1024L
+        if (!isBinaryFile(file) && file.length <= maxFileSizeBytes) {
             val header = settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
             content = readFileContents(file)
             fileContents.add(header)
@@ -204,7 +204,7 @@ class CopyFileContentAction : AnAction() {
     }
 
     private fun processDirectory(directory: VirtualFile, fileContents: MutableList<String>, copiedFilePaths: MutableSet<String>, project: Project, addExtraLine: Boolean): String {
-        val directoryContent = StringBuilder()
+        val directoryContent = StringBuilder(1024) // Pre-allocate for better performance
         val settings = CopyFileContentSettings.getInstance(project) ?: return ""
         
         // Check if directory should be processed based on filters

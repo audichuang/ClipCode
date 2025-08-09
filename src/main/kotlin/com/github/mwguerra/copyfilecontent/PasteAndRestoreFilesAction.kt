@@ -173,7 +173,7 @@ class PasteAndRestoreFilesAction : AnAction() {
         val lines = content.lines()
         
         var currentFilePath: String? = null
-        val currentContent = StringBuilder()
+        val currentContent = StringBuilder(512) // Pre-allocate for better performance
         
         for (line in lines) {
             val match = regex.find(line)
@@ -184,7 +184,7 @@ class PasteAndRestoreFilesAction : AnAction() {
                     files.add(ParsedFile(currentFilePath, currentContent.toString().trim()))
                 }
                 // Start new file
-                currentFilePath = match.groups[1]?.value
+                currentFilePath = match.groups[1]?.value ?: continue
                 currentContent.clear()
             } else if (currentFilePath != null) {
                 // Add content to current file

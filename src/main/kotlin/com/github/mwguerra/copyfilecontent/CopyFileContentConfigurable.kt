@@ -57,14 +57,11 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
     private val extraLineCheckBox = JBCheckBox("Add an extra line between files")
     private val setMaxFilesCheckBox = JBCheckBox("Set maximum number of files to have their content copied")
     private val maxFilesField = JBTextField(10)
-    private val warningLabel = JLabel("<html><b>Warning:</b> Not setting a maximum number of files may cause high memory usage.</html>").apply {
-        foreground = JBColor(0xA94442, 0xA94442)
-        background = JBColor(0xF2DEDE, 0xF2DEDE)
-        border = JBUI.Borders.compound(
-            JBUI.Borders.empty(5),
-            BorderFactory.createLineBorder(JBColor(0xEBCCD1, 0xEBCCD1))
-        )
-        isOpaque = true
+    private val warningLabel = com.intellij.ui.components.JBLabel().apply {
+        icon = com.intellij.icons.AllIcons.General.WarningDialog
+        text = "Not setting a maximum number of files may cause high memory usage"
+        foreground = JBUI.CurrentTheme.Label.foreground()
+        border = JBUI.Borders.emptyLeft(5)
         isVisible = false
     }
     private val infoLabel = JLabel("<html><b>Info:</b> Please add file extensions to the table above.</html>").apply {
@@ -107,6 +104,14 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
         
         setupFilterTable()
         setupFilterTableRenderers()
+        
+        // Disable remove button initially
+        removeButton.isEnabled = false
+        
+        // Enable/disable remove button based on selection
+        filterTable.selectionModel.addListSelectionListener {
+            removeButton.isEnabled = filterTable.selectedRowCount > 0
+        }
 
         setMaxFilesCheckBox.addActionListener {
             val maxFilesSelected = setMaxFilesCheckBox.isSelected
@@ -317,8 +322,16 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
                 it.add(createLabeledPanel("", extraLineCheckBox))
             }, 0)
             .addComponentFillVertically(createSection("Constraints for copying") {
-                it.add(createInlinePanel(createWrappedCheckBoxPanel(setMaxFilesCheckBox), maxFilesField))
-                it.add(createInlinePanel(JLabel(), warningLabel))
+                val maxFilesPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+                maxFilesPanel.add(setMaxFilesCheckBox)
+                maxFilesPanel.add(Box.createHorizontalStrut(10))
+                maxFilesPanel.add(maxFilesField)
+                it.add(maxFilesPanel)
+                
+                val warningPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+                warningPanel.add(Box.createHorizontalStrut(25))
+                warningPanel.add(warningLabel)
+                it.add(warningPanel)
                 it.add(Box.createVerticalStrut(10))
                 
                 // Filtering section
@@ -540,7 +553,8 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
                 rules.add(CopyFileContentSettings.FilterRule(type, action, value, enabled))
             }
             
-            it.state.filterRules = rules
+            it.state.filterRules.clear()
+            it.state.filterRules.addAll(rules)
             it.state.headerFormat = headerFormatArea.text
             it.state.preText = preTextArea.text
             it.state.postText = postTextArea.text
