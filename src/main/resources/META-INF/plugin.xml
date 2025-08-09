@@ -1,6 +1,6 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <version>0.1.4</version>
+    <version>1.0.0</version>
 
     <id>com.github.mwguerra.copyfilecontent</id>
     <depends>com.intellij.modules.platform</depends>
@@ -28,9 +28,32 @@
     </description>
 
     <change-notes><![CDATA[
-    <h2>Features</h2>
+    <h2>Version 1.0.0 - Major Release</h2>
+    <h3>🎉 New Features</h3>
     <ul>
-      <li>Add copy file content from open tabs.</li>
+      <li><b>Paste and Restore Files:</b> New reverse operation to restore files from clipboard content (Ctrl+Shift+Alt+V)</li>
+      <li><b>Advanced Filtering System:</b> Include/Exclude paths and file patterns with IDE file chooser integration</li>
+      <li><b>Pattern Matching:</b> Support for wildcards and regex in file name filters</li>
+      <li><b>Configurable File Size Limit:</b> Adjustable maximum file size for processing (default 500KB)</li>
+    </ul>
+    <h3>✨ Improvements</h3>
+    <ul>
+      <li>Upgraded to IntelliJ Platform 2024.3+ with Gradle Plugin 2.x</li>
+      <li>Enhanced UI with platform-standard components and theme support</li>
+      <li>Improved settings persistence and reliability</li>
+      <li>Better memory management with pre-allocated buffers</li>
+      <li>Multi-row selection support in filter table</li>
+    </ul>
+    <h3>🐛 Bug Fixes</h3>
+    <ul>
+      <li>Fixed filter rules not persisting after IDE restart</li>
+      <li>Fixed potential null pointer exceptions</li>
+      <li>Improved error handling and user feedback</li>
+    </ul>
+    <h3>🚀 Platform Support</h3>
+    <ul>
+      <li>Supports IntelliJ IDEA 2024.3 to 2025.2</li>
+      <li>Kotlin 2.0.21 for better performance</li>
     </ul>
     ]]>
     </change-notes>

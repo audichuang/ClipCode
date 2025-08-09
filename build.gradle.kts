@@ -52,9 +52,19 @@ intellijPlatform {
         id = properties("pluginGroup")
         name = properties("pluginName")
         version = properties("pluginVersion")
-        description = "Copy File Content plugin enhances your workflow by allowing you to quickly copy the contents of selected files and directories to the clipboard, formatted according to customizable settings."
+        description = """
+            Copy File Content is a powerful IntelliJ IDEA plugin that enhances your workflow by allowing you to quickly copy 
+            and restore file contents with advanced filtering capabilities. Perfect for sharing code, working with AI assistants, 
+            and managing code snippets across projects.
+        """.trimIndent()
         
-        changeNotes = "Updated to support IntelliJ Platform 2024.3+"
+        changeNotes = """
+            <h2>Version 1.0.0 - Major Release</h2>
+            <b>New Features:</b> Paste and Restore Files, Advanced Filtering System, Pattern Matching<br>
+            <b>Improvements:</b> Platform 2024.3+ support, Enhanced UI, Better performance<br>
+            <b>Bug Fixes:</b> Settings persistence, null safety, error handling<br>
+            See full changelog at: https://github.com/mwguerra/copy-file-content
+        """.trimIndent()
 
         ideaVersion {
             sinceBuild = properties("pluginSinceBuild")

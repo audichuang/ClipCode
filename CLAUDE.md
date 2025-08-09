@@ -12,8 +12,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Run IntelliJ IDEA with the plugin installed for testing
 ./gradlew runIde
 
-# Run UI tests  
-./gradlew runIdeForUiTests
+# Run performance tests
+./gradlew testIdePerformance
+
+# Verify plugin compatibility with different IDE versions
+./gradlew verifyPlugin
 
 # Clean build artifacts
 ./gradlew clean
