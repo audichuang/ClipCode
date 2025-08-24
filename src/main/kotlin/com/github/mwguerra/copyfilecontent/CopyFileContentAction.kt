@@ -20,6 +20,7 @@ class CopyFileContentAction : AnAction() {
     private var fileCount = 0
     private var fileLimitReached = false
     private val logger = Logger.getInstance(CopyFileContentAction::class.java)
+    private var externalLibraryHandler: ExternalLibraryHandler? = null
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: run {
@@ -44,6 +45,8 @@ class CopyFileContentAction : AnAction() {
         val copiedFilePaths = mutableSetOf<String>()
 
         val project = e.project ?: return
+        // Initialize external library handler
+        externalLibraryHandler = ExternalLibraryHandler(project)
         val settings = CopyFileContentSettings.getInstance(project) ?: run {
             showNotification("Failed to load settings.", NotificationType.ERROR, project)
             return
@@ -113,7 +116,21 @@ class CopyFileContentAction : AnAction() {
     private fun processFile(file: VirtualFile, fileContents: MutableList<String>, copiedFilePaths: MutableSet<String>, project: Project, addExtraLine: Boolean): String {
         val settings = CopyFileContentSettings.getInstance(project) ?: return ""
         val repositoryRoot = getRepositoryRoot(project)
-        val fileRelativePath = repositoryRoot?.let { root -> VfsUtil.getRelativePath(file, root, '/') } ?: file.path
+        val handler = externalLibraryHandler
+        
+        // Determine the file path to display
+        val fileRelativePath = when {
+            // First check if it's from external library
+            handler != null && handler.isFromExternalLibrary(file) -> {
+                handler.getCleanPath(file)
+            }
+            // Then check if it's from project
+            repositoryRoot != null && VfsUtil.getRelativePath(file, repositoryRoot, '/') != null -> {
+                VfsUtil.getRelativePath(file, repositoryRoot, '/')!!
+            }
+            // Fallback to presentable URL
+            else -> file.presentableUrl
+        }
 
         // Skip already copied files
         if (fileRelativePath in copiedFilePaths) {
@@ -188,17 +205,52 @@ class CopyFileContentAction : AnAction() {
         }
 
         val maxFileSizeBytes = settings.state.maxFileSizeKB * 1024L
-        if (!isBinaryFile(file) && file.length <= maxFileSizeBytes) {
-            val header = settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
-            content = readFileContents(file)
-            fileContents.add(header)
-            fileContents.add(content)
-            fileCount++
-            if (addExtraLine && content.isNotEmpty()) {
-                fileContents.add("")
+        
+        // Handle external library files differently
+        if (handler != null && handler.isFromExternalLibrary(file)) {
+            // Check if file should be processed
+            if (!handler.shouldProcessFile(file)) {
+                logger.info("Skipping external library file: ${file.name}")
+                return ""
+            }
+            
+            // Try to read content from external library
+            content = handler.readContent(file) ?: ""
+            
+            if (content.isNotEmpty() && content.length <= maxFileSizeBytes) {
+                val header = settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
+                fileContents.add(header)
+                fileContents.add(content)
+                fileCount++
+                if (addExtraLine) {
+                    fileContents.add("")
+                }
+            } else if (content.isEmpty()) {
+                logger.info("Skipping file: ${file.name} - Could not read content from external library")
+            } else {
+                logger.info("Skipping file: ${file.name} - Size limit exceeded (${content.length} bytes)")
             }
         } else {
-            logger.info("Skipping file: ${file.name} - Binary or size limit exceeded")
+            // Handle regular project files
+            if (!isBinaryFile(file)) {
+                content = readFileContents(file)
+                
+                if (content.isNotEmpty() && content.length <= maxFileSizeBytes) {
+                    val header = settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
+                    fileContents.add(header)
+                    fileContents.add(content)
+                    fileCount++
+                    if (addExtraLine) {
+                        fileContents.add("")
+                    }
+                } else if (content.isEmpty()) {
+                    logger.info("Skipping file: ${file.name} - Could not read content")
+                } else {
+                    logger.info("Skipping file: ${file.name} - Size limit exceeded (${content.length} bytes)")
+                }
+            } else {
+                logger.info("Skipping file: ${file.name} - Binary file")
+            }
         }
         return content
     }
