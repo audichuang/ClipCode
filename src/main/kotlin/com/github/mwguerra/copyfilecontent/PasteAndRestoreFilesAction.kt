@@ -183,8 +183,9 @@ class PasteAndRestoreFilesAction : AnAction() {
                     // Save previous file
                     files.add(ParsedFile(currentFilePath, currentContent.toString().trim()))
                 }
-                // Start new file
-                currentFilePath = match.groups[1]?.value ?: continue
+                // Start new file - normalize the path immediately
+                val rawPath = match.groups[1]?.value ?: continue
+                currentFilePath = normalizePathForCurrentPlatform(rawPath)
                 currentContent.clear()
             } else if (currentFilePath != null) {
                 // Add content to current file
@@ -204,12 +205,22 @@ class PasteAndRestoreFilesAction : AnAction() {
     }
     
     private fun createFile(project: Project, projectRoot: VirtualFile, parsedFile: ParsedFile) {
-        val relativePath = parsedFile.path.trim()
+        val relativePath = normalizePathForCurrentPlatform(parsedFile.path.trim())
+        
+        // Validate the normalized path
+        if (relativePath.isEmpty()) {
+            throw IllegalArgumentException("Empty file path after normalization from: '${parsedFile.path}'")
+        }
         
         // Split path into directory and filename
         val pathParts = relativePath.split("/")
         val fileName = pathParts.last()
         val directoryPath = pathParts.dropLast(1).joinToString("/")
+        
+        // Additional validation for file name
+        if (fileName.isEmpty() || fileName.contains(Regex("[<>:\"|?*]"))) {
+            throw IllegalArgumentException("Invalid file name: '$fileName' in path: '$relativePath'")
+        }
         
         // Create directory structure if needed
         var currentDir: VirtualFile = projectRoot
@@ -258,6 +269,34 @@ class PasteAndRestoreFilesAction : AnAction() {
             val newFile = currentDir.createChildData(this, fileName)
             VfsUtil.saveText(newFile, parsedFile.content)
         }
+    }
+    
+    private fun normalizePathForCurrentPlatform(path: String): String {
+        var normalizedPath = path.trim()
+        
+        // Handle Windows absolute paths (e.g., D:\Users\...)
+        if (normalizedPath.matches(Regex("^[a-zA-Z]:\\\\.+"))) {
+            // Remove drive letter and colon (e.g., "D:" -> "")
+            normalizedPath = normalizedPath.substring(2)
+        }
+        
+        // Convert all backslashes to forward slashes for consistent handling
+        normalizedPath = normalizedPath.replace('\\', '/')
+        
+        // Remove leading slash if present (to ensure relative path)
+        if (normalizedPath.startsWith("/")) {
+            normalizedPath = normalizedPath.substring(1)
+        }
+        
+        // Clean up multiple consecutive slashes
+        normalizedPath = normalizedPath.replace(Regex("/+"), "/")
+        
+        // Remove empty segments and invalid characters
+        val segments = normalizedPath.split("/").filter { segment ->
+            segment.isNotEmpty() && segment != "." && !segment.contains(Regex("[<>:\"|?*]"))
+        }
+        
+        return segments.joinToString("/")
     }
     
     override fun update(e: AnActionEvent) {
