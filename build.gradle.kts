@@ -31,10 +31,13 @@ dependencies {
     // IntelliJ Platform Gradle Plugin Dependencies Extension
     intellijPlatform {
         create(properties("platformType"), properties("platformVersion"))
-        
+
         // Plugin Dependencies. Uses `platformPlugins` property from the gradle.properties file.
         plugins(properties("platformPlugins").map { it.split(',').map(String::trim).filter(String::isNotEmpty) })
-        
+
+        // Bundled plugins
+        bundledPlugin("Git4Idea")
+
         pluginVerifier()
         zipSigner()
         testFramework(TestFrameworkType.Platform)
@@ -48,16 +51,18 @@ kotlin {
 
 // Configure IntelliJ Platform Gradle Plugin
 intellijPlatform {
+    buildSearchableOptions = false
+
     pluginConfiguration {
         id = properties("pluginGroup")
         name = properties("pluginName")
         version = properties("pluginVersion")
         description = """
-            Copy File Content is a powerful IntelliJ IDEA plugin that enhances your workflow by allowing you to quickly copy 
-            and restore file contents with advanced filtering capabilities. Perfect for sharing code, working with AI assistants, 
+            Copy File Content is a powerful IntelliJ IDEA plugin that enhances your workflow by allowing you to quickly copy
+            and restore file contents with advanced filtering capabilities. Perfect for sharing code, working with AI assistants,
             and managing code snippets across projects.
         """.trimIndent()
-        
+
         changeNotes = """
             <h2>Version 1.0.0 - Major Release</h2>
             <b>New Features:</b> Paste and Restore Files, Advanced Filtering System, Pattern Matching<br>

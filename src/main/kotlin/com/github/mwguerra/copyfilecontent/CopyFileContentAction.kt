@@ -35,7 +35,11 @@ class CopyFileContentAction : AnAction() {
         performCopyFilesContent(e, selectedFiles)
     }
 
-    fun performCopyFilesContent(e: AnActionEvent, filesToCopy: Array<VirtualFile>) {
+    fun performCopyFilesContent(
+        e: AnActionEvent,
+        filesToCopy: Array<VirtualFile>,
+        customHeaderGenerator: ((VirtualFile, String) -> String)? = null
+    ) {
         fileCount = 0
         fileLimitReached = false
         var totalChars = 0
@@ -64,9 +68,9 @@ class CopyFileContentAction : AnAction() {
             }
 
             val content = if (file.isDirectory) {
-                processDirectory(file, fileContents, copiedFilePaths, project, settings.state.addExtraLineBetweenFiles)
+                processDirectory(file, fileContents, copiedFilePaths, project, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
             } else {
-                processFile(file, fileContents, copiedFilePaths, project, settings.state.addExtraLineBetweenFiles)
+                processFile(file, fileContents, copiedFilePaths, project, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
             }
 
             totalChars += content.length
@@ -113,7 +117,14 @@ class CopyFileContentAction : AnAction() {
         return words.size + punctuation
     }
 
-    private fun processFile(file: VirtualFile, fileContents: MutableList<String>, copiedFilePaths: MutableSet<String>, project: Project, addExtraLine: Boolean): String {
+    private fun processFile(
+        file: VirtualFile,
+        fileContents: MutableList<String>,
+        copiedFilePaths: MutableSet<String>,
+        project: Project,
+        addExtraLine: Boolean,
+        customHeaderGenerator: ((VirtualFile, String) -> String)? = null
+    ): String {
         val settings = CopyFileContentSettings.getInstance(project) ?: return ""
         val repositoryRoot = getRepositoryRoot(project)
         val handler = externalLibraryHandler
@@ -218,7 +229,8 @@ class CopyFileContentAction : AnAction() {
             content = handler.readContent(file) ?: ""
             
             if (content.isNotEmpty() && content.length <= maxFileSizeBytes) {
-                val header = settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
+                val header = customHeaderGenerator?.invoke(file, fileRelativePath)
+                    ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
                 fileContents.add(header)
                 fileContents.add(content)
                 fileCount++
@@ -234,9 +246,10 @@ class CopyFileContentAction : AnAction() {
             // Handle regular project files
             if (!isBinaryFile(file)) {
                 content = readFileContents(file)
-                
+
                 if (content.isNotEmpty() && content.length <= maxFileSizeBytes) {
-                    val header = settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
+                    val header = customHeaderGenerator?.invoke(file, fileRelativePath)
+                        ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
                     fileContents.add(header)
                     fileContents.add(content)
                     fileCount++
@@ -255,7 +268,14 @@ class CopyFileContentAction : AnAction() {
         return content
     }
 
-    private fun processDirectory(directory: VirtualFile, fileContents: MutableList<String>, copiedFilePaths: MutableSet<String>, project: Project, addExtraLine: Boolean): String {
+    private fun processDirectory(
+        directory: VirtualFile,
+        fileContents: MutableList<String>,
+        copiedFilePaths: MutableSet<String>,
+        project: Project,
+        addExtraLine: Boolean,
+        customHeaderGenerator: ((VirtualFile, String) -> String)? = null
+    ): String {
         val directoryContent = StringBuilder(1024) // Pre-allocate for better performance
         val settings = CopyFileContentSettings.getInstance(project) ?: return ""
         
@@ -321,9 +341,9 @@ class CopyFileContentAction : AnAction() {
                 break
             }
             val content = if (childFile.isDirectory) {
-                processDirectory(childFile, fileContents, copiedFilePaths, project, addExtraLine)
+                processDirectory(childFile, fileContents, copiedFilePaths, project, addExtraLine, customHeaderGenerator)
             } else {
-                processFile(childFile, fileContents, copiedFilePaths, project, addExtraLine)
+                processFile(childFile, fileContents, copiedFilePaths, project, addExtraLine, customHeaderGenerator)
             }
             if (content.isNotEmpty()) {
                 directoryContent.append(content)

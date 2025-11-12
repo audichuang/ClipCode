@@ -1,9 +1,10 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
 
     <id>com.github.mwguerra.copyfilecontent</id>
     <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.vcs</depends>
 
     <name>Copy File Content</name>
     <vendor email="mwguerra@gmail.com" url="https://mwguerra.com">Marcelo W. Guerra</vendor>
@@ -28,6 +29,28 @@
     </description>
 
     <change-notes><![CDATA[
+    <h2>Version 1.0.1 - Bug Fix Release</h2>
+    <h3>🐛 Critical Bug Fixes</h3>
+    <ul>
+      <li><b>Git Staging Area Support:</b> Fixed "Copy File Content (Full Source)" not appearing in Git Staging Area (Staged/Unstaged sections)</li>
+      <li><b>Multiple Change Labels Handling:</b> Fixed incorrect parsing when multiple change type labels appear in file paths (e.g., [MODIFIED] [NEW])</li>
+      <li><b>Deleted File Detection:</b> Fixed false positive detection when [DELETED] appears in directory names</li>
+      <li><b>No-Space Edge Case:</b> Fixed label stripping when no whitespace follows change type labels</li>
+    </ul>
+    <h3>✨ Improvements</h3>
+    <ul>
+      <li>Optimized regex pattern compilation for better performance when processing many files</li>
+      <li>Enhanced path validation to prevent invalid characters including square brackets</li>
+      <li>Added comprehensive debug logging for label stripping operations</li>
+      <li>Improved documentation with detailed edge case handling examples</li>
+    </ul>
+    <h3>🔧 Technical Changes</h3>
+    <ul>
+      <li>Integrated CommitWorkflowUi API for consistent Git UI support across Modal/Non-Modal/Staging modes</li>
+      <li>Pre-compiled regex patterns moved to companion object for performance</li>
+      <li>Added bracket validation in path normalization to catch un-stripped labels</li>
+    </ul>
+    <br/>
     <h2>Version 1.0.0 - Major Release</h2>
     <h3>🎉 New Features</h3>
     <ul>
@@ -97,6 +120,17 @@
             <add-to-group group-id="CutCopyPasteGroup" anchor="after" relative-to-action="CopyFileContentContentsAction"/>
             <add-to-group group-id="ProjectViewPopupMenu" anchor="after" relative-to-action="$Paste"/>
             <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift alt V"/>
+        </action>
+
+        <!-- Git Changes Copy Action - Copy full file content (not diff patch) -->
+        <action id="CopyGitFilesContentAction"
+                class="com.github.mwguerra.copyfilecontent.CopyGitFilesContentAction"
+                text="Copy File Content (Full Source)"
+                description="Copy the complete file content of selected changes with change type labels ([NEW], [MODIFIED], [DELETED]). Different from 'Copy as Patch' which only shows diff.">
+            <!-- Local Changes window (Commit tool window) -->
+            <add-to-group group-id="ChangesViewPopupMenu" anchor="after" relative-to-action="CopyPaths"/>
+            <!-- Git Log window (Version Control history) -->
+            <add-to-group group-id="Vcs.Log.ContextMenu" anchor="after" relative-to-action="CopyPaths"/>
         </action>
     </actions>
 </idea-plugin>

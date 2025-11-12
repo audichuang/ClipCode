@@ -18,10 +18,26 @@ import java.io.File
 
 class PasteAndRestoreFilesAction : AnAction() {
     private val logger = Logger.getInstance(PasteAndRestoreFilesAction::class.java)
-    
+
+    companion object {
+        /**
+         * Regex pattern to match one or more consecutive change type labels at the start of a path.
+         * Handles multiple labels like "[MODIFIED] [NEW] path" and optional whitespace.
+         * Non-capturing group (?:...) for efficiency.
+         */
+        private val CHANGE_TYPE_PATTERN = Regex("^(?:\\[(NEW|MODIFIED|DELETED|MOVED)\\]\\s*)+")
+
+        /**
+         * Regex pattern to extract ONLY the first change type label.
+         * Used for determining isDeleted flag to avoid false positives.
+         */
+        private val FIRST_LABEL_PATTERN = Regex("^\\[(NEW|MODIFIED|DELETED|MOVED)\\]")
+    }
+
     data class ParsedFile(
         val path: String,
-        val content: String
+        val content: String,
+        val isDeleted: Boolean = false
     )
     
     override fun actionPerformed(e: AnActionEvent) {
@@ -57,19 +73,49 @@ class PasteAndRestoreFilesAction : AnAction() {
         
         // Parse the clipboard content to extract files
         val parsedFiles = parseClipboardContent(clipboardContent, settings.state.headerFormat)
-        
+
         if (parsedFiles.isEmpty()) {
             CopyFileContentAction.showNotification(
-                "No files found in clipboard content. Make sure the content was copied using Copy File Content plugin.", 
-                NotificationType.WARNING, 
+                "No files found in clipboard content. Make sure the content was copied using Copy File Content plugin.",
+                NotificationType.WARNING,
                 project
             )
             return
         }
-        
+
+        // Filter out deleted files
+        val filesToCreate = parsedFiles.filter { !it.isDeleted }
+        val deletedFiles = parsedFiles.filter { it.isDeleted }
+
+        // Log information about deleted files
+        if (deletedFiles.isNotEmpty()) {
+            val deletedList = deletedFiles.joinToString(", ") { it.path }
+            logger.info("Skipping ${deletedFiles.size} deleted file(s): $deletedList")
+        }
+
+        // Check if there are any files to restore
+        if (filesToCreate.isEmpty()) {
+            val message = if (deletedFiles.size == 1) {
+                "The file in clipboard is marked as [DELETED].\nDeleted files cannot be restored."
+            } else {
+                "All ${deletedFiles.size} files in clipboard are marked as [DELETED].\nDeleted files cannot be restored."
+            }
+            CopyFileContentAction.showNotification(
+                message,
+                NotificationType.WARNING,
+                project
+            )
+            return
+        }
+
         // Show confirmation dialog with file list
-        val fileList = parsedFiles.joinToString("\n") { "• ${it.path}" }
-        val message = "Found ${parsedFiles.size} file(s) to restore:\n\n$fileList\n\nDo you want to create these files?"
+        val fileList = filesToCreate.joinToString("\n") { "• ${it.path}" }
+        val deletedNote = if (deletedFiles.isNotEmpty()) {
+            "\n\n(Skipped ${deletedFiles.size} deleted file${if (deletedFiles.size > 1) "s" else ""})"
+        } else {
+            ""
+        }
+        val message = "Found ${filesToCreate.size} file(s) to restore:\n\n$fileList$deletedNote\n\nDo you want to create these files?"
         
         val result = Messages.showYesNoDialog(
             project,
@@ -102,7 +148,7 @@ class PasteAndRestoreFilesAction : AnAction() {
         
         ApplicationManager.getApplication().invokeLater {
             WriteCommandAction.runWriteCommandAction(project) {
-                parsedFiles.forEach { parsedFile ->
+                filesToCreate.forEach { parsedFile ->
                     try {
                         createFile(project, projectRoot, parsedFile)
                         successCount++
@@ -173,19 +219,30 @@ class PasteAndRestoreFilesAction : AnAction() {
         val lines = content.lines()
         
         var currentFilePath: String? = null
+        var currentIsDeleted = false
         val currentContent = StringBuilder(512) // Pre-allocate for better performance
-        
+
         for (line in lines) {
             val match = regex.find(line)
             if (match != null && match.groups.size > 1) {
                 // Found a file header
                 if (currentFilePath != null && currentContent.isNotEmpty()) {
                     // Save previous file
-                    files.add(ParsedFile(currentFilePath, currentContent.toString().trim()))
+                    files.add(ParsedFile(
+                        path = currentFilePath,
+                        content = currentContent.toString().trim(),
+                        isDeleted = currentIsDeleted
+                    ))
                 }
-                // Start new file - normalize the path immediately
+                // Start new file - extract first label for deletion check, strip all labels, normalize path
                 val rawPath = match.groups[1]?.value ?: continue
-                currentFilePath = normalizePathForCurrentPlatform(rawPath)
+
+                // Check ONLY the first label to determine if deleted (avoid false positives)
+                val firstLabel = FIRST_LABEL_PATTERN.find(rawPath)?.value
+                currentIsDeleted = firstLabel == "[DELETED]"
+
+                val pathWithoutLabel = stripChangeTypeLabel(rawPath)
+                currentFilePath = normalizePathForCurrentPlatform(pathWithoutLabel)
                 currentContent.clear()
             } else if (currentFilePath != null) {
                 // Add content to current file
@@ -195,15 +252,46 @@ class PasteAndRestoreFilesAction : AnAction() {
                 currentContent.append(line)
             }
         }
-        
+
         // Don't forget the last file
         if (currentFilePath != null && currentContent.isNotEmpty()) {
-            files.add(ParsedFile(currentFilePath, currentContent.toString().trim()))
+            files.add(ParsedFile(
+                path = currentFilePath,
+                content = currentContent.toString().trim(),
+                isDeleted = currentIsDeleted
+            ))
         }
         
         return files
     }
-    
+
+    /**
+     * Strip change type labels ([NEW], [MODIFIED], [DELETED], [MOVED]) from the beginning of a file path.
+     * These labels are added by CopyGitFilesContentAction when copying from Git changes view.
+     *
+     * Handles edge cases:
+     * - Multiple consecutive labels: "[MODIFIED] [NEW] path" → "path"
+     * - Optional whitespace: "[NEW]path" → "path" (no space after label)
+     * - Preserves labels not at start: "src/[DELETED]/file" → "src/[DELETED]/file"
+     *
+     * @param path The file path potentially containing change type labels
+     * @return The path with all leading change type labels removed
+     */
+    private fun stripChangeTypeLabel(path: String): String {
+        // Use pre-compiled pattern from companion object
+        // Pattern matches one or more consecutive labels with optional whitespace
+        val stripped = CHANGE_TYPE_PATTERN.replace(path, "").trim()
+
+        // Validate that we actually have a path
+        if (stripped.isBlank()) {
+            logger.warn("Invalid file path: contains only change type label(s): '$path'")
+            return path // Return original if stripping results in empty string
+        }
+
+        logger.debug("Stripped change type labels from '$path' to '$stripped'")
+        return stripped
+    }
+
     private fun createFile(project: Project, projectRoot: VirtualFile, parsedFile: ParsedFile) {
         val relativePath = normalizePathForCurrentPlatform(parsedFile.path.trim())
         
@@ -218,7 +306,8 @@ class PasteAndRestoreFilesAction : AnAction() {
         val directoryPath = pathParts.dropLast(1).joinToString("/")
         
         // Additional validation for file name
-        if (fileName.isEmpty() || fileName.contains(Regex("[<>:\"|?*]"))) {
+        // Include square brackets in validation to catch un-stripped labels or invalid characters
+        if (fileName.isEmpty() || fileName.contains(Regex("[<>:\"|?*\\[\\]]"))) {
             throw IllegalArgumentException("Invalid file name: '$fileName' in path: '$relativePath'")
         }
         
@@ -292,8 +381,9 @@ class PasteAndRestoreFilesAction : AnAction() {
         normalizedPath = normalizedPath.replace(Regex("/+"), "/")
         
         // Remove empty segments and invalid characters
+        // Include square brackets to catch un-stripped labels or invalid characters
         val segments = normalizedPath.split("/").filter { segment ->
-            segment.isNotEmpty() && segment != "." && !segment.contains(Regex("[<>:\"|?*]"))
+            segment.isNotEmpty() && segment != "." && !segment.contains(Regex("[<>:\"|?*\\[\\]]"))
         }
         
         return segments.joinToString("/")
