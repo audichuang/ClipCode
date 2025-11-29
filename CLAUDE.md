@@ -12,9 +12,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Run IntelliJ IDEA with the plugin installed for testing
 ./gradlew runIde
 
-# Run performance tests
-./gradlew testIdePerformance
-
 # Verify plugin compatibility with different IDE versions
 ./gradlew verifyPlugin
 
@@ -43,49 +40,53 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Architecture Overview
 
 ### Plugin Structure
-This is an IntelliJ Platform plugin built with Kotlin and Gradle. The plugin follows IntelliJ's action-based architecture.
+This is an IntelliJ Platform plugin built with Kotlin and Gradle, targeting IntelliJ 2024.3+ (build 243-252). The plugin follows IntelliJ's action-based architecture.
 
 ### Core Components
 
 **Actions** (`src/main/kotlin/com/github/mwguerra/copyfilecontent/`)
-- `CopyFileContentAction.kt`: Main action for copying file/directory content from project view context menu
-- `CopyAllOpenTabsAction.kt`: Action for copying content from all open editor tabs
-- `PasteAndRestoreFilesAction.kt`: Action for parsing clipboard content and restoring files to the project (reverse operation)
+- `CopyFileContentAction.kt`: Main copy engine - handles file/directory content copying with filtering, statistics, and customizable headers. Other actions delegate to this via `performCopyFilesContent()`.
+- `CopyAllOpenTabsAction.kt`: Thin wrapper that collects open editor tabs and delegates to CopyFileContentAction
+- `CopyGitFilesContentAction.kt`: Copies files from Git staging area, commit UI, and changes view with change type labels ([NEW], [MODIFIED], [DELETED], [MOVED]). Uses CommitWorkflowUi API for staging area support.
+- `PasteAndRestoreFilesAction.kt`: Reverse operation - parses clipboard content and restores files to project. Handles cross-platform paths and Git change labels.
+- `ExternalLibraryHandler.kt`: Handles JAR/ZIP files and decompiled .class files using IntelliJ's LoadTextUtil and PSI APIs
 
 **Settings System**
-- `CopyFileContentSettings.kt`: Persistent state component for project-level settings (stored in `.idea/CopyFileContentSettings.xml`)
+- `CopyFileContentSettings.kt`: Persistent state component (project-level, stored in `.idea/CopyFileContentSettings.xml`)
 - `CopyFileContentConfigurable.kt`: UI configuration panel in IDE settings
-- Settings include: header format, pre/post text, file limits, path/pattern filters (include/exclude), notifications
+- Settings include: header format (`$FILE_PATH` placeholder), pre/post text, file limits, path/pattern filters (include/exclude), notifications
 
 **Plugin Configuration**
-- `plugin.xml`: Plugin descriptor with action registrations, extension points, and metadata
-- Actions are registered in multiple groups for compatibility with different IDEs (general IntelliJ, Rider)
+- `plugin.xml`: Plugin descriptor with action registrations in multiple groups (CutCopyPasteGroup, EditorTabPopupMenu, ChangesViewPopupMenu, Vcs.Log.ContextMenu, CopyReferencePopupGroup for Rider)
 
 ### Key Design Patterns
 
-1. **Project-Level Settings**: Uses IntelliJ's `PersistentStateComponent` for storing configuration per project
-2. **Action System**: Integrates with IDE context menus through action groups
-3. **Notification System**: Uses IntelliJ's notification API for user feedback with configurable visibility
-4. **Bidirectional Operations**: Supports both copying files to clipboard and restoring files from clipboard content
+1. **Delegation Pattern**: CopyAllOpenTabsAction and CopyGitFilesContentAction delegate to CopyFileContentAction.performCopyFilesContent() with optional custom header generators
+2. **Project-Level Settings**: Uses IntelliJ's `PersistentStateComponent` for storing configuration per project
+3. **Action System**: Integrates with IDE context menus through action groups
+4. **Notification System**: Uses IntelliJ's notification API for user feedback with configurable visibility
+5. **Filter Evaluation**: Excludes are checked first, then includes. Each rule can be individually enabled/disabled.
 
 ### Key Features
 
 1. **Copy Operations**:
    - Copy selected files/folders from project view
    - Copy all open tabs content
-   - Customizable header format with file paths
+   - Copy from Git staging area/changes with change type labels
+   - Customizable header format with `$FILE_PATH` placeholder
    - Pre/post text wrapping
-   - File count limits for memory safety
+   - File count and size limits for memory safety
 
 2. **Filter System**:
-   - Include/Exclude paths using IDE file chooser
-   - Pattern matching for file names (wildcards and regex)
+   - PATH filters: Include/Exclude specific paths using IDE file chooser
+   - PATTERN filters: Wildcards and regex for file names
    - Individual enable/disable for each filter rule
    - Master switches for include/exclude filters
 
 3. **Restore Operation** (Paste and Restore Files):
    - Parse clipboard content with file headers
    - Recreate directory structure automatically
+   - Strip Git change labels automatically
    - Confirmation dialog before creating files
    - Overwrite protection with user choice
    - Keyboard shortcut: `Ctrl+Shift+Alt+V`
@@ -96,3 +97,6 @@ This is an IntelliJ Platform plugin built with Kotlin and Gradle. The plugin fol
   - `plugin.xml`: `<version>` tag
 - Change notes must be updated in `plugin.xml` before release
 - The `update_version.sh` script automates version synchronization and release workflow
+
+### Testing
+See `TESTING_GUIDE.md` for comprehensive manual testing procedures covering all plugin features.

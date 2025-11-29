@@ -5,6 +5,7 @@
     <id>com.github.mwguerra.copyfilecontent</id>
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.vcs</depends>
+    <depends>Git4Idea</depends>
 
     <name>Copy File Content</name>
     <vendor email="mwguerra@gmail.com" url="https://mwguerra.com">Marcelo W. Guerra</vendor>
@@ -131,6 +132,12 @@
             <add-to-group group-id="ChangesViewPopupMenu" anchor="after" relative-to-action="CopyPaths"/>
             <!-- Git Log window (Version Control history) -->
             <add-to-group group-id="Vcs.Log.ContextMenu" anchor="after" relative-to-action="CopyPaths"/>
+            <!-- Git Staging Area - Unstaged files -->
+            <add-to-group group-id="Git.Stage.Local.File.Menu" anchor="last"/>
+            <!-- Git Staging Area - Staged files -->
+            <add-to-group group-id="Git.Stage.Index.File.Menu" anchor="last"/>
+            <!-- Git Staging Area - Tree menu -->
+            <add-to-group group-id="Git.Stage.Tree.Menu" anchor="last"/>
         </action>
     </actions>
 </idea-plugin>
