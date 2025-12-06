@@ -32,22 +32,26 @@ jobs:
         id: get_version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
+      - name: Extract change notes from plugin.xml
+        id: changelog
+        run: |
+          # Extract content between <change-notes><![CDATA[ and ]]></change-notes>
+          NOTES=$(sed -n '/<change-notes><!\[CDATA\[/,/\]\]><\/change-notes>/p' src/main/resources/META-INF/plugin.xml | \
+                  sed '1s/.*<!\[CDATA\[//' | \
+                  sed '$s/\]\]><\/change-notes>.*//' | \
+                  sed 's/^[[:space:]]*//')
+
+          # Write to file to preserve formatting
+          echo "$NOTES" > changelog.md
+
+          echo "Extracted changelog:"
+          cat changelog.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           name: CodeSnap v${{ steps.get_version.outputs.VERSION }}
-          body: |
-            ## CodeSnap v${{ steps.get_version.outputs.VERSION }}
-
-            ### Installation
-            1. Download `CodeSnap-${{ steps.get_version.outputs.VERSION }}.zip`
-            2. In IntelliJ IDEA: **Settings** → **Plugins** → **⚙️** → **Install Plugin from Disk...**
-            3. Select the downloaded zip file
-            4. Restart IDE
-
-            ### Compatibility
-            - IntelliJ IDEA 2024.3 - 2025.2
-            - All JetBrains IDEs (WebStorm, PyCharm, Rider, etc.)
+          body_path: changelog.md
           files: |
             build/distributions/CodeSnap-${{ steps.get_version.outputs.VERSION }}.zip
           draft: false
