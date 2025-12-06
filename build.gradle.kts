@@ -58,20 +58,53 @@ intellijPlatform {
         name = properties("pluginName")
         version = properties("pluginVersion")
         description = """
-            CodeSnap - The ultimate code sharing tool for developers. Quickly copy file contents with smart formatting,
+            ClipCode - The ultimate code sharing tool for developers. Quickly copy file contents with smart formatting,
             perfect for sharing with AI assistants like ChatGPT, Claude, and Gemini. Features Git integration,
             paste-and-restore, and advanced filtering.
         """.trimIndent()
 
         changeNotes = """
             <h2>Version 1.0.0 - Initial Release</h2>
+            <p><b>ClipCode</b> - The ultimate code sharing tool for AI-assisted development!</p>
+
+            <h3>Core Features</h3>
             <ul>
-              <li>Copy files and directories with customizable formatting</li>
-              <li>Git staging area and commit history support</li>
-              <li>Paste and restore files from clipboard</li>
-              <li>Advanced path and pattern filtering</li>
+              <li><b>Smart Copy</b>: Copy single or multiple files/directories with customizable headers</li>
+              <li><b>Copy All Open Tabs</b>: Quickly copy content from all open editor tabs</li>
+              <li><b>Statistics</b>: Shows file count, lines, words, and estimated token count</li>
             </ul>
-            See full changelog at: https://github.com/audichuang/codesnap
+
+            <h3>Git Integration</h3>
+            <ul>
+              <li>Copy from Git Staging Area (staged/unstaged files)</li>
+              <li>Copy from Git Changes view with change type labels ([NEW], [MODIFIED], [DELETED], [MOVED])</li>
+              <li>Copy from Git Log/History window</li>
+            </ul>
+
+            <h3>Paste &amp; Restore</h3>
+            <ul>
+              <li>Restore files from clipboard content (Ctrl+Shift+Alt+V)</li>
+              <li>Automatic directory structure creation</li>
+              <li>Smart parsing of Git change labels</li>
+              <li>Overwrite protection with confirmation dialog</li>
+            </ul>
+
+            <h3>Advanced Filtering</h3>
+            <ul>
+              <li>PATH filters: Include/exclude specific directories</li>
+              <li>PATTERN filters: Wildcards for file names (e.g., *.java, test_*)</li>
+              <li>Individual rule enable/disable</li>
+              <li>File size and count limits</li>
+            </ul>
+
+            <h3>Customization</h3>
+            <ul>
+              <li>Configurable header format with ${"$"}FILE_PATH placeholder</li>
+              <li>Pre/post text wrappers</li>
+              <li>Notification preferences</li>
+            </ul>
+
+            <p><b>Compatibility:</b> IntelliJ IDEA 2024.3 - 2025.2 and all JetBrains IDEs</p>
         """.trimIndent()
 
         ideaVersion {

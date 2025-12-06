@@ -1,4 +1,4 @@
-package com.github.audichuang.codesnap
+package com.github.audichuang.clipcode
 
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.impl.LoadTextUtil

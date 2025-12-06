@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**CodeSnap** is an IntelliJ Platform plugin for copying file contents with smart formatting, perfect for sharing code with AI assistants.
+**ClipCode** is an IntelliJ Platform plugin for copying file contents with smart formatting, perfect for sharing code with AI assistants.
 
-- **Repository**: https://github.com/audichuang/CodeSnap
-- **Plugin ID**: `com.github.audichuang.codesnap`
+- **Repository**: https://github.com/audichuang/ClipCode
+- **Plugin ID**: `com.github.audichuang.clipcode`
 - **Author**: audichuang (audiapplication880208@gmail.com)
 
 ## Common Development Commands
@@ -22,7 +22,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # Build plugin zip for distribution
 ./gradlew buildPlugin
-# Output: build/distributions/CodeSnap-{version}.zip
+# Output: build/distributions/ClipCode-{version}.zip
 
 # Verify plugin compatibility with different IDE versions
 ./gradlew verifyPlugin
@@ -38,7 +38,8 @@ When a version tag (e.g., `v1.0.1`) is pushed to GitHub, the `.github/workflows/
 1. Builds the plugin
 2. Extracts release notes from `plugin.xml` `<change-notes>` section
 3. Creates a GitHub Release with the zip file attached
-4. Users can download from https://github.com/audichuang/CodeSnap/releases
+4. Publishes to JetBrains Marketplace (requires PUBLISH_TOKEN secret)
+5. Users can download from https://github.com/audichuang/ClipCode/releases
 
 ### Step-by-Step Release Process
 
@@ -80,8 +81,8 @@ git push origin v1.0.1
 ```
 
 **Step 5: Verify release**
-- Check GitHub Actions: https://github.com/audichuang/CodeSnap/actions
-- Check Releases page: https://github.com/audichuang/CodeSnap/releases
+- Check GitHub Actions: https://github.com/audichuang/ClipCode/actions
+- Check Releases page: https://github.com/audichuang/ClipCode/releases
 
 ### Important Notes
 - Version must be updated in TWO places: `plugin.xml` and `gradle.properties`
@@ -96,7 +97,7 @@ This is an IntelliJ Platform plugin built with Kotlin and Gradle, targeting Inte
 
 ### Core Components
 
-**Actions** (`src/main/kotlin/com/github/audichuang/codesnap/`)
+**Actions** (`src/main/kotlin/com/github/audichuang/clipcode/`)
 - `CopyFileContentAction.kt`: Main copy engine - handles file/directory content copying with filtering, statistics, and customizable headers. Other actions delegate to this via `performCopyFilesContent()`.
 - `CopyAllOpenTabsAction.kt`: Thin wrapper that collects open editor tabs and delegates to CopyFileContentAction
 - `CopyGitFilesContentAction.kt`: Copies files from Git staging area, commit UI, changes view, and Git Log with change type labels ([NEW], [MODIFIED], [DELETED], [MOVED]). Uses CommitWorkflowUi API for staging area support.

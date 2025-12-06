@@ -60,10 +60,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: CodeSnap v${{ steps.get_version.outputs.VERSION }}
+          name: ClipCode v${{ steps.get_version.outputs.VERSION }}
           body_path: changelog.md
           files: |
-            build/distributions/CodeSnap-${{ steps.get_version.outputs.VERSION }}.zip
+            build/distributions/ClipCode-${{ steps.get_version.outputs.VERSION }}.zip
           draft: false
           prerelease: false
         env:

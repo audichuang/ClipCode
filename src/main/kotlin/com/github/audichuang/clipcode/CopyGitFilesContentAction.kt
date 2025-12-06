@@ -1,4 +1,4 @@
-package com.github.audichuang.codesnap
+package com.github.audichuang.clipcode
 
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionUpdateThread

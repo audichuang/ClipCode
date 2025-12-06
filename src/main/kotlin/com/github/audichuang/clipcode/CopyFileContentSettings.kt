@@ -1,4 +1,4 @@
-package com.github.audichuang.codesnap
+package com.github.audichuang.clipcode
 
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.Service

@@ -1,4 +1,4 @@
-package com.github.audichuang.codesnap
+package com.github.audichuang.clipcode
 
 import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationGroupManager
@@ -400,7 +400,7 @@ class CopyFileContentAction : AnAction() {
             notificationType: NotificationType,
             project: Project?
         ): com.intellij.notification.Notification {
-            val notificationGroup = NotificationGroupManager.getInstance().getNotificationGroup("CodeSnap")
+            val notificationGroup = NotificationGroupManager.getInstance().getNotificationGroup("ClipCode")
             val notification = notificationGroup.createNotification(message, notificationType).setImportant(true)
             notification.notify(project)
             return notification
@@ -408,10 +408,10 @@ class CopyFileContentAction : AnAction() {
     }
 
     private fun showNotificationWithSettingsAction(message: String, notificationType: NotificationType, project: Project?) {
-        val notificationGroup = NotificationGroupManager.getInstance().getNotificationGroup("CodeSnap")
+        val notificationGroup = NotificationGroupManager.getInstance().getNotificationGroup("ClipCode")
         val notification = notificationGroup.createNotification(message, notificationType).setImportant(true)
         notification.addAction(NotificationAction.createSimple("Go to Settings") {
-            ShowSettingsUtil.getInstance().showSettingsDialog(project, "CodeSnap Settings")
+            ShowSettingsUtil.getInstance().showSettingsDialog(project, "ClipCode Settings")
         })
         notification.notify(project)
     }

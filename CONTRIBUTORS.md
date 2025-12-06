@@ -1,6 +1,6 @@
 # Contributors
 
-Thank you to everyone who has contributed to CodeSnap!
+Thank you to everyone who has contributed to ClipCode!
 
 ---
 
@@ -50,9 +50,9 @@ Thank you to everyone who has contributed to CodeSnap!
 
 ## How to Contribute
 
-1. **Report Bugs**: Open an issue on [GitHub Issues](https://github.com/audichuang/codesnap/issues)
+1. **Report Bugs**: Open an issue on [GitHub Issues](https://github.com/audichuang/ClipCode/issues)
 2. **Submit Pull Requests**: Fork, create a branch, and submit a PR
 
 ---
 
-**Want to contribute?** Check out our [GitHub repository](https://github.com/audichuang/codesnap)!
+**Want to contribute?** Check out our [GitHub repository](https://github.com/audichuang/ClipCode)!

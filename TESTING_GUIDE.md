@@ -1,4 +1,4 @@
-# Complete Testing Guide - CodeSnap Plugin
+# Complete Testing Guide - ClipCode Plugin
 
 This guide shows how to test **all** plugin functionalities locally.
 
@@ -61,7 +61,7 @@ plugin-test/
 1. **Select file** in Project tree (left sidebar)
    - Click on `Main.java`
 
-2. **Right-click** → Find "**CodeSnap: Copy to Clipboard**"
+2. **Right-click** → Find "**ClipCode: Copy to Clipboard**"
    - Should appear after "Copy Path" in the context menu
 
 3. **Verify**:
@@ -84,7 +84,7 @@ plugin-test/
    - Hold `Ctrl` (or `Cmd` on Mac)
    - Click `Main.java`, `Config.properties`, `README.md`
 
-2. **Right-click** → "CodeSnap: Copy to Clipboard"
+2. **Right-click** → "ClipCode: Copy to Clipboard"
 
 3. **Verify**:
    - Paste into text editor
@@ -102,7 +102,7 @@ plugin-test/
 
 ### Test 3.3: Copy Entire Directory
 
-1. **Right-click on `src` folder** → "CodeSnap: Copy to Clipboard"
+1. **Right-click on `src` folder** → "ClipCode: Copy to Clipboard"
 
 2. **Verify**:
    - Paste into text editor
@@ -125,7 +125,7 @@ plugin-test/
 ### Test 4.2: Copy All Open Tabs
 
 1. **Right-click on any editor tab** (at the top)
-   - Look for "**CodeSnap: Copy All Open Tabs**"
+   - Look for "**ClipCode: Copy All Open Tabs**"
 
 2. **Click it**
 
@@ -137,7 +137,7 @@ plugin-test/
 ### Test 4.3: Test with No Tabs Open
 
 1. **Close all tabs** (click X on each tab)
-2. **Right-click in tab bar** → "CodeSnap: Copy All Open Tabs"
+2. **Right-click in tab bar** → "ClipCode: Copy All Open Tabs"
 3. **Verify**: Should see notification "No open tabs found to copy"
 
 ---
@@ -165,7 +165,7 @@ plugin-test/
    - Should see `Main.java` listed
 
 3. **Right-click on the file** in Changes view
-   - Look for "**CodeSnap: Copy Full Source**"
+   - Look for "**ClipCode: Copy Full Source**"
 
 4. **Click it**
 
@@ -190,11 +190,11 @@ plugin-test/
 4. **Stage some files** (drag to Staged or click checkbox)
 
 5. **Test in Staged section**:
-   - Right-click on staged file → "**CodeSnap: Copy Full Source**"
+   - Right-click on staged file → "**ClipCode: Copy Full Source**"
    - Should copy with `[MODIFIED]` or `[NEW]` label
 
 6. **Test in Unstaged section**:
-   - Right-click on unstaged file → "**CodeSnap: Copy Full Source**"
+   - Right-click on unstaged file → "**ClipCode: Copy Full Source**"
    - Should also work
 
 ### Test 5.4: Copy from Git Log Window
@@ -207,7 +207,7 @@ plugin-test/
 
 3. **In the commit details**, find changed files
 
-4. **Right-click on a file** → "**CodeSnap: Copy Full Source**"
+4. **Right-click on a file** → "**ClipCode: Copy Full Source**"
 
 5. **Verify**:
    - Should show change type label and file content
@@ -216,7 +216,7 @@ plugin-test/
 
 1. **In Commit/Changes window**:
    - Select multiple files (Ctrl+Click)
-   - Right-click → "CodeSnap: Copy Full Source"
+   - Right-click → "ClipCode: Copy Full Source"
 
 2. **Verify**: All files copied with their respective labels:
    ```
@@ -244,7 +244,7 @@ This is a **major feature** - restores files from clipboard content!
 
 3. **Paste and Restore**:
    - Right-click on project root
-   - Find "**CodeSnap: Paste and Restore Files**"
+   - Find "**ClipCode: Paste and Restore Files**"
    - Or press: `Ctrl+Shift+Alt+V`
 
 4. **Confirmation dialog**:
@@ -266,7 +266,7 @@ This is a **major feature** - restores files from clipboard content!
 
 3. **Paste and Restore**:
    - Right-click on project root
-   - "CodeSnap: Paste and Restore Files"
+   - "ClipCode: Paste and Restore Files"
 
 4. **Verify**:
    - All 3 files restored
@@ -278,11 +278,11 @@ This is a **major feature** - restores files from clipboard content!
 1. **Copy files from Git Changes**:
    - Make changes to files
    - In Git Changes window, select files
-   - Right-click → "CodeSnap: Copy Full Source"
+   - Right-click → "ClipCode: Copy Full Source"
    - Content will have labels like `[MODIFIED]`
 
 2. **Paste and Restore**:
-   - Right-click on project → "CodeSnap: Paste and Restore Files"
+   - Right-click on project → "ClipCode: Paste and Restore Files"
 
 3. **Verify**:
    - Labels are automatically stripped
@@ -294,7 +294,7 @@ This is a **major feature** - restores files from clipboard content!
 1. **Copy a file** (e.g., `Main.java`)
 
 2. **Paste and Restore** (file already exists):
-   - Right-click → "CodeSnap: Paste and Restore Files"
+   - Right-click → "ClipCode: Paste and Restore Files"
 
 3. **Overwrite confirmation**:
    - Dialog asks: "File exists: src/Main.java. Overwrite?"
@@ -313,7 +313,7 @@ This is a **major feature** - restores files from clipboard content!
    - IntelliJ IDEA → Preferences (Mac)
 
 2. **Navigate to**:
-   - Tools → CodeSnap Settings
+   - Tools → ClipCode Settings
 
 ### Test 7.2: Test PATH Filters (Include)
 
@@ -618,4 +618,4 @@ You've tested all plugin features!
 - Close the IDE window or press `Ctrl+C` in terminal
 
 **Plugin build location:**
-- `build/distributions/CodeSnap-1.0.0.zip`
+- `build/distributions/ClipCode-1.0.0.zip`

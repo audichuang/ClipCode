@@ -1,4 +1,4 @@
-# CodeSnap
+# ClipCode
 
 **The ultimate code sharing tool for IntelliJ IDEA** - Quickly copy file contents with smart formatting, perfect for sharing with AI assistants like ChatGPT, Claude, and Gemini.
 
@@ -14,30 +14,30 @@
 
 ### From JetBrains Marketplace
 1. Open **Settings** > **Plugins** > **Marketplace**
-2. Search for "CodeSnap"
+2. Search for "ClipCode"
 3. Click **Install**
 
 ### Manual Installation
-Download the [latest release](https://github.com/audichuang/codesnap/releases/latest) and install via **Settings** > **Plugins** > **Install Plugin from Disk...**
+Download the [latest release](https://github.com/audichuang/ClipCode/releases/latest) and install via **Settings** > **Plugins** > **Install Plugin from Disk...**
 
 ## Usage
 
 ### Copy Files
 1. Select files/folders in Project view
-2. Right-click > **CodeSnap: Copy to Clipboard**
+2. Right-click > **ClipCode: Copy to Clipboard**
 
 ### Copy from Git
 1. Open Git tool window (Commit, Changes, or Log view)
 2. Select changed files
-3. Right-click > **CodeSnap: Copy Full Source**
+3. Right-click > **ClipCode: Copy Full Source**
 
 ### Paste & Restore Files
-1. Copy content using CodeSnap from any source
-2. Right-click in Project view > **CodeSnap: Paste and Restore Files**
+1. Copy content using ClipCode from any source
+2. Right-click in Project view > **ClipCode: Paste and Restore Files**
 3. Or use keyboard shortcut: `Ctrl+Shift+Alt+V`
 
 ### Settings
-**Settings** > **CodeSnap Settings**
+**Settings** > **ClipCode Settings**
 - Customize header format with `$FILE_PATH` placeholder
 - Add pre/post text wrappers
 - Configure file limits and filters
