@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project Overview
+
+**CodeSnap** is an IntelliJ Platform plugin for copying file contents with smart formatting, perfect for sharing code with AI assistants.
+
+- **Repository**: https://github.com/audichuang/CodeSnap
+- **Plugin ID**: `com.github.audichuang.codesnap`
+- **Author**: audichuang (audiapplication880208@gmail.com)
+
 ## Common Development Commands
 
 ### Build and Run
@@ -12,6 +20,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Run IntelliJ IDEA with the plugin installed for testing
 ./gradlew runIde
 
+# Build plugin zip for distribution
+./gradlew buildPlugin
+# Output: build/distributions/CodeSnap-{version}.zip
+
 # Verify plugin compatibility with different IDE versions
 ./gradlew verifyPlugin
 
@@ -19,23 +31,63 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./gradlew clean
 ```
 
-### Release Management
-```bash
-# Create a new version and release (interactive script)
-./scripts/update_version.sh
+## Release Management (Automated via GitHub Actions)
 
-# The script will:
-# 1. Prompt to confirm change notes were updated in plugin.xml
-# 2. Allow specifying new version (or auto-increment)
-# 3. Update version in plugin.xml and gradle.properties
-# 4. Build the project
-# 5. Create git tag
-# 6. Optionally push to origin
+### How Releases Work
+When a version tag (e.g., `v1.0.1`) is pushed to GitHub, the `.github/workflows/release.yml` workflow automatically:
+1. Builds the plugin
+2. Extracts release notes from `plugin.xml` `<change-notes>` section
+3. Creates a GitHub Release with the zip file attached
+4. Users can download from https://github.com/audichuang/CodeSnap/releases
 
-# Manual build for distribution
-./gradlew buildPlugin
-# Output: build/distributions/CodeSnap-{version}.zip
+### Step-by-Step Release Process
+
+**Step 1: Update version in plugin.xml (SINGLE SOURCE OF TRUTH)**
+
+Edit `src/main/resources/META-INF/plugin.xml`:
+```xml
+<version>1.0.1</version>
+
+<change-notes><![CDATA[
+<h2>Version 1.0.1</h2>
+<ul>
+  <li>New feature A</li>
+  <li>Bug fix B</li>
+  <li>Improvement C</li>
+</ul>
+]]>
+</change-notes>
 ```
+
+**Step 2: Update version in gradle.properties**
+
+Edit `gradle.properties`:
+```properties
+pluginVersion=1.0.1
+```
+
+**Step 3: Commit and push to main**
+```bash
+git add -A
+git commit -m "Release v1.0.1 - Brief description"
+git push origin main
+```
+
+**Step 4: Create and push version tag**
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+**Step 5: Verify release**
+- Check GitHub Actions: https://github.com/audichuang/CodeSnap/actions
+- Check Releases page: https://github.com/audichuang/CodeSnap/releases
+
+### Important Notes
+- Version must be updated in TWO places: `plugin.xml` and `gradle.properties`
+- The `<change-notes>` content in plugin.xml becomes the GitHub Release description
+- Tag format must be `v{version}` (e.g., `v1.0.1`, `v2.0.0`)
+- Always test with `./gradlew build` before releasing
 
 ## Architecture Overview
 
@@ -58,6 +110,9 @@ This is an IntelliJ Platform plugin built with Kotlin and Gradle, targeting Inte
 
 **Plugin Configuration**
 - `plugin.xml`: Plugin descriptor with action registrations in multiple groups (CutCopyPasteGroup, EditorTabPopupMenu, ChangesViewPopupMenu, Vcs.Log.ContextMenu, Vcs.Log.ChangesBrowser.Popup, CopyReferencePopupGroup for Rider)
+
+**CI/CD**
+- `.github/workflows/release.yml`: Automated release workflow triggered by version tags
 
 ### Key Design Patterns
 
@@ -91,12 +146,10 @@ This is an IntelliJ Platform plugin built with Kotlin and Gradle, targeting Inte
    - Overwrite protection with user choice
    - Keyboard shortcut: `Ctrl+Shift+Alt+V`
 
-### Version Management
-- Version is maintained in two places (must be synchronized):
-  - `gradle.properties`: `pluginVersion` property
-  - `plugin.xml`: `<version>` tag
-- Change notes must be updated in `plugin.xml` before release
-- The `update_version.sh` script automates version synchronization and release workflow
+## Branch Strategy
 
-### Testing
+- `main`: Stable release branch, used for creating release tags
+- `dev`: Development branch for new features and fixes
+
+## Testing
 See `TESTING_GUIDE.md` for comprehensive manual testing procedures covering all plugin features.
