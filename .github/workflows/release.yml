@@ -38,16 +38,23 @@ jobs:
       - name: Extract change notes from plugin.xml
         id: changelog
         run: |
-          # Extract content between <change-notes><![CDATA[ and ]]></change-notes>
-          NOTES=$(sed -n '/<change-notes><!\[CDATA\[/,/\]\]><\/change-notes>/p' src/main/resources/META-INF/plugin.xml | \
-                  sed '1s/.*<!\[CDATA\[//' | \
-                  sed '$s/\]\]><\/change-notes>.*//' | \
-                  sed 's/^[[:space:]]*//')
+          # Extract content between <change-notes><![CDATA[ and ]]>
+          python3 << 'EOF'
+          import re
+          with open('src/main/resources/META-INF/plugin.xml', 'r') as f:
+              content = f.read()
+          # Match content between CDATA start and ]]> (they may be on separate lines)
+          match = re.search(r'<change-notes><!\[CDATA\[(.*?)\]\]>', content, re.DOTALL)
+          if match:
+              notes = match.group(1).strip()
+              with open('changelog.md', 'w') as f:
+                  f.write(notes)
+              print("Changelog extracted successfully")
+          else:
+              print("No changelog found")
+          EOF
 
-          # Write to file to preserve formatting
-          echo "$NOTES" > changelog.md
-
-          echo "Extracted changelog:"
+          echo "--- Changelog content ---"
           cat changelog.md
 
       - name: Create Release
