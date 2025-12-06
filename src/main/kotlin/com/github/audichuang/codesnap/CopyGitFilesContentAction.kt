@@ -1,4 +1,4 @@
-package com.github.mwguerra.copyfilecontent
+package com.github.audichuang.codesnap
 
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionUpdateThread

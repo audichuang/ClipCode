@@ -1,8 +1,8 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <version>1.0.2</version>
+    <version>1.0.0</version>
 
-    <id>com.github.mwguerra.copyfilecontent</id>
+    <id>com.github.audichuang.codesnap</id>
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.vcs</depends>
     <depends>Git4Idea</depends>
@@ -12,127 +12,81 @@
 
     <!-- https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html -->
     <description><![CDATA[
-    <p>The "Copy File Content" plugin enhances your workflow by allowing you to quickly copy the contents of selected files and directories to the clipboard, formatted according to customizable settings.</p>
-    <h2>This plugin is useful for:</h2>
+    <p><b>CodeSnap</b> - The ultimate code sharing tool for developers. Quickly copy file contents with smart formatting, perfect for sharing with AI assistants like ChatGPT, Claude, and Gemini.</p>
+    <h2>Key Features:</h2>
     <ul>
-        <li>Developers who frequently need to share their code via chat applications.</li>
-        <li>Developers who need to copy their code to build context for LLM apps like ChatGPT, Gemini, or Sapiens Chat.</li>
-    </ul>
-    <h2>Main features:</h2>
-    <ul>
-        <li>Copy the content of multiple files or directories to the clipboard.</li>
-        <li>Customizable text structure, including pre-text, file header text, and post-text.</li>
-        <li>Configurable file copying constraints (default is 30 files) to prevent memory issues with larger folders.</li>
-        <li>Optional file extension filters to specify which files should be copied.</li>
-        <li>Information on the copied items, including the number of files copied, total lines, total words, and an estimate of tokens (considering words and punctuation).</li>
+        <li>Copy multiple files/directories with customizable headers</li>
+        <li>Git integration: Copy from staging area, changes view, and commit history</li>
+        <li>Paste and restore: Recreate files from copied content</li>
+        <li>Advanced filtering: Include/exclude paths and patterns</li>
+        <li>Smart statistics: File count, lines, words, and token estimates</li>
     </ul>
     ]]>
     </description>
 
     <change-notes><![CDATA[
-    <h2>Version 1.0.1 - Bug Fix Release</h2>
-    <h3>🐛 Critical Bug Fixes</h3>
+    <h2>Version 1.0.0 - Initial Release</h2>
     <ul>
-      <li><b>Git Staging Area Support:</b> Fixed "Copy File Content (Full Source)" not appearing in Git Staging Area (Staged/Unstaged sections)</li>
-      <li><b>Multiple Change Labels Handling:</b> Fixed incorrect parsing when multiple change type labels appear in file paths (e.g., [MODIFIED] [NEW])</li>
-      <li><b>Deleted File Detection:</b> Fixed false positive detection when [DELETED] appears in directory names</li>
-      <li><b>No-Space Edge Case:</b> Fixed label stripping when no whitespace follows change type labels</li>
-    </ul>
-    <h3>✨ Improvements</h3>
-    <ul>
-      <li>Optimized regex pattern compilation for better performance when processing many files</li>
-      <li>Enhanced path validation to prevent invalid characters including square brackets</li>
-      <li>Added comprehensive debug logging for label stripping operations</li>
-      <li>Improved documentation with detailed edge case handling examples</li>
-    </ul>
-    <h3>🔧 Technical Changes</h3>
-    <ul>
-      <li>Integrated CommitWorkflowUi API for consistent Git UI support across Modal/Non-Modal/Staging modes</li>
-      <li>Pre-compiled regex patterns moved to companion object for performance</li>
-      <li>Added bracket validation in path normalization to catch un-stripped labels</li>
-    </ul>
-    <br/>
-    <h2>Version 1.0.0 - Major Release</h2>
-    <h3>🎉 New Features</h3>
-    <ul>
-      <li><b>Paste and Restore Files:</b> New reverse operation to restore files from clipboard content (Ctrl+Shift+Alt+V)</li>
-      <li><b>Advanced Filtering System:</b> Include/Exclude paths and file patterns with IDE file chooser integration</li>
-      <li><b>Pattern Matching:</b> Support for wildcards and regex in file name filters</li>
-      <li><b>Configurable File Size Limit:</b> Adjustable maximum file size for processing (default 500KB)</li>
-    </ul>
-    <h3>✨ Improvements</h3>
-    <ul>
-      <li>Upgraded to IntelliJ Platform 2024.3+ with Gradle Plugin 2.x</li>
-      <li>Enhanced UI with platform-standard components and theme support</li>
-      <li>Improved settings persistence and reliability</li>
-      <li>Better memory management with pre-allocated buffers</li>
-      <li>Multi-row selection support in filter table</li>
-    </ul>
-    <h3>🐛 Bug Fixes</h3>
-    <ul>
-      <li>Fixed filter rules not persisting after IDE restart</li>
-      <li>Fixed potential null pointer exceptions</li>
-      <li>Improved error handling and user feedback</li>
-    </ul>
-    <h3>🚀 Platform Support</h3>
-    <ul>
+      <li>Copy files and directories with customizable formatting</li>
+      <li>Git staging area and commit history support</li>
+      <li>Paste and restore files from clipboard</li>
+      <li>Advanced path and pattern filtering</li>
       <li>Supports IntelliJ IDEA 2024.3 to 2025.2</li>
-      <li>Kotlin 2.0.21 for better performance</li>
     </ul>
     ]]>
     </change-notes>
 
     <extensions defaultExtensionNs="com.intellij">
-        <notificationGroup id="Copy File Content" displayType="BALLOON" isLogByDefault="true" />
+        <notificationGroup id="CodeSnap" displayType="BALLOON" isLogByDefault="true" />
 
         <projectConfigurable
-            id="CopyFileContentConfigurable"
-            displayName="Copy File Content Settings"
-            instance="com.github.mwguerra.copyfilecontent.CopyFileContentConfigurable"/>
+            id="CodeSnapConfigurable"
+            displayName="CodeSnap Settings"
+            instance="com.github.audichuang.codesnap.CopyFileContentConfigurable"/>
     </extensions>
     <actions>
         <!-- For general IntelliJ IDEs -->
-        <action id="CopyFileContentContentsAction"
-                class="com.github.mwguerra.copyfilecontent.CopyFileContentAction"
-                text="Copy File Content to Clipboard"
+        <action id="CodeSnapCopyAction"
+                class="com.github.audichuang.codesnap.CopyFileContentAction"
+                text="CodeSnap: Copy to Clipboard"
                 description="Copy folder and file content to the clipboard.">
             <add-to-group group-id="CutCopyPasteGroup" anchor="after" relative-to-action="CopyPaths"/>
         </action>
-        <action id="CopyAllOpenTabsAction"
-                class="com.github.mwguerra.copyfilecontent.CopyAllOpenTabsAction"
-                text="Copy All Open Tabs Content to Clipboard"
+        <action id="CodeSnapCopyAllTabsAction"
+                class="com.github.audichuang.codesnap.CopyAllOpenTabsAction"
+                text="CodeSnap: Copy All Open Tabs"
                 description="Copy the content of all open editor tabs to the clipboard.">
             <add-to-group group-id="EditorTabPopupMenu" anchor="after" relative-to-action="CopyPaths"/>
         </action>
 
         <!-- For Rider -->
-        <action id="CopyFileContentContentsActionRider"
-                class="com.github.mwguerra.copyfilecontent.CopyFileContentAction"
-                text="Copy File Content to Clipboard"
+        <action id="CodeSnapCopyActionRider"
+                class="com.github.audichuang.codesnap.CopyFileContentAction"
+                text="CodeSnap: Copy to Clipboard"
                 description="Copy folder and file content to the clipboard.">
             <add-to-group group-id="CopyReferencePopupGroup" anchor="after" relative-to-action="CopyPaths"/>
         </action>
-        
+
         <!-- Paste and Restore Files Action -->
-        <action id="PasteAndRestoreFilesAction"
-                class="com.github.mwguerra.copyfilecontent.PasteAndRestoreFilesAction"
-                text="Paste and Restore Files from Clipboard"
+        <action id="CodeSnapPasteAction"
+                class="com.github.audichuang.codesnap.PasteAndRestoreFilesAction"
+                text="CodeSnap: Paste and Restore Files"
                 description="Parse clipboard content and restore files to the project.">
-            <add-to-group group-id="CutCopyPasteGroup" anchor="after" relative-to-action="CopyFileContentContentsAction"/>
+            <add-to-group group-id="CutCopyPasteGroup" anchor="after" relative-to-action="CodeSnapCopyAction"/>
             <add-to-group group-id="ProjectViewPopupMenu" anchor="after" relative-to-action="$Paste"/>
             <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift alt V"/>
         </action>
 
         <!-- Git Changes Copy Action - Copy full file content (not diff patch) -->
-        <action id="CopyGitFilesContentAction"
-                class="com.github.mwguerra.copyfilecontent.CopyGitFilesContentAction"
-                text="Copy File Content (Full Source)"
-                description="Copy the complete file content of selected changes with change type labels ([NEW], [MODIFIED], [DELETED]). Different from 'Copy as Patch' which only shows diff.">
+        <action id="CodeSnapGitCopyAction"
+                class="com.github.audichuang.codesnap.CopyGitFilesContentAction"
+                text="CodeSnap: Copy Full Source"
+                description="Copy the complete file content of selected changes with change type labels ([NEW], [MODIFIED], [DELETED]).">
             <!-- Local Changes window (Commit tool window) -->
             <add-to-group group-id="ChangesViewPopupMenu" anchor="after" relative-to-action="CopyPaths"/>
             <!-- Git Log window (Version Control history) -->
             <add-to-group group-id="Vcs.Log.ContextMenu" anchor="after" relative-to-action="CopyPaths"/>
-            <!-- Git Log - Changed Files Browser (文件面板) -->
+            <!-- Git Log - Changed Files Browser -->
             <add-to-group group-id="Vcs.Log.ChangesBrowser.Popup" anchor="after" relative-to-action="CopyPaths"/>
             <!-- Git Staging Area - Unstaged files -->
             <add-to-group group-id="Git.Stage.Local.File.Menu" anchor="last"/>

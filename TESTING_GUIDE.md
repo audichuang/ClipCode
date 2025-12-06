@@ -1,10 +1,10 @@
-# 🧪 Complete Testing Guide - Copy File Content Plugin
+# Complete Testing Guide - CodeSnap Plugin
 
-This guide shows how to test **all** plugin functionalities locally, including features from v1.0.0 and v1.0.1.
+This guide shows how to test **all** plugin functionalities locally.
 
 ---
 
-## 🚀 Step 1: Launch the Plugin in Sandbox IDE
+## Step 1: Launch the Plugin in Sandbox IDE
 
 ### Start the Development IDE
 
@@ -22,7 +22,7 @@ This guide shows how to test **all** plugin functionalities locally, including f
 
 ---
 
-## 📋 Step 2: Create a Test Project in Sandbox
+## Step 2: Create a Test Project in Sandbox
 
 Once the sandbox IDE opens:
 
@@ -54,20 +54,20 @@ plugin-test/
 
 ---
 
-## ✅ Step 3: Test Core Feature - Copy from Project Tree
+## Step 3: Test Core Feature - Copy from Project Tree
 
 ### Test 3.1: Copy Single File
 
 1. **Select file** in Project tree (left sidebar)
    - Click on `Main.java`
 
-2. **Right-click** → Find "**Copy File Content to Clipboard**"
+2. **Right-click** → Find "**CodeSnap: Copy to Clipboard**"
    - Should appear after "Copy Path" in the context menu
 
 3. **Verify**:
    - Open any text editor (Notepad, VS Code, etc.)
    - Paste (Ctrl+V / Cmd+V)
-   - ✅ You should see:
+   - You should see:
      ```
      // file: src/Main.java
      [your Java code here]
@@ -84,11 +84,11 @@ plugin-test/
    - Hold `Ctrl` (or `Cmd` on Mac)
    - Click `Main.java`, `Config.properties`, `README.md`
 
-2. **Right-click** → "Copy File Content to Clipboard"
+2. **Right-click** → "CodeSnap: Copy to Clipboard"
 
 3. **Verify**:
    - Paste into text editor
-   - ✅ Should see all 3 files with headers:
+   - Should see all 3 files with headers:
      ```
      // file: src/Main.java
      [Java code]
@@ -102,16 +102,16 @@ plugin-test/
 
 ### Test 3.3: Copy Entire Directory
 
-1. **Right-click on `src` folder** → "Copy File Content to Clipboard"
+1. **Right-click on `src` folder** → "CodeSnap: Copy to Clipboard"
 
 2. **Verify**:
    - Paste into text editor
-   - ✅ Should see all files in `src/` and `src/utils/`
+   - Should see all files in `src/` and `src/utils/`
    - Files appear in order with paths
 
 ---
 
-## 🆕 Step 4: Test Feature - Copy All Open Tabs
+## Step 4: Test Feature - Copy All Open Tabs
 
 ### Test 4.1: Open Multiple Files
 
@@ -125,24 +125,24 @@ plugin-test/
 ### Test 4.2: Copy All Open Tabs
 
 1. **Right-click on any editor tab** (at the top)
-   - Look for "**Copy All Open Tabs Content to Clipboard**"
+   - Look for "**CodeSnap: Copy All Open Tabs**"
 
 2. **Click it**
 
 3. **Verify**:
    - Paste into text editor
-   - ✅ Should see content from all 3 open files
+   - Should see content from all 3 open files
    - Order matches tab order (left to right)
 
 ### Test 4.3: Test with No Tabs Open
 
 1. **Close all tabs** (click X on each tab)
-2. **Right-click in tab bar** → "Copy All Open Tabs Content to Clipboard"
+2. **Right-click in tab bar** → "CodeSnap: Copy All Open Tabs"
 3. **Verify**: Should see notification "No open tabs found to copy"
 
 ---
 
-## 🆕 Step 5: Test Git Features - Copy from VCS/Git Windows
+## Step 5: Test Git Features - Copy from VCS/Git Windows
 
 ### Test 5.1: Initialize Git
 
@@ -165,16 +165,16 @@ plugin-test/
    - Should see `Main.java` listed
 
 3. **Right-click on the file** in Changes view
-   - Look for "**Copy File Content (Full Source)**"
+   - Look for "**CodeSnap: Copy Full Source**"
 
 4. **Click it**
 
 5. **Verify**:
    - Paste into text editor
-   - ✅ Should see: `// file: [MODIFIED] src/Main.java`
+   - Should see: `// file: [MODIFIED] src/Main.java`
    - Content shows current file content with change type label
 
-### Test 5.3: Copy from Git Staging Area (v1.0.1)
+### Test 5.3: Copy from Git Staging Area
 
 1. **Enable Git Staging** (if not already):
    - Settings → Version Control → Git → Enable staging area
@@ -190,12 +190,12 @@ plugin-test/
 4. **Stage some files** (drag to Staged or click checkbox)
 
 5. **Test in Staged section**:
-   - Right-click on staged file → "**Copy File Content (Full Source)**"
-   - ✅ Should copy with `[MODIFIED]` or `[NEW]` label
+   - Right-click on staged file → "**CodeSnap: Copy Full Source**"
+   - Should copy with `[MODIFIED]` or `[NEW]` label
 
 6. **Test in Unstaged section**:
-   - Right-click on unstaged file → "**Copy File Content (Full Source)**"
-   - ✅ Should also work
+   - Right-click on unstaged file → "**CodeSnap: Copy Full Source**"
+   - Should also work
 
 ### Test 5.4: Copy from Git Log Window
 
@@ -207,16 +207,16 @@ plugin-test/
 
 3. **In the commit details**, find changed files
 
-4. **Right-click on a file** → "**Copy File Content (Full Source)**"
+4. **Right-click on a file** → "**CodeSnap: Copy Full Source**"
 
 5. **Verify**:
-   - ✅ Should show change type label and file content
+   - Should show change type label and file content
 
 ### Test 5.5: Copy Multiple Changed Files
 
 1. **In Commit/Changes window**:
    - Select multiple files (Ctrl+Click)
-   - Right-click → "Copy File Content (Full Source)"
+   - Right-click → "CodeSnap: Copy Full Source"
 
 2. **Verify**: All files copied with their respective labels:
    ```
@@ -229,82 +229,82 @@ plugin-test/
 
 ---
 
-## 🆕 Step 6: Test Paste and Restore Files (v1.0.0)
+## Step 6: Test Paste and Restore Files
 
-This is a **major new feature** - restores files from clipboard content!
+This is a **major feature** - restores files from clipboard content!
 
 ### Test 6.1: Copy and Restore Single File
 
 1. **Copy a file**:
    - Right-click `Main.java` in Project tree
-   - "Copy File Content to Clipboard"
+   - "CodeSnap: Copy to Clipboard"
 
 2. **Delete the file** (for testing):
    - Right-click `Main.java` → Delete → OK
 
 3. **Paste and Restore**:
    - Right-click on project root
-   - Find "**Paste and Restore Files from Clipboard**"
+   - Find "**CodeSnap: Paste and Restore Files**"
    - Or press: `Ctrl+Shift+Alt+V`
 
 4. **Confirmation dialog**:
-   - ✅ Should show: "Found 1 file(s) to restore: • src/Main.java"
+   - Should show: "Found 1 file(s) to restore: • src/Main.java"
    - Click "Yes"
 
 5. **Verify**:
-   - ✅ File `Main.java` is recreated
-   - ✅ Content matches original
-   - ✅ Directory structure created automatically
+   - File `Main.java` is recreated
+   - Content matches original
+   - Directory structure created automatically
 
 ### Test 6.2: Restore Multiple Files with Directories
 
 1. **Copy multiple files**:
    - Select `Main.java`, `utils/Helper.java`, `README.md`
-   - Right-click → "Copy File Content to Clipboard"
+   - Right-click → "CodeSnap: Copy to Clipboard"
 
 2. **Delete all selected files**
 
 3. **Paste and Restore**:
    - Right-click on project root
-   - "Paste and Restore Files from Clipboard"
+   - "CodeSnap: Paste and Restore Files"
 
 4. **Verify**:
-   - ✅ All 3 files restored
-   - ✅ Directory `utils/` created automatically
-   - ✅ Files in correct locations
+   - All 3 files restored
+   - Directory `utils/` created automatically
+   - Files in correct locations
 
-### Test 6.3: Restore with Git Change Labels (v1.0.1)
+### Test 6.3: Restore with Git Change Labels
 
 1. **Copy files from Git Changes**:
    - Make changes to files
    - In Git Changes window, select files
-   - Right-click → "Copy File Content (Full Source)"
+   - Right-click → "CodeSnap: Copy Full Source"
    - Content will have labels like `[MODIFIED]`
 
 2. **Paste and Restore**:
-   - Right-click on project → "Paste and Restore Files from Clipboard"
+   - Right-click on project → "CodeSnap: Paste and Restore Files"
 
 3. **Verify**:
-   - ✅ Labels are automatically stripped
-   - ✅ Files created with correct paths
-   - ✅ `[DELETED]` files are skipped with notification
+   - Labels are automatically stripped
+   - Files created with correct paths
+   - `[DELETED]` files are skipped with notification
 
 ### Test 6.4: Overwrite Protection
 
 1. **Copy a file** (e.g., `Main.java`)
 
 2. **Paste and Restore** (file already exists):
-   - Right-click → "Paste and Restore Files from Clipboard"
+   - Right-click → "CodeSnap: Paste and Restore Files"
 
 3. **Overwrite confirmation**:
-   - ✅ Dialog asks: "File exists: src/Main.java. Overwrite?"
+   - Dialog asks: "File exists: src/Main.java. Overwrite?"
    - Choose "Yes" or "No to All"
 
 4. **Verify** behavior matches choice
 
 ---
 
-## 🆕 Step 7: Test Advanced Filtering System (v1.0.0)
+## Step 7: Test Advanced Filtering System
 
 ### Test 7.1: Open Settings
 
@@ -313,7 +313,7 @@ This is a **major new feature** - restores files from clipboard content!
    - IntelliJ IDEA → Preferences (Mac)
 
 2. **Navigate to**:
-   - Tools → Copy File Content Settings
+   - Tools → CodeSnap Settings
 
 ### Test 7.2: Test PATH Filters (Include)
 
@@ -325,7 +325,7 @@ This is a **major new feature** - restores files from clipboard content!
    - Click OK
 
 3. **Table shows**:
-   - Enabled: ✓
+   - Enabled: checked
    - Type: PATH
    - Action: INCLUDE
    - Value: `src/utils`
@@ -335,11 +335,11 @@ This is a **major new feature** - restores files from clipboard content!
    - Click "Apply"
 
 5. **Copy entire project**:
-   - Right-click on project root → "Copy File Content to Clipboard"
+   - Right-click on project root → "CodeSnap: Copy to Clipboard"
 
 6. **Verify**:
-   - ✅ Only files in `src/utils/` are copied
-   - ✅ Files outside `src/utils/` are skipped
+   - Only files in `src/utils/` are copied
+   - Files outside `src/utils/` are skipped
 
 ### Test 7.3: Test PATTERN Filters (Exclude)
 
@@ -360,8 +360,8 @@ This is a **major new feature** - restores files from clipboard content!
 4. **Copy files including README.md**
 
 5. **Verify**:
-   - ✅ `README.md` is skipped
-   - ✅ `.java` files are copied
+   - `README.md` is skipped
+   - `.java` files are copied
 
 ### Test 7.4: Test Individual Rule Toggle
 
@@ -370,8 +370,8 @@ This is a **major new feature** - restores files from clipboard content!
 2. **Copy files**
 
 3. **Verify**:
-   - ✅ Disabled rules are not applied
-   - ✅ Only enabled rules affect copy
+   - Disabled rules are not applied
+   - Only enabled rules affect copy
 
 ### Test 7.5: Test Multiple Rules
 
@@ -383,13 +383,13 @@ This is a **major new feature** - restores files from clipboard content!
 2. **Copy entire project**
 
 3. **Verify**:
-   - ✅ Only files in `src/`
-   - ✅ No `.properties` files
-   - ✅ No files starting with `Test`
+   - Only files in `src/`
+   - No `.properties` files
+   - No files starting with `Test`
 
 ---
 
-## ⚙️ Step 8: Test Other Settings
+## Step 8: Test Other Settings
 
 ### Test 8.1: Test Header Format
 
@@ -401,7 +401,7 @@ This is a **major new feature** - restores files from clipboard content!
 2. **Copy a file**
 
 3. **Verify**:
-   - ✅ Header now shows `### src/Main.java ###`
+   - Header now shows `### src/Main.java ###`
 
 ### Test 8.2: Test Pre/Post Text
 
@@ -413,8 +413,8 @@ This is a **major new feature** - restores files from clipboard content!
 2. **Copy multiple files**
 
 3. **Verify**:
-   - ✅ Output starts with `=== START OF FILES ===`
-   - ✅ Output ends with `=== END OF FILES ===`
+   - Output starts with `=== START OF FILES ===`
+   - Output ends with `=== END OF FILES ===`
 
 ### Test 8.3: Test File Count Limit
 
@@ -429,8 +429,8 @@ This is a **major new feature** - restores files from clipboard content!
 3. **Try to copy 5 files**
 
 4. **Verify**:
-   - ✅ Only 2 files copied
-   - ✅ Warning notification: "File Limit Reached"
+   - Only 2 files copied
+   - Warning notification: "File Limit Reached"
 
 ### Test 8.4: Test File Size Limit
 
@@ -442,12 +442,12 @@ This is a **major new feature** - restores files from clipboard content!
 3. **Try to copy it**
 
 4. **Verify**:
-   - ✅ File is skipped
-   - ✅ Notification or log message
+   - File is skipped
+   - Notification or log message
 
 ---
 
-## 🔍 Step 9: Advanced Testing Scenarios
+## Step 9: Advanced Testing Scenarios
 
 ### Test 9.1: External Library / JAR Files
 
@@ -459,8 +459,8 @@ This is a **major new feature** - restores files from clipboard content!
    - Try to copy a file from JAR
 
 3. **Verify**:
-   - ✅ Path is cleaned and readable
-   - ✅ No crash or error
+   - Path is cleaned and readable
+   - No crash or error
 
 ### Test 9.2: Binary File Handling
 
@@ -470,7 +470,7 @@ This is a **major new feature** - restores files from clipboard content!
 2. **Try to copy it**
 
 3. **Verify**:
-   - ✅ Binary files are skipped automatically
+   - Binary files are skipped automatically
 
 ### Test 9.3: Empty File
 
@@ -479,8 +479,8 @@ This is a **major new feature** - restores files from clipboard content!
 2. **Copy it**
 
 3. **Verify**:
-   - ✅ Header appears: `// file: Empty.txt`
-   - ✅ Content section is empty (no crash)
+   - Header appears: `// file: Empty.txt`
+   - Content section is empty (no crash)
 
 ### Test 9.4: Special Characters in Path
 
@@ -489,9 +489,9 @@ This is a **major new feature** - restores files from clipboard content!
 2. **Copy it**
 
 3. **Verify**:
-   - ✅ Path correctly shows: `// file: src/My File.java`
+   - Path correctly shows: `// file: src/My File.java`
 
-### Test 9.5: Multiple Change Type Labels (v1.0.1 Bug Fix)
+### Test 9.5: Multiple Change Type Labels
 
 1. **Manually create clipboard content** with multiple labels:
    ```
@@ -502,13 +502,13 @@ This is a **major new feature** - restores files from clipboard content!
 2. **Paste and Restore**
 
 3. **Verify**:
-   - ✅ Both labels stripped correctly
-   - ✅ File created at `src/Test.java`
-   - ✅ No `[MODIFIED]` or `[NEW]` in path
+   - Both labels stripped correctly
+   - File created at `src/Test.java`
+   - No `[MODIFIED]` or `[NEW]` in path
 
 ---
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### Issue: Context menu option not appearing
 
@@ -539,7 +539,7 @@ This is a **major new feature** - restores files from clipboard content!
 
 ---
 
-## 📊 Complete Testing Checklist
+## Complete Testing Checklist
 
 **Core Features:**
 - [ ] Copy single file from Project tree
@@ -552,14 +552,14 @@ This is a **major new feature** - restores files from clipboard content!
 - [ ] Correct order (left to right)
 - [ ] Handles "no tabs open" gracefully
 
-**Git Integration (v1.0.1):**
+**Git Integration:**
 - [ ] Copy from Git Changes view with labels
 - [ ] Copy from Git Staging Area (Staged section)
 - [ ] Copy from Git Staging Area (Unstaged section)
 - [ ] Copy from Git Log window
 - [ ] Labels appear correctly: [NEW], [MODIFIED], [DELETED], [MOVED]
 
-**Paste and Restore (v1.0.0):**
+**Paste and Restore:**
 - [ ] Restore single file from clipboard
 - [ ] Restore multiple files with directories
 - [ ] Automatic directory creation
@@ -567,7 +567,7 @@ This is a **major new feature** - restores files from clipboard content!
 - [ ] Works with Git change labels
 - [ ] Skips [DELETED] files
 
-**Advanced Filtering (v1.0.0):**
+**Advanced Filtering:**
 - [ ] PATH include filters work
 - [ ] PATH exclude filters work
 - [ ] PATTERN include filters work
@@ -590,11 +590,11 @@ This is a **major new feature** - restores files from clipboard content!
 - [ ] Empty files handled
 - [ ] Files with spaces in name work
 - [ ] External library files work
-- [ ] Multiple labels stripped correctly (v1.0.1)
+- [ ] Multiple labels stripped correctly
 
 ---
 
-## 🎯 Quick Test (5 Minutes)
+## Quick Test (5 Minutes)
 
 ```bash
 # 1. Start sandbox
@@ -610,12 +610,12 @@ This is a **major new feature** - restores files from clipboard content!
 
 ---
 
-## 🎉 Done!
+## Done!
 
-You've tested all plugin features including v1.0.0 and v1.0.1 enhancements!
+You've tested all plugin features!
 
 **To stop the sandbox IDE:**
 - Close the IDE window or press `Ctrl+C` in terminal
 
 **Plugin build location:**
-- `build/distributions/copy-file-content-1.0.1.zip`
+- `build/distributions/CodeSnap-1.0.0.zip`

@@ -1,4 +1,4 @@
-package com.github.mwguerra.copyfilecontent
+package com.github.audichuang.codesnap
 
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.AnAction
@@ -82,7 +82,7 @@ class PasteAndRestoreFilesAction : AnAction() {
 
         if (parsedFiles.isEmpty()) {
             CopyFileContentAction.showNotification(
-                "No files found in clipboard content. Make sure the content was copied using Copy File Content plugin.",
+                "No files found in clipboard content. Make sure the content was copied using CodeSnap plugin.",
                 NotificationType.WARNING,
                 project
             )

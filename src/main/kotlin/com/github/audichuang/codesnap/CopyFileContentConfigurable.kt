@@ -1,4 +1,4 @@
-package com.github.mwguerra.copyfilecontent
+package com.github.audichuang.codesnap
 
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.project.Project
@@ -568,7 +568,7 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
         }
     }
 
-    override fun getDisplayName(): String = "Copy File Content Settings"
+    override fun getDisplayName(): String = "CodeSnap Settings"
 
     override fun reset() {
         settings?.let {

@@ -58,17 +58,20 @@ intellijPlatform {
         name = properties("pluginName")
         version = properties("pluginVersion")
         description = """
-            Copy File Content is a powerful IntelliJ IDEA plugin that enhances your workflow by allowing you to quickly copy
-            and restore file contents with advanced filtering capabilities. Perfect for sharing code, working with AI assistants,
-            and managing code snippets across projects.
+            CodeSnap - The ultimate code sharing tool for developers. Quickly copy file contents with smart formatting,
+            perfect for sharing with AI assistants like ChatGPT, Claude, and Gemini. Features Git integration,
+            paste-and-restore, and advanced filtering.
         """.trimIndent()
 
         changeNotes = """
-            <h2>Version 1.0.0 - Major Release</h2>
-            <b>New Features:</b> Paste and Restore Files, Advanced Filtering System, Pattern Matching<br>
-            <b>Improvements:</b> Platform 2024.3+ support, Enhanced UI, Better performance<br>
-            <b>Bug Fixes:</b> Settings persistence, null safety, error handling<br>
-            See full changelog at: https://github.com/mwguerra/copy-file-content
+            <h2>Version 1.0.0 - Initial Release</h2>
+            <ul>
+              <li>Copy files and directories with customizable formatting</li>
+              <li>Git staging area and commit history support</li>
+              <li>Paste and restore files from clipboard</li>
+              <li>Advanced path and pattern filtering</li>
+            </ul>
+            See full changelog at: https://github.com/audichuang/codesnap
         """.trimIndent()
 
         ideaVersion {

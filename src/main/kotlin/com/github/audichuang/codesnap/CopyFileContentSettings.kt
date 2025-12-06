@@ -1,4 +1,4 @@
-package com.github.mwguerra.copyfilecontent
+package com.github.audichuang.codesnap
 
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.Service

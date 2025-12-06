@@ -1,98 +1,58 @@
 # Contributors
 
-Thank you to everyone who has contributed to the Copy File Content plugin! 🎉
-
-This project is made better by the community, and we appreciate all contributions, whether they're code, documentation, bug reports, or feature suggestions.
+Thank you to everyone who has contributed to CodeSnap!
 
 ---
 
-## Core Team
+## Maintainer
+
+### audichuang
+- **GitHub**: [@audichuang](https://github.com/audichuang)
+- **Email**: audiapplication880208@gmail.com
+- **Role**: Current Maintainer
+- **Contributions**:
+  - Git Staging Area and Log support
+  - Paste and Restore Files feature
+  - Advanced filtering system
+  - IntelliJ 2025.2 compatibility
+  - Complete plugin rebranding
+
+---
+
+## Original Author
 
 ### Marcelo W. Guerra
-- **Email**: mwguerra@gmail.com
-- **Website**: https://mwguerra.com
 - **GitHub**: [@mwguerra](https://github.com/mwguerra)
-- **Role**: Creator & Maintainer
-- **Contributions**: Project creation, core features, ongoing maintenance
+- **Role**: Original Creator
+- **Contributions**: Initial project creation and core features
 
 ---
 
 ## Contributors
 
-Listed in alphabetical order by GitHub username:
-
-### audichuang (Audi Chuang)
-- **GitHub**: [@audichuang](https://github.com/audichuang)
-- **Contributions**:
-  - Git Staging Area support (v1.0.1)
-  - Paste and Restore Files feature (v1.0.0)
-  - Advanced filtering system with PATH and PATTERN matching (v1.0.0)
-  - External library handler for JAR files (v1.0.0)
-  - Multiple change type label handling
-  - Critical bug fixes for label parsing and path validation
-
 ### availe
 - **GitHub**: [@availe](https://github.com/availe)
-- **Contributions**:
-  - In-memory file reading feature (PR #10)
-  - Project dependencies update (PR #9)
-  - Performance improvements
+- **Contributions**: In-memory file reading, performance improvements
 
-### RemusRD (Remus Richard Dumitrache)
-- **Email**: hello@remusrd.com
+### RemusRD
 - **GitHub**: [@RemusRD](https://github.com/RemusRD)
-- **Contributions**:
-  - Added "Copy All Open Tabs" action feature (PR #6)
-  - Context menu integration for editor tabs
+- **Contributions**: "Copy All Open Tabs" feature
 
 ### SafEight
 - **GitHub**: [@SafEight](https://github.com/SafEight)
-- **Contributions**:
-  - VCS integration - Copy button in commits window (PR #7)
-  - Enhanced version control workflow
+- **Contributions**: VCS integration
 
-### sinaa (Sina)
-- **Email**: dev@sina.sh
+### sinaa
 - **GitHub**: [@sinaa](https://github.com/sinaa)
-- **Contributions**:
-  - Updated plugin compatibility for IntelliJ IDEA 2024.2 (PR #1)
-  - Version support improvements
+- **Contributions**: IntelliJ 2024.2 compatibility
 
 ---
 
 ## How to Contribute
 
-We welcome contributions! Here's how you can help:
-
-1. **Report Bugs**: Open an issue on [GitHub Issues](https://github.com/mwguerra/copy-file-content/issues)
-2. **Suggest Features**: Share your ideas in [GitHub Discussions](https://github.com/mwguerra/copy-file-content/discussions)
-3. **Submit Pull Requests**:
-   - Fork the repository
-   - Create a feature branch
-   - Make your changes
-   - Submit a PR with a clear description
-
-### Adding Yourself to This File
-
-If you've contributed to the project, please add yourself to this file in your PR! Follow this format:
-
-```markdown
-### Your Name
-- **Email**: your.email@example.com (optional)
-- **GitHub**: @yourusername (optional)
-- **Contributions**:
-  - Description of your contribution
-  - Another contribution if applicable
-```
+1. **Report Bugs**: Open an issue on [GitHub Issues](https://github.com/audichuang/codesnap/issues)
+2. **Submit Pull Requests**: Fork, create a branch, and submit a PR
 
 ---
 
-## Special Thanks
-
-- All users who report bugs and suggest improvements
-- Everyone who shares the plugin with others
-- The JetBrains team for the excellent IntelliJ Platform
-
----
-
-**Want to see your name here?** Start contributing today! Check out our [GitHub repository](https://github.com/mwguerra/copy-file-content) to get started.
+**Want to contribute?** Check out our [GitHub repository](https://github.com/audichuang/codesnap)!

@@ -1,4 +1,4 @@
-package com.github.mwguerra.copyfilecontent
+package com.github.audichuang.codesnap
 
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.impl.LoadTextUtil
