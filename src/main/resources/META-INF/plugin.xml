@@ -1,14 +1,14 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
 
     <id>com.github.mwguerra.copyfilecontent</id>
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.vcs</depends>
     <depends>Git4Idea</depends>
 
-    <name>Copy File Content</name>
-    <vendor email="mwguerra@gmail.com" url="https://mwguerra.com">Marcelo W. Guerra</vendor>
+    <name>CodeSnap</name>
+    <vendor email="audiapplication880208@gmail.com" url="https://github.com/audichuang">audichuang</vendor>
 
     <!-- https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html -->
     <description><![CDATA[
@@ -132,6 +132,8 @@
             <add-to-group group-id="ChangesViewPopupMenu" anchor="after" relative-to-action="CopyPaths"/>
             <!-- Git Log window (Version Control history) -->
             <add-to-group group-id="Vcs.Log.ContextMenu" anchor="after" relative-to-action="CopyPaths"/>
+            <!-- Git Log - Changed Files Browser (文件面板) -->
+            <add-to-group group-id="Vcs.Log.ChangesBrowser.Popup" anchor="after" relative-to-action="CopyPaths"/>
             <!-- Git Staging Area - Unstaged files -->
             <add-to-group group-id="Git.Stage.Local.File.Menu" anchor="last"/>
             <!-- Git Staging Area - Staged files -->

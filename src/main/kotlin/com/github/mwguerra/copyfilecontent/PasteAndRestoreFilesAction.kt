@@ -32,6 +32,12 @@ class PasteAndRestoreFilesAction : AnAction() {
          * Used for determining isDeleted flag to avoid false positives.
          */
         private val FIRST_LABEL_PATTERN = Regex("^\\[(NEW|MODIFIED|DELETED|MOVED)\\]")
+
+        /**
+         * Generic fallback pattern to detect "file:" headers regardless of prefix style.
+         * Matches: // file: xxx, # file: xxx, file: xxx, etc.
+         */
+        private val GENERIC_FILE_HEADER = Regex("^(?://|#|/\\*)?\\s*file:\\s*(.+?)\\s*(?:\\*/)?$", RegexOption.IGNORE_CASE)
     }
 
     data class ParsedFile(
@@ -131,39 +137,96 @@ class PasteAndRestoreFilesAction : AnAction() {
         // Get project root
         val projectRoot = com.intellij.openapi.roots.ProjectRootManager.getInstance(project)
             .contentRoots.firstOrNull()
-        
+
         if (projectRoot == null) {
             CopyFileContentAction.showNotification(
-                "Could not find project root directory.", 
-                NotificationType.ERROR, 
+                "Could not find project root directory.",
+                NotificationType.ERROR,
                 project
             )
             return
         }
-        
+
+        // Pre-check which files already exist (BEFORE WriteCommandAction)
+        val existingFiles = mutableListOf<String>()
+        for (parsedFile in filesToCreate) {
+            val relativePath = normalizePathForCurrentPlatform(parsedFile.path.trim())
+            if (relativePath.isEmpty()) continue
+
+            val pathParts = relativePath.split("/")
+            val fileName = pathParts.last()
+            val directoryPath = pathParts.dropLast(1).joinToString("/")
+
+            // Navigate to the target directory (if it exists)
+            var currentDir: VirtualFile? = projectRoot
+            if (directoryPath.isNotEmpty()) {
+                val dirParts = directoryPath.split("/").filter { it.isNotEmpty() }
+                for (dirName in dirParts) {
+                    currentDir = currentDir?.findChild(dirName)
+                    if (currentDir == null || !currentDir.isDirectory) break
+                }
+            }
+
+            // Check if file exists
+            if (currentDir != null && currentDir.findChild(fileName) != null) {
+                existingFiles.add(relativePath)
+            }
+        }
+
+        // Show single dialog for all existing files (OUTSIDE WriteCommandAction)
+        var overwriteAll = false
+        var skipAll = false
+
+        if (existingFiles.isNotEmpty()) {
+            val existingList = existingFiles.take(10).joinToString("\n") { "• $it" }
+            val moreNote = if (existingFiles.size > 10) "\n... and ${existingFiles.size - 10} more" else ""
+            val dialogMessage = "The following ${existingFiles.size} file(s) already exist:\n\n$existingList$moreNote\n\nWhat would you like to do?"
+
+            val result = Messages.showDialog(
+                project,
+                dialogMessage,
+                "Files Already Exist",
+                arrayOf("Overwrite All", "Skip Existing", "Cancel"),
+                0,
+                Messages.getWarningIcon()
+            )
+
+            when (result) {
+                0 -> overwriteAll = true  // Overwrite All
+                1 -> skipAll = true       // Skip Existing
+                else -> return            // Cancel
+            }
+        }
+
         // Create files
         var successCount = 0
+        var skipCount = 0
         var failCount = 0
         val errors = mutableListOf<String>()
-        
+
         ApplicationManager.getApplication().invokeLater {
             WriteCommandAction.runWriteCommandAction(project) {
                 filesToCreate.forEach { parsedFile ->
                     try {
-                        createFile(project, projectRoot, parsedFile)
-                        successCount++
+                        val created = createFile(project, projectRoot, parsedFile, overwriteAll, skipAll)
+                        if (created) {
+                            successCount++
+                        } else {
+                            skipCount++
+                        }
                     } catch (e: Exception) {
                         failCount++
                         errors.add("${parsedFile.path}: ${e.message}")
                         logger.error("Failed to create file: ${parsedFile.path}", e)
                     }
                 }
-                
+
                 // Show result notification
                 if (successCount > 0) {
+                    val skipNote = if (skipCount > 0) " ($skipCount skipped)" else ""
                     CopyFileContentAction.showNotification(
-                        "<html><b>Successfully restored $successCount file(s)</b></html>", 
-                        NotificationType.INFORMATION, 
+                        "<html><b>Successfully restored $successCount file(s)$skipNote</b></html>",
+                        NotificationType.INFORMATION,
                         project
                     )
                 }
@@ -171,7 +234,7 @@ class PasteAndRestoreFilesAction : AnAction() {
                 if (failCount > 0) {
                     val errorMessage = "<html><b>Failed to restore $failCount file(s):</b><br>" +
                         errors.take(5).joinToString("<br>") { it } +
-                        if (errors.size > 5) "<br>..." else "" +
+                        (if (errors.size > 5) "<br>..." else "") +
                         "</html>"
                     CopyFileContentAction.showNotification(
                         errorMessage, 
@@ -199,7 +262,7 @@ class PasteAndRestoreFilesAction : AnAction() {
     
     private fun parseClipboardContent(content: String, headerFormat: String): List<ParsedFile> {
         val files = mutableListOf<ParsedFile>()
-        
+
         // Convert header format to regex pattern
         val headerPattern = headerFormat
             .replace("$", "\\$")
@@ -214,38 +277,39 @@ class PasteAndRestoreFilesAction : AnAction() {
             .replace("{", "\\{")
             .replace("}", "\\}")
             .replace("\\\$FILE_PATH", "(.+)")
-        
-        val regex = Regex(headerPattern)
+
+        val customRegex = Regex(headerPattern)
         val lines = content.lines()
-        
+
         var currentFilePath: String? = null
         var currentIsDeleted = false
-        val currentContent = StringBuilder(512) // Pre-allocate for better performance
+        val currentContent = StringBuilder(512)
 
         for (line in lines) {
-            val match = regex.find(line)
+            // Try custom pattern first, then fallback to generic pattern
+            var match = customRegex.find(line)
+            if (match == null || match.groups.size <= 1) {
+                match = GENERIC_FILE_HEADER.find(line)
+            }
+
             if (match != null && match.groups.size > 1) {
-                // Found a file header
-                if (currentFilePath != null && currentContent.isNotEmpty()) {
-                    // Save previous file
+                // Found a file header - save previous file (allow empty content for files like .gitkeep)
+                if (currentFilePath != null) {
                     files.add(ParsedFile(
                         path = currentFilePath,
                         content = currentContent.toString().trim(),
                         isDeleted = currentIsDeleted
                     ))
                 }
-                // Start new file - extract first label for deletion check, strip all labels, normalize path
+
+                // Extract path and strip Git labels
                 val rawPath = match.groups[1]?.value ?: continue
-
-                // Check ONLY the first label to determine if deleted (avoid false positives)
-                val firstLabel = FIRST_LABEL_PATTERN.find(rawPath)?.value
-                currentIsDeleted = firstLabel == "[DELETED]"
-
+                // Check if ANY label is DELETED (not just the first one)
+                currentIsDeleted = rawPath.contains("[DELETED]")
                 val pathWithoutLabel = stripChangeTypeLabel(rawPath)
                 currentFilePath = normalizePathForCurrentPlatform(pathWithoutLabel)
                 currentContent.clear()
             } else if (currentFilePath != null) {
-                // Add content to current file
                 if (currentContent.isNotEmpty()) {
                     currentContent.append("\n")
                 }
@@ -253,15 +317,15 @@ class PasteAndRestoreFilesAction : AnAction() {
             }
         }
 
-        // Don't forget the last file
-        if (currentFilePath != null && currentContent.isNotEmpty()) {
+        // Don't forget the last file (allow empty content)
+        if (currentFilePath != null) {
             files.add(ParsedFile(
                 path = currentFilePath,
                 content = currentContent.toString().trim(),
                 isDeleted = currentIsDeleted
             ))
         }
-        
+
         return files
     }
 
@@ -292,25 +356,34 @@ class PasteAndRestoreFilesAction : AnAction() {
         return stripped
     }
 
-    private fun createFile(project: Project, projectRoot: VirtualFile, parsedFile: ParsedFile) {
+    /**
+     * Create a file from parsed content.
+     * @return true if file was created/overwritten, false if skipped
+     */
+    private fun createFile(
+        project: Project,
+        projectRoot: VirtualFile,
+        parsedFile: ParsedFile,
+        overwriteExisting: Boolean,
+        skipExisting: Boolean
+    ): Boolean {
         val relativePath = normalizePathForCurrentPlatform(parsedFile.path.trim())
-        
+
         // Validate the normalized path
         if (relativePath.isEmpty()) {
             throw IllegalArgumentException("Empty file path after normalization from: '${parsedFile.path}'")
         }
-        
+
         // Split path into directory and filename
         val pathParts = relativePath.split("/")
         val fileName = pathParts.last()
         val directoryPath = pathParts.dropLast(1).joinToString("/")
-        
-        // Additional validation for file name
-        // Include square brackets in validation to catch un-stripped labels or invalid characters
-        if (fileName.isEmpty() || fileName.contains(Regex("[<>:\"|?*\\[\\]]"))) {
+
+        // Validate file name - allow square brackets for Next.js dynamic routes
+        if (fileName.isEmpty() || fileName.contains(Regex("[<>:\"|?*]"))) {
             throw IllegalArgumentException("Invalid file name: '$fileName' in path: '$relativePath'")
         }
-        
+
         // Create directory structure if needed
         var currentDir: VirtualFile = projectRoot
         if (directoryPath.isNotEmpty()) {
@@ -324,47 +397,32 @@ class PasteAndRestoreFilesAction : AnAction() {
                 }
             }
         }
-        
+
         // Check if file already exists
         val existingFile = currentDir.findChild(fileName)
         if (existingFile != null) {
-            // Ask user what to do
-            val result = Messages.showYesNoCancelDialog(
-                project,
-                "File '$relativePath' already exists. Overwrite?",
-                "File Exists",
-                "Overwrite",
-                "Skip",
-                "Cancel All",
-                Messages.getWarningIcon()
-            )
-            
-            when (result) {
-                Messages.YES -> {
-                    // Overwrite the file
-                    VfsUtil.saveText(existingFile, parsedFile.content)
-                }
-                Messages.NO -> {
-                    // Skip this file
-                    return
-                }
-                Messages.CANCEL -> {
-                    // Cancel all operations
-                    throw RuntimeException("Operation cancelled by user")
-                }
+            if (skipExisting) {
+                return false  // Skip this file
             }
+            if (overwriteExisting) {
+                VfsUtil.saveText(existingFile, parsedFile.content)
+                return true
+            }
+            // Should not reach here if pre-check was done correctly
+            return false
         } else {
             // Create new file
             val newFile = currentDir.createChildData(this, fileName)
             VfsUtil.saveText(newFile, parsedFile.content)
+            return true
         }
     }
     
     private fun normalizePathForCurrentPlatform(path: String): String {
         var normalizedPath = path.trim()
-        
-        // Handle Windows absolute paths (e.g., D:\Users\...)
-        if (normalizedPath.matches(Regex("^[a-zA-Z]:\\\\.+"))) {
+
+        // Handle Windows absolute paths with backslash or forward slash (e.g., D:\Users\... or D:/Users/...)
+        if (normalizedPath.matches(Regex("^[a-zA-Z]:[/\\\\].+"))) {
             // Remove drive letter and colon (e.g., "D:" -> "")
             normalizedPath = normalizedPath.substring(2)
         }
@@ -379,13 +437,16 @@ class PasteAndRestoreFilesAction : AnAction() {
         
         // Clean up multiple consecutive slashes
         normalizedPath = normalizedPath.replace(Regex("/+"), "/")
-        
-        // Remove empty segments and invalid characters
-        // Include square brackets to catch un-stripped labels or invalid characters
+
+        // Remove empty segments, path traversal attempts (..), current directory (.),
+        // and invalid characters (but allow square brackets for Next.js dynamic routes)
         val segments = normalizedPath.split("/").filter { segment ->
-            segment.isNotEmpty() && segment != "." && !segment.contains(Regex("[<>:\"|?*\\[\\]]"))
+            segment.isNotEmpty() &&
+            segment != "." &&
+            segment != ".." &&  // Path traversal protection
+            !segment.contains(Regex("[<>:\"|?*]"))  // Allow square brackets []
         }
-        
+
         return segments.joinToString("/")
     }
     

@@ -10,10 +10,12 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.vcs.VcsDataKeys
 import com.intellij.openapi.vcs.changes.Change
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.vcs.commit.CommitWorkflowUi
 import com.intellij.vcs.commit.AbstractCommitWorkflowHandler
+import com.intellij.vcsUtil.VcsUtil
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 
@@ -24,25 +26,42 @@ class CopyGitFilesContentAction : AnAction() {
 
     /**
      * Get selected changes from Git Staging Area, Commit UI, or traditional Changes view.
-     * Prioritizes VcsDataKeys.CHANGES (user's right-click selection) over getIncludedChanges().
-     * For Git Staging Area, matches selected files against available changes.
+     * IntelliJ 2025 compatibility: Uses SELECTED_CHANGES first (recommended for 2025),
+     * then falls back to CHANGE_LEAD_SELECTION and CHANGES for older versions.
+     * For Git Staging Area, matches selected files against available changes using FilePath comparison.
      */
     private fun getSelectedChanges(e: AnActionEvent): List<Change> {
-        // 方法 1: VcsDataKeys.CHANGES（傳統 Changes view 有效）
-        val selectedChanges = e.getData(VcsDataKeys.CHANGES)?.toList()
-        if (selectedChanges != null && selectedChanges.isNotEmpty()) {
-            logger.info("getSelectedChanges: Found ${selectedChanges.size} from VcsDataKeys.CHANGES")
-            return selectedChanges
+        // 1️⃣ 首選：SELECTED_CHANGES（IntelliJ 2025 推薦，在 Git Staging Area 中有效）
+        e.getData(VcsDataKeys.SELECTED_CHANGES)?.let { selected ->
+            if (selected.isNotEmpty()) {
+                logger.info("getSelectedChanges: ${selected.size} from SELECTED_CHANGES")
+                return selected.toList()
+            }
         }
 
-        // 方法 2: 透過選中的檔案匹配 changes（Git Staging Area）
+        // 2️⃣ 嘗試 CHANGE_LEAD_SELECTION（樹狀結構中明確選中的節點）
+        e.getData(VcsDataKeys.CHANGE_LEAD_SELECTION)?.let { lead ->
+            if (lead.isNotEmpty()) {
+                logger.info("getSelectedChanges: ${lead.size} from CHANGE_LEAD_SELECTION")
+                return lead.toList()
+            }
+        }
+
+        // 3️⃣ Legacy：CHANGES（傳統 Changes view，IntelliJ 2024 及之前版本）
+        e.getData(VcsDataKeys.CHANGES)?.let { changes ->
+            if (changes.isNotEmpty()) {
+                logger.info("getSelectedChanges: ${changes.size} from CHANGES")
+                return changes.toList()
+            }
+        }
+
+        // 4️⃣ Fallback：透過 CommitWorkflowUi + FilePath 物件比較
         val selectedFiles = getSelectedFiles(e)
         if (selectedFiles.isEmpty()) {
             logger.info("getSelectedChanges: No selected files found")
             return emptyList()
         }
 
-        // 獲取所有可用 changes
         val uiFromKey: CommitWorkflowUi? = e.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)
             ?: (e.getData(VcsDataKeys.COMMIT_WORKFLOW_HANDLER) as? AbstractCommitWorkflowHandler<*, *>)?.ui
 
@@ -52,15 +71,14 @@ class CopyGitFilesContentAction : AnAction() {
             return emptyList()
         }
 
-        // 用檔案路徑匹配：只返回選中檔案對應的 changes
-        val selectedPaths = selectedFiles.map { it.path }.toSet()
+        // 使用 FilePath 物件比較（而非字串比較）- 解決路徑分隔符和大小寫問題
+        val selectedFilePaths = selectedFiles.map { VcsUtil.getFilePath(it) }.toSet()
         val matchedChanges = allChanges.filter { change ->
-            val changePath = change.afterRevision?.file?.path
-                ?: change.beforeRevision?.file?.path
-            changePath != null && selectedPaths.contains(changePath)
+            val changeFilePath = change.afterRevision?.file ?: change.beforeRevision?.file
+            changeFilePath != null && selectedFilePaths.contains(changeFilePath)
         }
 
-        logger.info("getSelectedChanges: Matched ${matchedChanges.size} changes from ${selectedFiles.size} selected files")
+        logger.info("getSelectedChanges: Matched ${matchedChanges.size} from ${selectedFiles.size} files (FilePath comparison)")
         return matchedChanges
     }
 
@@ -129,12 +147,29 @@ class CopyGitFilesContentAction : AnAction() {
                 continue
             }
 
-            val virtualFile = when {
-                // For new files or modifications, use the after revision file
-                change.afterRevision != null -> change.afterRevision?.file?.virtualFile
-                // For deleted files, use the before revision file (may not exist)
-                change.beforeRevision != null -> change.beforeRevision?.file?.virtualFile
-                else -> null
+            // Try to get virtualFile from change with multi-step fallback
+            var virtualFile = change.afterRevision?.file?.virtualFile
+                ?: change.beforeRevision?.file?.virtualFile
+
+            // If virtualFile is null, try multiple resolution strategies (IntelliJ 2025 fix)
+            if (virtualFile == null && change.type != Change.Type.DELETED) {
+                // 嘗試 1: 直接查找（快速，不強制 VFS 刷新）
+                virtualFile = LocalFileSystem.getInstance().findFileByPath(filePath)
+
+                // 嘗試 2: 正規化路徑後查找（解決 Windows 路徑分隔符問題）
+                if (virtualFile == null) {
+                    val normalizedPath = filePath.replace('\\', '/')
+                    virtualFile = LocalFileSystem.getInstance().findFileByPath(normalizedPath)
+                }
+
+                // 嘗試 3: 強制刷新 VFS（最後手段，較慢但可靠）
+                if (virtualFile == null) {
+                    virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByPath(filePath)
+                }
+
+                if (virtualFile != null) {
+                    logger.info("Resolved virtualFile after fallback resolution: $filePath")
+                }
             }
 
             changeInfoList.add(ChangeInfo(
@@ -152,17 +187,30 @@ class CopyGitFilesContentAction : AnAction() {
 
         // Separate deleted files from accessible files
         val deletedFiles = changeInfoList.filter { it.change.type == Change.Type.DELETED }
-        val accessibleFiles = changeInfoList.filter { it.virtualFile != null && it.virtualFile.exists() }
+        val accessibleFiles = changeInfoList.filter {
+            it.virtualFile != null && it.virtualFile.isValid && it.virtualFile.exists()
+        }
+
+        // Log files that couldn't be accessed
+        val skippedFiles = changeInfoList.filter {
+            it.change.type != Change.Type.DELETED &&
+            (it.virtualFile == null || !it.virtualFile.isValid || !it.virtualFile.exists())
+        }
+        if (skippedFiles.isNotEmpty()) {
+            logger.warn("Skipped ${skippedFiles.size} files due to missing virtualFile: ${skippedFiles.map { it.filePath }}")
+        }
+
         val settings = CopyFileContentSettings.getInstance(project)
 
-        // Process accessible files using CopyFileContentAction with custom headers
-        if (accessibleFiles.isNotEmpty()) {
+        // Case 1: Only accessible files (no deleted files) - use performCopyFilesContent
+        if (accessibleFiles.isNotEmpty() && deletedFiles.isEmpty()) {
             val copyFileContentAction = CopyFileContentAction()
             val virtualFiles = accessibleFiles.mapNotNull { it.virtualFile }.toTypedArray()
 
             // Create custom header generator that includes change type
             val customHeaderGenerator: (VirtualFile, String) -> String = { file, relativePath ->
-                val changeInfo = accessibleFiles.find { it.virtualFile == file }
+                // Use path comparison instead of object identity (VFS refresh may change reference)
+                val changeInfo = accessibleFiles.find { it.virtualFile?.path == file.path }
                 val changeTypeLabel = changeInfo?.changeType ?: ""
                 val headerFormat = settings?.state?.headerFormat ?: "// file: \$FILE_PATH"
 
@@ -174,49 +222,83 @@ class CopyGitFilesContentAction : AnAction() {
             }
 
             copyFileContentAction.performCopyFilesContent(e, virtualFiles, customHeaderGenerator)
+            return
         }
 
-        // Handle deleted files separately - create markers and copy to clipboard
-        if (deletedFiles.isNotEmpty()) {
-            val fileContents = mutableListOf<String>()
+        // Case 2 & 3: Only deleted files OR both accessible and deleted files
+        // Build all content ourselves to avoid clipboard overwrite
+        val fileContents = mutableListOf<String>()
 
-            if (settings != null && settings.state.preText.isNotEmpty()) {
-                fileContents.add(settings.state.preText)
+        if (settings != null && settings.state.preText.isNotEmpty()) {
+            fileContents.add(settings.state.preText)
+        }
+
+        // Process accessible files (when there are also deleted files)
+        for (accessibleInfo in accessibleFiles) {
+            val file = accessibleInfo.virtualFile ?: continue
+            if (!file.isValid || !file.exists()) continue
+
+            val relativePath = getRelativePath(project, accessibleInfo.filePath)
+            val headerFormat = settings?.state?.headerFormat ?: "// file: \$FILE_PATH"
+            val header = if (accessibleInfo.changeType.isNotEmpty()) {
+                headerFormat.replace("\$FILE_PATH", "${accessibleInfo.changeType} $relativePath")
+            } else {
+                headerFormat.replace("\$FILE_PATH", relativePath)
             }
 
-            for (deletedInfo in deletedFiles) {
-                val relativePath = getRelativePath(project, deletedInfo.filePath)
-                val headerFormat = settings?.state?.headerFormat ?: "// file: \$FILE_PATH"
-                val header = headerFormat.replace("\$FILE_PATH", "${deletedInfo.changeType} $relativePath")
+            fileContents.add(header)
 
-                fileContents.add(header)
-                fileContents.add("// This file has been deleted in this change")
-
-                if (settings?.state?.addExtraLineBetweenFiles == true) {
-                    fileContents.add("")
-                }
+            // Read file content
+            try {
+                val content = String(file.contentsToByteArray(), Charsets.UTF_8)
+                fileContents.add(content)
+            } catch (ex: Exception) {
+                logger.warn("Failed to read file content: ${accessibleInfo.filePath}", ex)
+                fileContents.add("// Error reading file content")
             }
 
-            if (settings != null && settings.state.postText.isNotEmpty()) {
-                fileContents.add(settings.state.postText)
+            if (settings?.state?.addExtraLineBetweenFiles == true) {
+                fileContents.add("")
             }
+        }
 
-            val clipboardText = fileContents.joinToString(separator = "\n")
-            copyToClipboard(clipboardText)
+        // Process deleted files
+        for (deletedInfo in deletedFiles) {
+            val relativePath = getRelativePath(project, deletedInfo.filePath)
+            val headerFormat = settings?.state?.headerFormat ?: "// file: \$FILE_PATH"
+            val header = headerFormat.replace("\$FILE_PATH", "${deletedInfo.changeType} $relativePath")
 
-            // Show notification for deleted files
-            if (settings?.state?.showCopyNotification == true) {
-                val totalFiles = accessibleFiles.size + deletedFiles.size
-                val message = when {
-                    accessibleFiles.isEmpty() && deletedFiles.size == 1 ->
-                        "1 deleted file marker copied."
-                    accessibleFiles.isEmpty() ->
-                        "${deletedFiles.size} deleted file markers copied."
-                    else ->
-                        "$totalFiles files copied (${accessibleFiles.size} with content, ${deletedFiles.size} deleted)."
-                }
-                CopyFileContentAction.showNotification("<html><b>$message</b></html>", NotificationType.INFORMATION, project)
+            fileContents.add(header)
+            fileContents.add("// This file has been deleted in this change")
+
+            if (settings?.state?.addExtraLineBetweenFiles == true) {
+                fileContents.add("")
             }
+        }
+
+        if (settings != null && settings.state.postText.isNotEmpty()) {
+            fileContents.add(settings.state.postText)
+        }
+
+        val clipboardText = fileContents.joinToString(separator = "\n")
+        copyToClipboard(clipboardText)
+
+        // Show notification
+        if (settings?.state?.showCopyNotification == true) {
+            val totalFiles = accessibleFiles.size + deletedFiles.size
+            val message = when {
+                accessibleFiles.isEmpty() && deletedFiles.size == 1 ->
+                    "1 deleted file marker copied."
+                accessibleFiles.isEmpty() ->
+                    "${deletedFiles.size} deleted file markers copied."
+                deletedFiles.isEmpty() && accessibleFiles.size == 1 ->
+                    "1 file copied."
+                deletedFiles.isEmpty() ->
+                    "${accessibleFiles.size} files copied."
+                else ->
+                    "$totalFiles files copied (${accessibleFiles.size} with content, ${deletedFiles.size} deleted)."
+            }
+            CopyFileContentAction.showNotification("<html><b>$message</b></html>", NotificationType.INFORMATION, project)
         }
     }
 
