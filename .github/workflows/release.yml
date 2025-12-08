@@ -38,7 +38,7 @@ jobs:
       - name: Extract change notes from plugin.xml
         id: changelog
         run: |
-          # Extract content between <change-notes><![CDATA[ and ]]>
+          # Extract content between <change-notes><![CDATA[ and ]]> and convert HTML to Markdown
           python3 << 'EOF'
           import re
           with open('src/main/resources/META-INF/plugin.xml', 'r') as f:
@@ -46,10 +46,23 @@ jobs:
           # Match content between CDATA start and ]]> (they may be on separate lines)
           match = re.search(r'<change-notes><!\[CDATA\[(.*?)\]\]>', content, re.DOTALL)
           if match:
-              notes = match.group(1).strip()
+              html = match.group(1).strip()
+
+              # Convert HTML to Markdown for GitHub Release
+              md = html
+              md = re.sub(r'<h2>(.*?)</h2>', r'## \1', md)
+              md = re.sub(r'<h3>(.*?)</h3>', r'### \1', md)
+              md = re.sub(r'<p><b>(.*?)</b>(.*?)</p>', r'**\1**\2\n', md)
+              md = re.sub(r'<p>(.*?)</p>', r'\1\n', md)
+              md = re.sub(r'<b>(.*?)</b>', r'**\1**', md)
+              md = re.sub(r'<ul>\s*', '\n', md)
+              md = re.sub(r'\s*</ul>', '\n', md)
+              md = re.sub(r'\s*<li>(.*?)</li>', r'- \1', md)
+              md = re.sub(r'\n{3,}', '\n\n', md)  # Clean up extra newlines
+
               with open('changelog.md', 'w') as f:
-                  f.write(notes)
-              print("Changelog extracted successfully")
+                  f.write(md.strip())
+              print("Changelog extracted and converted to Markdown successfully")
           else:
               print("No changelog found")
           EOF
