@@ -237,7 +237,7 @@ This is a **major feature** - restores files from clipboard content!
 
 1. **Copy a file**:
    - Right-click `Main.java` in Project tree
-   - "CodeSnap: Copy to Clipboard"
+   - "ClipCode: Copy to Clipboard"
 
 2. **Delete the file** (for testing):
    - Right-click `Main.java` → Delete → OK
@@ -260,7 +260,7 @@ This is a **major feature** - restores files from clipboard content!
 
 1. **Copy multiple files**:
    - Select `Main.java`, `utils/Helper.java`, `README.md`
-   - Right-click → "CodeSnap: Copy to Clipboard"
+   - Right-click → "ClipCode: Copy to Clipboard"
 
 2. **Delete all selected files**
 
@@ -335,7 +335,7 @@ This is a **major feature** - restores files from clipboard content!
    - Click "Apply"
 
 5. **Copy entire project**:
-   - Right-click on project root → "CodeSnap: Copy to Clipboard"
+   - Right-click on project root → "ClipCode: Copy to Clipboard"
 
 6. **Verify**:
    - Only files in `src/utils/` are copied

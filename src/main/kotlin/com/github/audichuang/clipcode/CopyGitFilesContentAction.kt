@@ -5,11 +5,15 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.actionSystem.PlatformDataKeys
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.vcs.VcsDataKeys
 import com.intellij.openapi.vcs.changes.Change
+import com.intellij.openapi.vcs.changes.ChangeListManager
+import com.intellij.openapi.vcs.changes.ui.ChangesBrowserNode
+import com.intellij.openapi.vcs.changes.ui.ChangesTree
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
@@ -18,6 +22,8 @@ import com.intellij.vcs.commit.AbstractCommitWorkflowHandler
 import com.intellij.vcsUtil.VcsUtil
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
+import javax.swing.JTree
+import javax.swing.tree.TreePath
 
 class CopyGitFilesContentAction : AnAction() {
     private val logger = Logger.getInstance(CopyGitFilesContentAction::class.java)
@@ -25,69 +31,115 @@ class CopyGitFilesContentAction : AnAction() {
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
 
     /**
-     * Get selected changes from Git Staging Area, Commit UI, or traditional Changes view.
-     * IntelliJ 2025 compatibility: Uses SELECTED_CHANGES first (recommended for 2025),
-     * then falls back to CHANGE_LEAD_SELECTION and CHANGES for older versions.
-     * For Git Staging Area, matches selected files against available changes using FilePath comparison.
+     * Get selected changes using a "Greedy/Shotgun" strategy to overcome IntelliJ API limitations.
+     * It collects data from ALL available sources and merges them to ensure nothing is missed.
+     *
+     * Problem: In Commit Tool Window, DataKeys like SELECTED_CHANGES, CHANGES, and even
+     * VIRTUAL_FILE_ARRAY may return incomplete results when multiple files are selected.
+     *
+     * Solution: Collect from all sources without early returns, then union them with a Set.
      */
     private fun getSelectedChanges(e: AnActionEvent): List<Change> {
-        // 1️⃣ 首選：SELECTED_CHANGES（IntelliJ 2025 推薦，在 Git Staging Area 中有效）
-        e.getData(VcsDataKeys.SELECTED_CHANGES)?.let { selected ->
-            if (selected.isNotEmpty()) {
-                logger.info("getSelectedChanges: ${selected.size} from SELECTED_CHANGES")
-                return selected.toList()
-            }
+        val project = e.project ?: return emptyList()
+        val allChanges = mutableSetOf<Change>()
+
+        // 策略 1: 收集所有可能的 Change DataKeys (不進行數量驗證，全部收集)
+        e.getData(VcsDataKeys.SELECTED_CHANGES)?.let {
+            logger.info("Source SELECTED_CHANGES: found ${it.size}")
+            allChanges.addAll(it)
         }
 
-        // 2️⃣ 嘗試 CHANGE_LEAD_SELECTION（樹狀結構中明確選中的節點）
-        e.getData(VcsDataKeys.CHANGE_LEAD_SELECTION)?.let { lead ->
-            if (lead.isNotEmpty()) {
-                logger.info("getSelectedChanges: ${lead.size} from CHANGE_LEAD_SELECTION")
-                return lead.toList()
-            }
+        e.getData(VcsDataKeys.CHANGE_LEAD_SELECTION)?.let {
+            logger.info("Source CHANGE_LEAD_SELECTION: found ${it.size}")
+            allChanges.addAll(it)
         }
 
-        // 3️⃣ Legacy：CHANGES（傳統 Changes view，IntelliJ 2024 及之前版本）
-        e.getData(VcsDataKeys.CHANGES)?.let { changes ->
-            if (changes.isNotEmpty()) {
-                logger.info("getSelectedChanges: ${changes.size} from CHANGES")
-                return changes.toList()
-            }
+        e.getData(VcsDataKeys.CHANGES)?.let {
+            logger.info("Source CHANGES: found ${it.size}")
+            allChanges.addAll(it)
         }
 
-        // 4️⃣ Fallback：透過 CommitWorkflowUi + FilePath 物件比較
+        // 策略 2: 透過 VirtualFile 反查 Change (這是最強的補強)
+        // 如果 DataKeys 的 Change 列表不完整，我們用選中的檔案去 ChangeListManager 查
         val selectedFiles = getSelectedFiles(e)
-        if (selectedFiles.isEmpty()) {
-            logger.info("getSelectedChanges: No selected files found")
-            return emptyList()
+        if (selectedFiles.isNotEmpty()) {
+            val changeListManager = ChangeListManager.getInstance(project)
+            val changesFromFiles = selectedFiles.mapNotNull { changeListManager.getChange(it) }
+
+            logger.info("Source VirtualFiles -> ChangeListManager: found ${changesFromFiles.size}")
+            allChanges.addAll(changesFromFiles)
         }
 
-        val uiFromKey: CommitWorkflowUi? = e.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)
-            ?: (e.getData(VcsDataKeys.COMMIT_WORKFLOW_HANDLER) as? AbstractCommitWorkflowHandler<*, *>)?.ui
-
-        val allChanges = uiFromKey?.getIncludedChanges() ?: emptyList()
+        // 策略 3: 如果以上全部加起來還是空的，才嘗試 UI Fallback
         if (allChanges.isEmpty()) {
-            logger.info("getSelectedChanges: No changes available from CommitWorkflowUi")
-            return emptyList()
+            val uiFromKey: CommitWorkflowUi? = e.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)
+                ?: (e.getData(VcsDataKeys.COMMIT_WORKFLOW_HANDLER) as? AbstractCommitWorkflowHandler<*, *>)?.ui
+
+            val uiChanges = uiFromKey?.getIncludedChanges() ?: emptyList()
+            if (uiChanges.isNotEmpty() && selectedFiles.isNotEmpty()) {
+                val selectedFilePaths = selectedFiles.map { VcsUtil.getFilePath(it) }.toSet()
+                val matchedChanges = uiChanges.filter { change ->
+                    val changeFilePath = change.afterRevision?.file ?: change.beforeRevision?.file
+                    changeFilePath != null && selectedFilePaths.contains(changeFilePath)
+                }
+                logger.info("Source UI Fallback: matched ${matchedChanges.size}")
+                allChanges.addAll(matchedChanges)
+            }
         }
 
-        // 使用 FilePath 物件比較（而非字串比較）- 解決路徑分隔符和大小寫問題
-        val selectedFilePaths = selectedFiles.map { VcsUtil.getFilePath(it) }.toSet()
-        val matchedChanges = allChanges.filter { change ->
-            val changeFilePath = change.afterRevision?.file ?: change.beforeRevision?.file
-            changeFilePath != null && selectedFilePaths.contains(changeFilePath)
-        }
-
-        logger.info("getSelectedChanges: Matched ${matchedChanges.size} from ${selectedFiles.size} files (FilePath comparison)")
-        return matchedChanges
+        logger.info("Final merged changes count: ${allChanges.size}")
+        return allChanges.toList()
     }
 
     /**
      * Get selected files as fallback for Git Staging Area.
      * When VcsDataKeys.CHANGES is not available, try CommonDataKeys.
+     *
+     * IMPORTANT: In Commit Tool Window, DataKeys may return incomplete selection.
+     * This method also tries to extract selection directly from JTree component.
      */
     private fun getSelectedFiles(e: AnActionEvent): Array<VirtualFile> {
-        // Try VIRTUAL_FILE_ARRAY first (common in tree views)
+        // 1️⃣ 首先嘗試從 JTree/ChangesTree 直接取得選中的節點
+        val component = e.getData(PlatformDataKeys.CONTEXT_COMPONENT)
+        if (component is JTree) {
+            val paths: Array<TreePath>? = component.selectionPaths
+            if (paths != null && paths.isNotEmpty()) {
+                val files = mutableListOf<VirtualFile>()
+                for (path in paths) {
+                    val node = path.lastPathComponent
+                    extractFilesFromNode(node, files)
+                }
+                if (files.isNotEmpty()) {
+                    val distinctFiles = files.distinct()
+                    logger.info("getSelectedFiles: Found ${distinctFiles.size} files from JTree selection (${paths.size} paths)")
+                    return distinctFiles.toTypedArray()
+                }
+            }
+        }
+
+        // 2️⃣ 嘗試 ChangesTree 特定的方法 - 使用 VcsTreeModelData
+        if (component is ChangesTree) {
+            try {
+                val selectedUserObjects = com.intellij.openapi.vcs.changes.ui.VcsTreeModelData
+                    .selected(component)
+                    .userObjects()
+                val files = selectedUserObjects.mapNotNull { obj ->
+                    when (obj) {
+                        is Change -> obj.virtualFile
+                        is VirtualFile -> obj
+                        else -> null
+                    }
+                }.distinct()
+                if (files.isNotEmpty()) {
+                    logger.info("getSelectedFiles: Found ${files.size} files from ChangesTree VcsTreeModelData")
+                    return files.toTypedArray()
+                }
+            } catch (ex: Exception) {
+                logger.warn("Failed to get selection from ChangesTree: ${ex.message}")
+            }
+        }
+
+        // 3️⃣ Try VIRTUAL_FILE_ARRAY (common in tree views)
         e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY)?.let {
             if (it.isNotEmpty()) {
                 logger.info("getSelectedFiles: Found ${it.size} files from VIRTUAL_FILE_ARRAY")
@@ -95,7 +147,7 @@ class CopyGitFilesContentAction : AnAction() {
             }
         }
 
-        // Try single file
+        // 4️⃣ Try single file
         e.getData(CommonDataKeys.VIRTUAL_FILE)?.let {
             logger.info("getSelectedFiles: Found single file from VIRTUAL_FILE: ${it.path}")
             return arrayOf(it)
@@ -103,6 +155,27 @@ class CopyGitFilesContentAction : AnAction() {
 
         logger.info("getSelectedFiles: No files found")
         return emptyArray()
+    }
+
+    /**
+     * Recursively extract VirtualFiles from tree nodes.
+     */
+    private fun extractFilesFromNode(node: Any?, files: MutableList<VirtualFile>) {
+        when (node) {
+            is ChangesBrowserNode<*> -> {
+                val userObject = node.userObject
+                when (userObject) {
+                    is Change -> {
+                        userObject.virtualFile?.let { files.add(it) }
+                    }
+                    is VirtualFile -> {
+                        files.add(userObject)
+                    }
+                }
+                // 如果是目錄節點，可能需要遍歷子節點
+                // 但通常選中的檔案節點就足夠了
+            }
+        }
     }
 
     override fun actionPerformed(e: AnActionEvent) {
