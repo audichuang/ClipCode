@@ -321,13 +321,20 @@ class CopyGitFilesContentAction : AnAction() {
 
             fileContents.add(header)
 
-            // Read file content
-            try {
-                val content = String(file.contentsToByteArray(), Charsets.UTF_8)
-                fileContents.add(content)
-            } catch (ex: Exception) {
-                logger.warn("Failed to read file content: ${accessibleInfo.filePath}", ex)
-                fileContents.add("// Error reading file content")
+            // ✅ 修復 OOM 風險：先檢查檔案大小
+            val maxFileSizeBytes = settings?.state?.maxFileSizeKB?.times(1024L) ?: (500L * 1024L)
+            if (file.length > maxFileSizeBytes) {
+                logger.info("Skipping file in Git changes: ${accessibleInfo.filePath} - File size (${file.length} bytes) exceeds limit")
+                fileContents.add("// File skipped: size exceeds limit (${file.length} bytes)")
+            } else {
+                // Read file content (safe now since size is checked)
+                try {
+                    val content = String(file.contentsToByteArray(), Charsets.UTF_8)
+                    fileContents.add(content)
+                } catch (ex: Exception) {
+                    logger.warn("Failed to read file content: ${accessibleInfo.filePath}", ex)
+                    fileContents.add("// Error reading file content")
+                }
             }
 
             if (settings?.state?.addExtraLineBetweenFiles == true) {

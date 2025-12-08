@@ -57,7 +57,7 @@ jobs:
               md = re.sub(r'<b>(.*?)</b>', r'**\1**', md)
               md = re.sub(r'<ul>\s*', '\n', md)
               md = re.sub(r'\s*</ul>', '\n', md)
-              md = re.sub(r'\s*<li>(.*?)</li>', r'- \1', md)
+              md = re.sub(r'\s*<li>(.*?)</li>', r'\n- \1', md)
               md = re.sub(r'\n{3,}', '\n\n', md)  # Clean up extra newlines
 
               with open('changelog.md', 'w') as f:

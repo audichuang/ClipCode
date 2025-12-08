@@ -217,6 +217,21 @@ class CopyFileContentAction : AnAction() {
 
         val maxFileSizeBytes = settings.state.maxFileSizeKB * 1024L
         
+        // ✅ 修復 OOM 風險：先檢查檔案大小（file.length 只讀 metadata，不載入內容）
+        // 這樣可以避免讀取 2GB log 檔等超大檔案導致 IDE 崩潰
+        if (file.length > maxFileSizeBytes) {
+            logger.info("Skipping file: ${file.name} - File size (${file.length} bytes) exceeds limit ($maxFileSizeBytes bytes)")
+            // 回傳提示字串，讓使用者知道哪些檔案被跳過（與 Git 模式保持一致的 UX）
+            val header = customHeaderGenerator?.invoke(file, fileRelativePath)
+                ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
+            fileContents.add(header)
+            fileContents.add("// File skipped: size exceeds limit (${file.length} bytes)")
+            if (addExtraLine) {
+                fileContents.add("")
+            }
+            return ""
+        }
+        
         // Handle external library files differently
         if (handler != null && handler.isFromExternalLibrary(file)) {
             // Check if file should be processed
@@ -225,10 +240,10 @@ class CopyFileContentAction : AnAction() {
                 return ""
             }
             
-            // Try to read content from external library
+            // Try to read content from external library (size already checked above)
             content = handler.readContent(file) ?: ""
             
-            if (content.isNotEmpty() && content.length <= maxFileSizeBytes) {
+            if (content.isNotEmpty()) {
                 val header = customHeaderGenerator?.invoke(file, fileRelativePath)
                     ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
                 fileContents.add(header)
@@ -237,17 +252,15 @@ class CopyFileContentAction : AnAction() {
                 if (addExtraLine) {
                     fileContents.add("")
                 }
-            } else if (content.isEmpty()) {
-                logger.info("Skipping file: ${file.name} - Could not read content from external library")
             } else {
-                logger.info("Skipping file: ${file.name} - Size limit exceeded (${content.length} bytes)")
+                logger.info("Skipping file: ${file.name} - Could not read content from external library")
             }
         } else {
-            // Handle regular project files
+            // Handle regular project files (size already checked above)
             if (!isBinaryFile(file)) {
                 content = readFileContents(file)
 
-                if (content.isNotEmpty() && content.length <= maxFileSizeBytes) {
+                if (content.isNotEmpty()) {
                     val header = customHeaderGenerator?.invoke(file, fileRelativePath)
                         ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
                     fileContents.add(header)
@@ -256,10 +269,8 @@ class CopyFileContentAction : AnAction() {
                     if (addExtraLine) {
                         fileContents.add("")
                     }
-                } else if (content.isEmpty()) {
-                    logger.info("Skipping file: ${file.name} - Could not read content")
                 } else {
-                    logger.info("Skipping file: ${file.name} - Size limit exceeded (${content.length} bytes)")
+                    logger.info("Skipping file: ${file.name} - Could not read content")
                 }
             } else {
                 logger.info("Skipping file: ${file.name} - Binary file")
