@@ -27,12 +27,137 @@ class CopyFileContentAction : AnAction() {
             showNotification("No project found. Action cannot proceed.", NotificationType.ERROR, null)
             return
         }
-        val selectedFiles = e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY) ?: run {
+        
+        // 嘗試多種方式取得選中的檔案（特別是 External Libraries）
+        val selectedFiles = getSelectedVirtualFiles(e)
+        
+        if (selectedFiles.isEmpty()) {
             showNotification("No files selected.", NotificationType.ERROR, project)
             return
         }
 
         performCopyFilesContent(e, selectedFiles)
+    }
+    
+    /**
+     * 從多種來源嘗試取得選中的 VirtualFiles。
+     * External Libraries 裡的檔案通常透過 PSI_FILE 或 NAVIGATABLE 提供，而非 VIRTUAL_FILE_ARRAY。
+     * 同時支援選取 Package（資料夾）節點，會遞歸取得所有子檔案。
+     */
+    private fun getSelectedVirtualFiles(e: AnActionEvent): Array<VirtualFile> {
+        val collectedFiles = mutableListOf<VirtualFile>()
+        
+        // 1. 首先嘗試標準的 VIRTUAL_FILE_ARRAY
+        e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY)?.let {
+            if (it.isNotEmpty()) {
+                logger.info("getSelectedVirtualFiles: Found ${it.size} items from VIRTUAL_FILE_ARRAY")
+                for (file in it) {
+                    if (file.isDirectory) {
+                        // 遞歸收集資料夾中的所有檔案
+                        collectFilesFromDirectory(file, collectedFiles)
+                    } else {
+                        collectedFiles.add(file)
+                    }
+                }
+                if (collectedFiles.isNotEmpty()) {
+                    return collectedFiles.distinct().toTypedArray()
+                }
+            }
+        }
+        
+        // 2. 嘗試單一檔案/資料夾 VIRTUAL_FILE
+        e.getData(CommonDataKeys.VIRTUAL_FILE)?.let {
+            logger.info("getSelectedVirtualFiles: Found item from VIRTUAL_FILE: ${it.path} (isDirectory=${it.isDirectory})")
+            if (it.isDirectory) {
+                collectFilesFromDirectory(it, collectedFiles)
+            } else {
+                collectedFiles.add(it)
+            }
+            if (collectedFiles.isNotEmpty()) {
+                return collectedFiles.distinct().toTypedArray()
+            }
+        }
+        
+        // 3. 嘗試從 PSI_FILE 取得（External Libraries 的單一檔案常用此方式）
+        e.getData(CommonDataKeys.PSI_FILE)?.let { psiFile ->
+            psiFile.virtualFile?.let { virtualFile ->
+                logger.info("getSelectedVirtualFiles: Found file from PSI_FILE: ${virtualFile.path}")
+                return arrayOf(virtualFile)
+            }
+        }
+        
+        // 4. 嘗試從 PSI_ELEMENT 取得（支援 PsiDirectory 和其他 PSI 元素）
+        e.getData(CommonDataKeys.PSI_ELEMENT)?.let { psiElement ->
+            when (psiElement) {
+                is com.intellij.psi.PsiDirectory -> {
+                    // 選取的是資料夾節點
+                    logger.info("getSelectedVirtualFiles: Found PsiDirectory: ${psiElement.virtualFile.path}")
+                    collectFilesFromDirectory(psiElement.virtualFile, collectedFiles)
+                    if (collectedFiles.isNotEmpty()) {
+                        return collectedFiles.distinct().toTypedArray()
+                    }
+                }
+                is com.intellij.psi.PsiDirectoryContainer -> {
+                    // 選取的是 Package 節點（PsiDirectoryContainer 是 PsiPackage 的基類）
+                    logger.info("getSelectedVirtualFiles: Found PsiDirectoryContainer: ${psiElement.javaClass.simpleName}")
+                    val project = e.project
+                    if (project != null) {
+                        // 取得 Package 下的所有資料夾
+                        val directories = psiElement.directories
+                        for (dir in directories) {
+                            collectFilesFromDirectory(dir.virtualFile, collectedFiles)
+                        }
+                        if (collectedFiles.isNotEmpty()) {
+                            return collectedFiles.distinct().toTypedArray()
+                        }
+                    }
+                }
+                else -> {
+                    // 其他 PSI 元素，嘗試取得其所屬檔案
+                    psiElement.containingFile?.virtualFile?.let { virtualFile ->
+                        logger.info("getSelectedVirtualFiles: Found file from PSI_ELEMENT: ${virtualFile.path}")
+                        return arrayOf(virtualFile)
+                    }
+                }
+            }
+        }
+        
+        // 5. 嘗試從 NAVIGATABLE_ARRAY 取得（支援多選）
+        e.getData(CommonDataKeys.NAVIGATABLE_ARRAY)?.let { navigatables ->
+            for (nav in navigatables) {
+                when (nav) {
+                    is com.intellij.psi.PsiDirectory -> {
+                        collectFilesFromDirectory(nav.virtualFile, collectedFiles)
+                    }
+                    is com.intellij.psi.PsiElement -> {
+                        nav.containingFile?.virtualFile?.let { collectedFiles.add(it) }
+                    }
+                    is com.intellij.openapi.fileEditor.OpenFileDescriptor -> {
+                        collectedFiles.add(nav.file)
+                    }
+                }
+            }
+            if (collectedFiles.isNotEmpty()) {
+                logger.info("getSelectedVirtualFiles: Found ${collectedFiles.size} files from NAVIGATABLE_ARRAY")
+                return collectedFiles.distinct().toTypedArray()
+            }
+        }
+        
+        logger.info("getSelectedVirtualFiles: No files found from any source")
+        return emptyArray()
+    }
+    
+    /**
+     * 遞歸收集資料夾中的所有檔案（不包含子資料夾本身）
+     */
+    private fun collectFilesFromDirectory(directory: VirtualFile, files: MutableList<VirtualFile>) {
+        for (child in directory.children) {
+            if (child.isDirectory) {
+                collectFilesFromDirectory(child, files)
+            } else {
+                files.add(child)
+            }
+        }
     }
 
     fun performCopyFilesContent(

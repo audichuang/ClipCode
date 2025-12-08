@@ -1,48 +1,85 @@
+// file: src/main/kotlin/com/github/audichuang/clipcode/ExternalLibraryHandler.kt
 package com.github.audichuang.clipcode
 
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.impl.LoadTextUtil
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.psi.PsiManager
-import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiCompiledElement
+import com.intellij.psi.PsiManager
 import java.io.IOException
 
 /**
  * Handler for processing files from External Libraries.
- * Handles special cases like decompiled .class files and files within JARs/ZIPs.
+ * Handles special cases like decompiled .class files, files within JARs/ZIPs, and JRT (Java 9+) modules.
  */
 class ExternalLibraryHandler(private val project: Project) {
     private val logger = Logger.getInstance(ExternalLibraryHandler::class.java)
     
     /**
-     * Check if a file is from an external library (JAR, ZIP, etc.)
+     * Check if a file is from an external library.
+     * Uses IntelliJ's ProjectFileIndex for robust detection, plus checks for JAR/ZIP/JRT protocols.
      */
     fun isFromExternalLibrary(file: VirtualFile): Boolean {
-        return file.presentableUrl.contains(".jar!") || 
-               file.presentableUrl.contains(".zip!") ||
-               file.path.contains("!/") ||
-               file.fileSystem.protocol == "jar"
+        // 1. 使用 IntelliJ 官方 API 檢查是否屬於 Library (最準確)
+        if (ProjectFileIndex.getInstance(project).isInLibrary(file)) {
+            return true
+        }
+
+        // 2. 備用檢查：檢查檔案協議 (Protocol)
+        val protocol = file.fileSystem.protocol
+        return protocol == "jar" || 
+               protocol == "zip" || 
+               protocol == "jrt" || // Java 9+ Runtime environment
+               file.path.contains("!/")
     }
     
     /**
-     * Get a clean path representation for external library files
+     * Get a clean path representation for external library files.
+     * Automatically converts .class extensions to .java to be LLM-friendly.
      */
     fun getCleanPath(file: VirtualFile): String {
-        return when {
-            file.presentableUrl.contains("!/") -> {
-                // For JAR/ZIP entries, show a cleaner path after the archive separator
-                val parts = file.presentableUrl.split("!/")
-                if (parts.size > 1) {
-                    // Include JAR name and internal path
-                    val jarName = parts[0].substringAfterLast('/')
-                    "${jarName}!/${parts.drop(1).joinToString("!/")}"
+        val protocol = file.fileSystem.protocol
+        var cleanPath = file.presentableUrl
+
+        when {
+            // 處理 Java 9+ JRT 模組 (例如: java.base/java/lang/String.class)
+            protocol == "jrt" -> {
+                // JRT 路徑通常像: /modules/java.base/java/lang/String.class
+                // 我們只想要: java.base/java/lang/String.class
+                val path = file.path
+                val modulesPrefix = "/modules/"
+                cleanPath = if (path.startsWith(modulesPrefix)) {
+                    path.substring(modulesPrefix.length)
                 } else {
-                    file.presentableUrl
+                    path.trimStart('/')
                 }
             }
-            else -> file.presentableUrl
+            // 處理 JAR/ZIP (例如: foo.jar!/com/example/Bar.class)
+            file.path.contains("!/") -> {
+                val parts = file.presentableUrl.split("!/")
+                if (parts.size > 1) {
+                    val jarName = parts[0].substringAfterLast('/')
+                    cleanPath = "${jarName}!/${parts.drop(1).joinToString("!/")}"
+                }
+            }
+        }
+
+        // 副檔名偽裝：如果是 .class，顯示為 .java，讓 LLM 更容易理解
+        if (file.extension?.lowercase() == "class") {
+            cleanPath = cleanPath.replaceSuffix(".class", ".java")
+        }
+
+        return cleanPath
+    }
+    
+    // Helper extension to strictly replace suffix
+    private fun String.replaceSuffix(oldSuffix: String, newSuffix: String): String {
+        return if (this.endsWith(oldSuffix)) {
+            this.substring(0, this.length - oldSuffix.length) + newSuffix
+        } else {
+            this
         }
     }
     
@@ -76,44 +113,35 @@ class ExternalLibraryHandler(private val project: Project) {
     }
     
     /**
-     * Get decompiled content from .class files
+     * Get decompiled content from .class files using IntelliJ's PSI system.
      */
     private fun getDecompiledClassContent(file: VirtualFile): String {
         return try {
-            // Method 1: Try using LoadTextUtil which IntelliJ uses for displaying decompiled content
+            // Method 1: The standard IntelliJ PSI way (Most Robust)
+            val psiFile = PsiManager.getInstance(project).findFile(file)
+            if (psiFile is PsiCompiledElement) {
+                // .mirror returns the PsiFile representing the source code (decompiled or from attached sources)
+                return psiFile.mirror.text
+            }
+            
+            // Method 2: Fallback to LoadTextUtil
             val text = LoadTextUtil.loadText(file)
             if (text.isNotEmpty()) {
                 return text.toString()
             }
             
-            // Method 2: Try through PSI if LoadTextUtil fails
-            val psiFile = PsiManager.getInstance(project).findFile(file)
-            if (psiFile is PsiCompiledElement) {
-                // Get the decompiled text from the PSI element
-                val decompiledText = psiFile.text ?: ""
-                if (decompiledText.isNotEmpty()) {
-                    return decompiledText
-                }
-            }
-            
-            // Method 3: Try to get the mirror file (decompiled source)
-            psiFile?.viewProvider?.document?.text ?: ""
+            return psiFile?.viewProvider?.document?.text ?: ""
             
         } catch (e: Exception) {
             logger.warn("Could not decompile ${file.name}: ${e.message}")
-            ""
+            "// Error: Could not retrieve source code for ${file.name}"
         }
     }
     
-    /**
-     * Get content from source files in JARs
-     */
     private fun getSourceContent(file: VirtualFile): String {
         return try {
-            // Try direct reading first
             String(file.contentsToByteArray(), Charsets.UTF_8)
         } catch (e: IOException) {
-            // Fallback to input stream
             try {
                 file.inputStream?.use { inputStream ->
                     inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
@@ -125,15 +153,10 @@ class ExternalLibraryHandler(private val project: Project) {
         }
     }
     
-    /**
-     * Get content from text files in external libraries
-     */
     private fun getTextContent(file: VirtualFile): String {
         return try {
-            // Use LoadTextUtil for consistent text loading
             LoadTextUtil.loadText(file).toString()
         } catch (e: Exception) {
-            // Fallback to direct reading
             try {
                 file.inputStream?.use { inputStream ->
                     inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
@@ -145,25 +168,16 @@ class ExternalLibraryHandler(private val project: Project) {
         }
     }
     
-    /**
-     * Check if file should be considered binary (excluding special cases)
-     */
     private fun isBinaryFile(file: VirtualFile): Boolean {
         val textExtensions = setOf(
             "java", "kt", "kts", "groovy", "scala", "py", "js", "ts", "tsx", "jsx",
             "xml", "json", "yaml", "yml", "properties", "txt", "md", "html", "css",
             "scss", "sass", "less", "sql", "sh", "bat", "gradle", "pro", "cfg", "conf"
         )
-        
         return file.extension?.lowercase() !in textExtensions
     }
     
-    /**
-     * Check if external library file should be processed
-     * This can be used to filter out files we definitely can't or shouldn't read
-     */
     fun shouldProcessFile(file: VirtualFile): Boolean {
-        // Skip directories
         if (file.isDirectory) return false
         
         // Skip very large files (over 10MB)
@@ -172,7 +186,6 @@ class ExternalLibraryHandler(private val project: Project) {
             return false
         }
         
-        // Skip certain file types that we know we can't handle
         val skipExtensions = setOf("so", "dll", "dylib", "exe", "bin", "dat", "db")
         if (file.extension?.lowercase() in skipExtensions) {
             return false
