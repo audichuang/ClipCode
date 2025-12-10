@@ -36,42 +36,113 @@ class CopyGitFilesContentAction : AnAction() {
      *
      * Problem: In Commit Tool Window, DataKeys like SELECTED_CHANGES, CHANGES, and even
      * VIRTUAL_FILE_ARRAY may return incomplete results when multiple files are selected.
+     * Additionally, UNTRACKED files appear as GitFileStatusNode, not Change objects.
      *
      * Solution: Collect from all sources without early returns, then union them with a Set.
+     * For UNTRACKED files (GitFileStatusNode), create synthetic Change-like entries.
+     * Priority: VcsTreeModelData > DataKeys > ChangeListManager > UI Fallback
      */
     private fun getSelectedChanges(e: AnActionEvent): List<Change> {
         val project = e.project ?: return emptyList()
         val allChanges = mutableSetOf<Change>()
 
+        // 🔧 策略 0 (最優先): 直接從 ChangesTree 使用 VcsTreeModelData
+        // 這是最可靠的方式，因為它直接讀取 tree model 而非依賴 DataProvider
+        val component = e.getData(PlatformDataKeys.CONTEXT_COMPONENT)
+        logger.warn("DEBUG getSelectedChanges: component = ${component?.javaClass?.name}")
+
+        // 收集 UNTRACKED 檔案的路徑（這些檔案不會有對應的 Change 物件）
+        val untrackedFilePaths = mutableSetOf<String>()
+
+        if (component is ChangesTree) {
+            try {
+                val selectedUserObjects = com.intellij.openapi.vcs.changes.ui.VcsTreeModelData
+                    .selected(component)
+                    .userObjects()
+                logger.warn("DEBUG VcsTreeModelData.selected().userObjects() size = ${selectedUserObjects.size}")
+
+                for ((index, obj) in selectedUserObjects.withIndex()) {
+                    logger.warn("DEBUG   userObject[$index]: ${obj?.javaClass?.name} = $obj")
+
+                    when (obj) {
+                        is Change -> {
+                            allChanges.add(obj)
+                        }
+                        else -> {
+                            // 處理 GitFileStatusNode 等其他類型
+                            // 使用反射取得 path，因為 GitFileStatusNode 是內部類別
+                            try {
+                                val pathMethod = obj?.javaClass?.getMethod("getFilePath")
+                                val filePath = pathMethod?.invoke(obj)
+                                if (filePath != null) {
+                                    val pathStr = filePath.toString()
+                                    logger.warn("DEBUG   -> Extracted filePath: $pathStr")
+                                    untrackedFilePaths.add(pathStr)
+                                }
+                            } catch (ex: Exception) {
+                                // 嘗試其他方式取得路徑
+                                val objStr = obj.toString()
+                                val pathMatch = Regex("path=([^,)]+)").find(objStr)
+                                if (pathMatch != null) {
+                                    val pathStr = pathMatch.groupValues[1]
+                                    logger.warn("DEBUG   -> Extracted path from toString: $pathStr")
+                                    untrackedFilePaths.add(pathStr)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (allChanges.isNotEmpty()) {
+                    logger.warn("DEBUG Source VcsTreeModelData (ChangesTree): found ${allChanges.size} Changes")
+                }
+                if (untrackedFilePaths.isNotEmpty()) {
+                    logger.warn("DEBUG Source VcsTreeModelData: found ${untrackedFilePaths.size} untracked file paths")
+                }
+            } catch (ex: Exception) {
+                logger.warn("Failed to get selection from VcsTreeModelData: ${ex.message}")
+            }
+        }
+
         // 策略 1: 收集所有可能的 Change DataKeys (不進行數量驗證，全部收集)
         e.getData(VcsDataKeys.SELECTED_CHANGES)?.let {
-            logger.info("Source SELECTED_CHANGES: found ${it.size}")
+            logger.warn("DEBUG Source SELECTED_CHANGES: found ${it.size}")
             allChanges.addAll(it)
         }
 
         e.getData(VcsDataKeys.CHANGE_LEAD_SELECTION)?.let {
-            logger.info("Source CHANGE_LEAD_SELECTION: found ${it.size}")
+            logger.warn("DEBUG Source CHANGE_LEAD_SELECTION: found ${it.size}")
             allChanges.addAll(it)
         }
 
         e.getData(VcsDataKeys.CHANGES)?.let {
-            logger.info("Source CHANGES: found ${it.size}")
+            logger.warn("DEBUG Source CHANGES: found ${it.size}")
             allChanges.addAll(it)
         }
 
         // 策略 2: 透過 VirtualFile 反查 Change (這是最強的補強)
         // 如果 DataKeys 的 Change 列表不完整，我們用選中的檔案去 ChangeListManager 查
         val selectedFiles = getSelectedFiles(e)
+        logger.warn("DEBUG getSelectedFiles returned: ${selectedFiles.size} files")
         if (selectedFiles.isNotEmpty()) {
             val changeListManager = ChangeListManager.getInstance(project)
             val changesFromFiles = selectedFiles.mapNotNull { changeListManager.getChange(it) }
 
-            logger.info("Source VirtualFiles -> ChangeListManager: found ${changesFromFiles.size}")
+            logger.warn("DEBUG Source VirtualFiles -> ChangeListManager: found ${changesFromFiles.size}")
             allChanges.addAll(changesFromFiles)
+
+            // 🔧 對於 UNTRACKED 檔案，ChangeListManager.getChange() 會回傳 null
+            // 我們需要把這些檔案加到 untrackedFilePaths
+            for (file in selectedFiles) {
+                if (changeListManager.getChange(file) == null) {
+                    untrackedFilePaths.add(file.path)
+                    logger.warn("DEBUG   File not in ChangeListManager (likely UNTRACKED): ${file.path}")
+                }
+            }
         }
 
         // 策略 3: 如果以上全部加起來還是空的，才嘗試 UI Fallback
-        if (allChanges.isEmpty()) {
+        if (allChanges.isEmpty() && untrackedFilePaths.isEmpty()) {
             val uiFromKey: CommitWorkflowUi? = e.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)
                 ?: (e.getData(VcsDataKeys.COMMIT_WORKFLOW_HANDLER) as? AbstractCommitWorkflowHandler<*, *>)?.ui
 
@@ -82,42 +153,33 @@ class CopyGitFilesContentAction : AnAction() {
                     val changeFilePath = change.afterRevision?.file ?: change.beforeRevision?.file
                     changeFilePath != null && selectedFilePaths.contains(changeFilePath)
                 }
-                logger.info("Source UI Fallback: matched ${matchedChanges.size}")
+                logger.warn("DEBUG Source UI Fallback: matched ${matchedChanges.size}")
                 allChanges.addAll(matchedChanges)
             }
         }
 
-        logger.info("Final merged changes count: ${allChanges.size}")
+        logger.warn("DEBUG Final merged changes count: ${allChanges.size}, untracked paths: ${untrackedFilePaths.size}")
+
+        // 儲存 untracked 檔案路徑供 actionPerformed 使用
+        this.pendingUntrackedPaths = untrackedFilePaths
+
         return allChanges.toList()
     }
+
+    // 暫存 UNTRACKED 檔案路徑
+    private var pendingUntrackedPaths: Set<String> = emptySet()
 
     /**
      * Get selected files as fallback for Git Staging Area.
      * When VcsDataKeys.CHANGES is not available, try CommonDataKeys.
      *
      * IMPORTANT: In Commit Tool Window, DataKeys may return incomplete selection.
-     * This method also tries to extract selection directly from JTree component.
+     * This method prioritizes VcsTreeModelData which is the most reliable source.
      */
     private fun getSelectedFiles(e: AnActionEvent): Array<VirtualFile> {
-        // 1️⃣ 首先嘗試從 JTree/ChangesTree 直接取得選中的節點
         val component = e.getData(PlatformDataKeys.CONTEXT_COMPONENT)
-        if (component is JTree) {
-            val paths: Array<TreePath>? = component.selectionPaths
-            if (paths != null && paths.isNotEmpty()) {
-                val files = mutableListOf<VirtualFile>()
-                for (path in paths) {
-                    val node = path.lastPathComponent
-                    extractFilesFromNode(node, files)
-                }
-                if (files.isNotEmpty()) {
-                    val distinctFiles = files.distinct()
-                    logger.info("getSelectedFiles: Found ${distinctFiles.size} files from JTree selection (${paths.size} paths)")
-                    return distinctFiles.toTypedArray()
-                }
-            }
-        }
 
-        // 2️⃣ 嘗試 ChangesTree 特定的方法 - 使用 VcsTreeModelData
+        // 1️⃣ 最優先：使用 VcsTreeModelData（最可靠，直接讀取 tree model）
         if (component is ChangesTree) {
             try {
                 val selectedUserObjects = com.intellij.openapi.vcs.changes.ui.VcsTreeModelData
@@ -131,11 +193,28 @@ class CopyGitFilesContentAction : AnAction() {
                     }
                 }.distinct()
                 if (files.isNotEmpty()) {
-                    logger.info("getSelectedFiles: Found ${files.size} files from ChangesTree VcsTreeModelData")
+                    logger.info("getSelectedFiles: Found ${files.size} files from VcsTreeModelData (most reliable)")
                     return files.toTypedArray()
                 }
             } catch (ex: Exception) {
-                logger.warn("Failed to get selection from ChangesTree: ${ex.message}")
+                logger.warn("Failed to get selection from VcsTreeModelData: ${ex.message}")
+            }
+        }
+
+        // 2️⃣ 備援：從 JTree 直接取得選中的節點
+        if (component is JTree) {
+            val paths: Array<TreePath>? = component.selectionPaths
+            if (paths != null && paths.isNotEmpty()) {
+                val files = mutableListOf<VirtualFile>()
+                for (path in paths) {
+                    val node = path.lastPathComponent
+                    extractFilesFromNode(node, files)
+                }
+                if (files.isNotEmpty()) {
+                    val distinctFiles = files.distinct()
+                    logger.info("getSelectedFiles: Found ${distinctFiles.size} files from JTree selection (${paths.size} paths)")
+                    return distinctFiles.toTypedArray()
+                }
             }
         }
 
@@ -184,14 +263,21 @@ class CopyGitFilesContentAction : AnAction() {
             return
         }
 
+        // 🔍 DEBUG: 檢查 component 類型
+        val component = e.getData(PlatformDataKeys.CONTEXT_COMPONENT)
+        logger.warn("DEBUG actionPerformed: component type = ${component?.javaClass?.name}")
+
         // Get selected changes from Git Staging Area, Commit UI, or Changes view
         val selectedChanges = getSelectedChanges(e)
-        logger.info("actionPerformed: selectedChanges.size = ${selectedChanges.size}")
+        logger.warn("DEBUG actionPerformed: selectedChanges.size = ${selectedChanges.size}")
+        selectedChanges.forEachIndexed { index, change ->
+            logger.warn("DEBUG   Change[$index]: ${change.afterRevision?.file?.path ?: change.beforeRevision?.file?.path}")
+        }
 
         // If no changes found, try fallback to selected files (for Git Staging Area)
         if (selectedChanges.isEmpty()) {
             val selectedFiles = getSelectedFiles(e)
-            logger.info("actionPerformed: Fallback - selectedFiles.size = ${selectedFiles.size}")
+            logger.warn("DEBUG actionPerformed: Fallback - selectedFiles.size = ${selectedFiles.size}")
 
             if (selectedFiles.isEmpty()) {
                 CopyFileContentAction.showNotification(
@@ -253,24 +339,60 @@ class CopyGitFilesContentAction : AnAction() {
             ))
         }
 
+        // 🔧 處理 UNTRACKED 檔案（這些檔案沒有對應的 Change 物件）
+        val untrackedPaths = pendingUntrackedPaths
+        logger.warn("DEBUG Processing ${untrackedPaths.size} untracked file paths")
+        for (untrackedPath in untrackedPaths) {
+            // 檢查是否已經在 changeInfoList 中
+            if (changeInfoList.any { it.filePath == untrackedPath }) {
+                logger.warn("DEBUG   Skipping duplicate untracked path: $untrackedPath")
+                continue
+            }
+
+            var virtualFile = LocalFileSystem.getInstance().findFileByPath(untrackedPath)
+            if (virtualFile == null) {
+                virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByPath(untrackedPath)
+            }
+
+            if (virtualFile != null) {
+                logger.warn("DEBUG   Added untracked file: $untrackedPath")
+                changeInfoList.add(ChangeInfo(
+                    change = null,  // UNTRACKED 檔案沒有 Change 物件
+                    changeType = "[NEW]",  // 標記為新檔案
+                    filePath = untrackedPath,
+                    virtualFile = virtualFile
+                ))
+            } else {
+                logger.warn("DEBUG   Could not resolve untracked file: $untrackedPath")
+            }
+        }
+        // 清空暫存
+        pendingUntrackedPaths = emptySet()
+
         if (changeInfoList.isEmpty()) {
             CopyFileContentAction.showNotification("No files found in selection.", NotificationType.WARNING, project)
             return
         }
 
         // Separate deleted files from accessible files
-        val deletedFiles = changeInfoList.filter { it.change.type == Change.Type.DELETED }
+        val deletedFiles = changeInfoList.filter { it.change?.type == Change.Type.DELETED }
         val accessibleFiles = changeInfoList.filter {
             it.virtualFile != null && it.virtualFile.isValid && it.virtualFile.exists()
         }
 
-        // Log files that couldn't be accessed
+        // Log files that couldn't be accessed and warn user
         val skippedFiles = changeInfoList.filter {
-            it.change.type != Change.Type.DELETED &&
+            it.change?.type != Change.Type.DELETED &&
             (it.virtualFile == null || !it.virtualFile.isValid || !it.virtualFile.exists())
         }
         if (skippedFiles.isNotEmpty()) {
+            val skippedPaths = skippedFiles.map { it.filePath.substringAfterLast('/') }
             logger.warn("Skipped ${skippedFiles.size} files due to missing virtualFile: ${skippedFiles.map { it.filePath }}")
+            CopyFileContentAction.showNotification(
+                "<html><b>${skippedFiles.size} files could not be resolved:</b><br>${skippedPaths.joinToString(", ")}</html>",
+                NotificationType.WARNING,
+                project
+            )
         }
 
         val settings = CopyFileContentSettings.getInstance(project)
@@ -419,7 +541,7 @@ class CopyGitFilesContentAction : AnAction() {
     }
 
     private data class ChangeInfo(
-        val change: Change,
+        val change: Change?,  // 可為 null（UNTRACKED 檔案沒有 Change 物件）
         val changeType: String,
         val filePath: String,
         val virtualFile: VirtualFile?
