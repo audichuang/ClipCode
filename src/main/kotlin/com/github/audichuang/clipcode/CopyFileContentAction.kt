@@ -268,13 +268,14 @@ class CopyFileContentAction : AnAction() {
             else -> file.presentableUrl
         }
 
-        // Skip already copied files
-        if (fileRelativePath in copiedFilePaths) {
+        // Skip already copied files (使用絕對路徑作為去重 key，避免路徑碰撞)
+        val dedupeKey = file.path
+        if (dedupeKey in copiedFilePaths) {
             logger.info("Skipping already copied file: $fileRelativePath")
             return ""
         }
 
-        copiedFilePaths.add(fileRelativePath)
+        copiedFilePaths.add(dedupeKey)
 
         var content = ""
         

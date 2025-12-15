@@ -10,6 +10,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.vcs.VcsDataKeys
+import com.intellij.openapi.vcs.VcsException
 import com.intellij.openapi.vcs.changes.Change
 import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vcs.changes.ui.ChangesBrowserNode
@@ -44,7 +45,16 @@ class CopyGitFilesContentAction : AnAction() {
      */
     private fun getSelectedChanges(e: AnActionEvent): List<Change> {
         val project = e.project ?: return emptyList()
-        val allChanges = mutableSetOf<Change>()
+        // 🔧 使用 Map 以檔案路徑為 key 進行去重（避免同一檔案從不同來源被重複加入）
+        val allChangesMap = mutableMapOf<String, Change>()
+
+        // Helper function to add change by path (deduplication)
+        fun addChange(change: Change) {
+            val path = change.afterRevision?.file?.path ?: change.beforeRevision?.file?.path
+            if (path != null && !allChangesMap.containsKey(path)) {
+                allChangesMap[path] = change
+            }
+        }
 
         // 🔧 策略 0 (最優先): 直接從 ChangesTree 使用 VcsTreeModelData
         // 這是最可靠的方式，因為它直接讀取 tree model 而非依賴 DataProvider
@@ -66,7 +76,7 @@ class CopyGitFilesContentAction : AnAction() {
 
                     when (obj) {
                         is Change -> {
-                            allChanges.add(obj)
+                            addChange(obj)
                         }
                         else -> {
                             // 處理 GitFileStatusNode 等其他類型
@@ -93,8 +103,8 @@ class CopyGitFilesContentAction : AnAction() {
                     }
                 }
 
-                if (allChanges.isNotEmpty()) {
-                    logger.warn("DEBUG Source VcsTreeModelData (ChangesTree): found ${allChanges.size} Changes")
+                if (allChangesMap.isNotEmpty()) {
+                    logger.warn("DEBUG Source VcsTreeModelData (ChangesTree): found ${allChangesMap.size} Changes")
                 }
                 if (untrackedFilePaths.isNotEmpty()) {
                     logger.warn("DEBUG Source VcsTreeModelData: found ${untrackedFilePaths.size} untracked file paths")
@@ -107,17 +117,17 @@ class CopyGitFilesContentAction : AnAction() {
         // 策略 1: 收集所有可能的 Change DataKeys (不進行數量驗證，全部收集)
         e.getData(VcsDataKeys.SELECTED_CHANGES)?.let {
             logger.warn("DEBUG Source SELECTED_CHANGES: found ${it.size}")
-            allChanges.addAll(it)
+            it.forEach { change -> addChange(change) }
         }
 
         e.getData(VcsDataKeys.CHANGE_LEAD_SELECTION)?.let {
             logger.warn("DEBUG Source CHANGE_LEAD_SELECTION: found ${it.size}")
-            allChanges.addAll(it)
+            it.forEach { change -> addChange(change) }
         }
 
         e.getData(VcsDataKeys.CHANGES)?.let {
             logger.warn("DEBUG Source CHANGES: found ${it.size}")
-            allChanges.addAll(it)
+            it.forEach { change -> addChange(change) }
         }
 
         // 策略 2: 透過 VirtualFile 反查 Change (這是最強的補強)
@@ -129,7 +139,7 @@ class CopyGitFilesContentAction : AnAction() {
             val changesFromFiles = selectedFiles.mapNotNull { changeListManager.getChange(it) }
 
             logger.warn("DEBUG Source VirtualFiles -> ChangeListManager: found ${changesFromFiles.size}")
-            allChanges.addAll(changesFromFiles)
+            changesFromFiles.forEach { change -> addChange(change) }
 
             // 🔧 對於 UNTRACKED 檔案，ChangeListManager.getChange() 會回傳 null
             // 我們需要把這些檔案加到 untrackedFilePaths
@@ -142,7 +152,7 @@ class CopyGitFilesContentAction : AnAction() {
         }
 
         // 策略 3: 如果以上全部加起來還是空的，才嘗試 UI Fallback
-        if (allChanges.isEmpty() && untrackedFilePaths.isEmpty()) {
+        if (allChangesMap.isEmpty() && untrackedFilePaths.isEmpty()) {
             val uiFromKey: CommitWorkflowUi? = e.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)
                 ?: (e.getData(VcsDataKeys.COMMIT_WORKFLOW_HANDLER) as? AbstractCommitWorkflowHandler<*, *>)?.ui
 
@@ -154,16 +164,16 @@ class CopyGitFilesContentAction : AnAction() {
                     changeFilePath != null && selectedFilePaths.contains(changeFilePath)
                 }
                 logger.warn("DEBUG Source UI Fallback: matched ${matchedChanges.size}")
-                allChanges.addAll(matchedChanges)
+                matchedChanges.forEach { change -> addChange(change) }
             }
         }
 
-        logger.warn("DEBUG Final merged changes count: ${allChanges.size}, untracked paths: ${untrackedFilePaths.size}")
+        logger.warn("DEBUG Final merged changes count: ${allChangesMap.size}, untracked paths: ${untrackedFilePaths.size}")
 
         // 儲存 untracked 檔案路徑供 actionPerformed 使用
         this.pendingUntrackedPaths = untrackedFilePaths
 
-        return allChanges.toList()
+        return allChangesMap.values.toList()
     }
 
     // 暫存 UNTRACKED 檔案路徑
@@ -310,6 +320,9 @@ class CopyGitFilesContentAction : AnAction() {
             var virtualFile = change.afterRevision?.file?.virtualFile
                 ?: change.beforeRevision?.file?.virtualFile
 
+            // 用於儲存從 Git 歷史讀取的內容（當 virtualFile 無法解析時）
+            var contentFromRevision: String? = null
+
             // If virtualFile is null, try multiple resolution strategies (IntelliJ 2025 fix)
             if (virtualFile == null && change.type != Change.Type.DELETED) {
                 // 嘗試 1: 直接查找（快速，不強制 VFS 刷新）
@@ -329,13 +342,28 @@ class CopyGitFilesContentAction : AnAction() {
                 if (virtualFile != null) {
                     logger.info("Resolved virtualFile after fallback resolution: $filePath")
                 }
+
+                // 🔧 嘗試 4: 從 Git ContentRevision 讀取內容（適用於 Git Log 歷史版本）
+                if (virtualFile == null) {
+                    try {
+                        contentFromRevision = change.afterRevision?.content
+                            ?: change.beforeRevision?.content
+                        if (contentFromRevision != null) {
+                            logger.info("Resolved content from ContentRevision (Git history): $filePath")
+                        }
+                    } catch (ex: Exception) {
+                        // 捕捉所有異常（VcsException, IOException, RuntimeException 等）
+                        logger.warn("Failed to get content from ContentRevision: ${ex.message}")
+                    }
+                }
             }
 
             changeInfoList.add(ChangeInfo(
                 change = change,
                 changeType = changeType,
                 filePath = filePath,
-                virtualFile = virtualFile
+                virtualFile = virtualFile,
+                contentFromRevision = contentFromRevision
             ))
         }
 
@@ -377,13 +405,15 @@ class CopyGitFilesContentAction : AnAction() {
         // Separate deleted files from accessible files
         val deletedFiles = changeInfoList.filter { it.change?.type == Change.Type.DELETED }
         val accessibleFiles = changeInfoList.filter {
-            it.virtualFile != null && it.virtualFile.isValid && it.virtualFile.exists()
+            (it.virtualFile != null && it.virtualFile.isValid && it.virtualFile.exists())
+            || it.contentFromRevision != null  // 🔧 包含從 Git 歷史讀取內容的檔案
         }
 
         // Log files that couldn't be accessed and warn user
         val skippedFiles = changeInfoList.filter {
             it.change?.type != Change.Type.DELETED &&
-            (it.virtualFile == null || !it.virtualFile.isValid || !it.virtualFile.exists())
+            (it.virtualFile == null || !it.virtualFile.isValid || !it.virtualFile.exists()) &&
+            it.contentFromRevision == null  // 🔧 只有當也沒有 contentFromRevision 時才算 skipped
         }
         if (skippedFiles.isNotEmpty()) {
             val skippedPaths = skippedFiles.map { it.filePath.substringAfterLast('/') }
@@ -397,10 +427,19 @@ class CopyGitFilesContentAction : AnAction() {
 
         val settings = CopyFileContentSettings.getInstance(project)
 
-        // Case 1: Only accessible files (no deleted files) - use performCopyFilesContent
-        if (accessibleFiles.isNotEmpty() && deletedFiles.isEmpty()) {
+        // 🔧 分離出只有 contentFromRevision 的檔案（這些無法使用 performCopyFilesContent）
+        val filesWithVirtualFile = accessibleFiles.filter {
+            it.virtualFile != null && it.virtualFile.isValid && it.virtualFile.exists()
+        }
+        val filesWithOnlyRevisionContent = accessibleFiles.filter {
+            it.contentFromRevision != null &&
+            (it.virtualFile == null || !it.virtualFile.isValid || !it.virtualFile.exists())
+        }
+
+        // Case 1: Only files with virtualFile (no deleted, no revision-only) - use performCopyFilesContent
+        if (filesWithVirtualFile.isNotEmpty() && deletedFiles.isEmpty() && filesWithOnlyRevisionContent.isEmpty()) {
             val copyFileContentAction = CopyFileContentAction()
-            val virtualFiles = accessibleFiles.mapNotNull { it.virtualFile }.toTypedArray()
+            val virtualFiles = filesWithVirtualFile.mapNotNull { it.virtualFile }.toTypedArray()
 
             // Create custom header generator that includes change type
             val customHeaderGenerator: (VirtualFile, String) -> String = { file, relativePath ->
@@ -430,9 +469,6 @@ class CopyGitFilesContentAction : AnAction() {
 
         // Process accessible files (when there are also deleted files)
         for (accessibleInfo in accessibleFiles) {
-            val file = accessibleInfo.virtualFile ?: continue
-            if (!file.isValid || !file.exists()) continue
-
             val relativePath = getRelativePath(project, accessibleInfo.filePath)
             val headerFormat = settings?.state?.headerFormat ?: "// file: \$FILE_PATH"
             val header = if (accessibleInfo.changeType.isNotEmpty()) {
@@ -445,18 +481,38 @@ class CopyGitFilesContentAction : AnAction() {
 
             // ✅ 修復 OOM 風險：先檢查檔案大小
             val maxFileSizeBytes = settings?.state?.maxFileSizeKB?.times(1024L) ?: (500L * 1024L)
-            if (file.length > maxFileSizeBytes) {
-                logger.info("Skipping file in Git changes: ${accessibleInfo.filePath} - File size (${file.length} bytes) exceeds limit")
-                fileContents.add("// File skipped: size exceeds limit (${file.length} bytes)")
-            } else {
-                // Read file content (safe now since size is checked)
-                try {
-                    val content = String(file.contentsToByteArray(), Charsets.UTF_8)
-                    fileContents.add(content)
-                } catch (ex: Exception) {
-                    logger.warn("Failed to read file content: ${accessibleInfo.filePath}", ex)
-                    fileContents.add("// Error reading file content")
+
+            // 🔧 優先使用 virtualFile，若無則使用 contentFromRevision（Git Log 歷史版本）
+            val file = accessibleInfo.virtualFile
+            if (file != null && file.isValid && file.exists()) {
+                // 從 virtualFile 讀取（標準路徑）
+                if (file.length > maxFileSizeBytes) {
+                    logger.info("Skipping file in Git changes: ${accessibleInfo.filePath} - File size (${file.length} bytes) exceeds limit")
+                    fileContents.add("// File skipped: size exceeds limit (${file.length} bytes)")
+                } else {
+                    try {
+                        val content = String(file.contentsToByteArray(), Charsets.UTF_8)
+                        fileContents.add(content)
+                    } catch (ex: Exception) {
+                        logger.warn("Failed to read file content: ${accessibleInfo.filePath}", ex)
+                        fileContents.add("// Error reading file content")
+                    }
                 }
+            } else if (accessibleInfo.contentFromRevision != null) {
+                // 🔧 從 Git ContentRevision 讀取（Git Log 歷史版本）
+                val content = accessibleInfo.contentFromRevision
+                // 使用 UTF-8 byte 大小檢查（而非字元數），因為 maxFileSizeBytes 是 bytes
+                val contentSizeBytes = content.toByteArray(Charsets.UTF_8).size.toLong()
+                if (contentSizeBytes > maxFileSizeBytes) {
+                    logger.info("Skipping file from Git history: ${accessibleInfo.filePath} - Content size ($contentSizeBytes bytes) exceeds limit")
+                    fileContents.add("// File skipped: size exceeds limit ($contentSizeBytes bytes)")
+                } else {
+                    fileContents.add(content)
+                }
+            } else {
+                // 無法讀取內容
+                logger.warn("No content available for: ${accessibleInfo.filePath}")
+                fileContents.add("// Unable to read file content")
             }
 
             if (settings?.state?.addExtraLineBetweenFiles == true) {
@@ -487,18 +543,28 @@ class CopyGitFilesContentAction : AnAction() {
 
         // Show notification
         if (settings?.state?.showCopyNotification == true) {
-            val totalFiles = accessibleFiles.size + deletedFiles.size
+            val fromDiskCount = filesWithVirtualFile.size
+            val fromGitHistoryCount = filesWithOnlyRevisionContent.size
+            val totalAccessible = accessibleFiles.size
+            val totalFiles = totalAccessible + deletedFiles.size
+
             val message = when {
                 accessibleFiles.isEmpty() && deletedFiles.size == 1 ->
                     "1 deleted file marker copied."
                 accessibleFiles.isEmpty() ->
                     "${deletedFiles.size} deleted file markers copied."
-                deletedFiles.isEmpty() && accessibleFiles.size == 1 ->
+                deletedFiles.isEmpty() && totalAccessible == 1 && fromGitHistoryCount == 1 ->
+                    "1 file copied (from Git history)."
+                deletedFiles.isEmpty() && totalAccessible == 1 ->
                     "1 file copied."
+                deletedFiles.isEmpty() && fromGitHistoryCount > 0 ->
+                    "$totalAccessible files copied ($fromDiskCount from disk, $fromGitHistoryCount from Git history)."
                 deletedFiles.isEmpty() ->
-                    "${accessibleFiles.size} files copied."
+                    "$totalAccessible files copied."
+                fromGitHistoryCount > 0 ->
+                    "$totalFiles files copied ($fromDiskCount from disk, $fromGitHistoryCount from Git history, ${deletedFiles.size} deleted)."
                 else ->
-                    "$totalFiles files copied (${accessibleFiles.size} with content, ${deletedFiles.size} deleted)."
+                    "$totalFiles files copied ($totalAccessible with content, ${deletedFiles.size} deleted)."
             }
             CopyFileContentAction.showNotification("<html><b>$message</b></html>", NotificationType.INFORMATION, project)
         }
@@ -544,6 +610,7 @@ class CopyGitFilesContentAction : AnAction() {
         val change: Change?,  // 可為 null（UNTRACKED 檔案沒有 Change 物件）
         val changeType: String,
         val filePath: String,
-        val virtualFile: VirtualFile?
+        val virtualFile: VirtualFile?,
+        val contentFromRevision: String? = null  // 從 Git 歷史讀取的內容（適用於 Git Log）
     )
 }
