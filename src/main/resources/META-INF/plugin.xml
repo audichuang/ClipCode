@@ -1,6 +1,6 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
 
     <id>com.github.audichuang.clipcode</id>
     <depends>com.intellij.modules.platform</depends>
@@ -25,6 +25,15 @@
     </description>
 
     <change-notes><![CDATA[
+    <h2>Version 1.0.1</h2>
+    <ul>
+      <li><b>Improved notification transparency</b>: Now shows skipped file count when files exceed size limit (e.g., "14 files copied (1 skipped: size exceeded)")</li>
+      <li><b>Fix Git Log copy</b>: Historical files, duplicate prevention, and better notifications</li>
+      <li><b>Fix UNTRACKED files</b>: Untracked files now properly copied from Commit window</li>
+      <li><b>IDE compatibility</b>: Removed upper version limit for better compatibility</li>
+      <li><b>OOM prevention</b>: Added file size pre-check to prevent out-of-memory errors</li>
+    </ul>
+
     <h2>Version 1.0.0 - Initial Release</h2>
     <p><b>ClipCode</b> - The ultimate code sharing tool for AI-assisted development!</p>
 
