@@ -18,6 +18,7 @@ import java.awt.datatransfer.StringSelection
 
 class CopyFileContentAction : AnAction() {
     private var fileCount = 0
+    private var skippedFileSizeCount = 0
     private var fileLimitReached = false
     private val logger = Logger.getInstance(CopyFileContentAction::class.java)
     private var externalLibraryHandler: ExternalLibraryHandler? = null
@@ -166,6 +167,7 @@ class CopyFileContentAction : AnAction() {
         customHeaderGenerator: ((VirtualFile, String) -> String)? = null
     ) {
         fileCount = 0
+        skippedFileSizeCount = 0
         fileLimitReached = false
         var totalChars = 0
         var totalLines = 0
@@ -217,8 +219,12 @@ class CopyFileContentAction : AnAction() {
         }
 
         if (settings.state.showCopyNotification) {
-            val fileCountMessage = when (fileCount) {
-                1 -> "1 file copied."
+            val fileCountMessage = when {
+                skippedFileSizeCount > 0 && fileCount == 1 ->
+                    "1 file copied ($skippedFileSizeCount skipped: size exceeded)."
+                skippedFileSizeCount > 0 ->
+                    "$fileCount files copied ($skippedFileSizeCount skipped: size exceeded)."
+                fileCount == 1 -> "1 file copied."
                 else -> "$fileCount files copied."
             }
 
@@ -347,6 +353,7 @@ class CopyFileContentAction : AnAction() {
         // 這樣可以避免讀取 2GB log 檔等超大檔案導致 IDE 崩潰
         if (file.length > maxFileSizeBytes) {
             logger.info("Skipping file: ${file.name} - File size (${file.length} bytes) exceeds limit ($maxFileSizeBytes bytes)")
+            skippedFileSizeCount++
             // 回傳提示字串，讓使用者知道哪些檔案被跳過（與 Git 模式保持一致的 UX）
             val header = customHeaderGenerator?.invoke(file, fileRelativePath)
                 ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)

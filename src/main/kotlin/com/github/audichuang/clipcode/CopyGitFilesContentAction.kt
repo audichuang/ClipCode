@@ -462,6 +462,7 @@ class CopyGitFilesContentAction : AnAction() {
         // Case 2 & 3: Only deleted files OR both accessible and deleted files
         // Build all content ourselves to avoid clipboard overwrite
         val fileContents = mutableListOf<String>()
+        var skippedSizeCount = 0  // Track files skipped due to size limit
 
         if (settings != null && settings.state.preText.isNotEmpty()) {
             fileContents.add(settings.state.preText)
@@ -488,6 +489,7 @@ class CopyGitFilesContentAction : AnAction() {
                 // 從 virtualFile 讀取（標準路徑）
                 if (file.length > maxFileSizeBytes) {
                     logger.info("Skipping file in Git changes: ${accessibleInfo.filePath} - File size (${file.length} bytes) exceeds limit")
+                    skippedSizeCount++
                     fileContents.add("// File skipped: size exceeds limit (${file.length} bytes)")
                 } else {
                     try {
@@ -505,6 +507,7 @@ class CopyGitFilesContentAction : AnAction() {
                 val contentSizeBytes = content.toByteArray(Charsets.UTF_8).size.toLong()
                 if (contentSizeBytes > maxFileSizeBytes) {
                     logger.info("Skipping file from Git history: ${accessibleInfo.filePath} - Content size ($contentSizeBytes bytes) exceeds limit")
+                    skippedSizeCount++
                     fileContents.add("// File skipped: size exceeds limit ($contentSizeBytes bytes)")
                 } else {
                     fileContents.add(content)
@@ -543,28 +546,31 @@ class CopyGitFilesContentAction : AnAction() {
 
         // Show notification
         if (settings?.state?.showCopyNotification == true) {
-            val fromDiskCount = filesWithVirtualFile.size
+            val fromDiskCount = filesWithVirtualFile.size - skippedSizeCount.coerceAtMost(filesWithVirtualFile.size)
             val fromGitHistoryCount = filesWithOnlyRevisionContent.size
-            val totalAccessible = accessibleFiles.size
-            val totalFiles = totalAccessible + deletedFiles.size
+            val actualCopied = accessibleFiles.size - skippedSizeCount
+            val totalFiles = actualCopied + deletedFiles.size
+
+            // Build skipped suffix if any files were skipped
+            val skippedSuffix = if (skippedSizeCount > 0) " ($skippedSizeCount skipped: size exceeded)" else ""
 
             val message = when {
                 accessibleFiles.isEmpty() && deletedFiles.size == 1 ->
                     "1 deleted file marker copied."
                 accessibleFiles.isEmpty() ->
                     "${deletedFiles.size} deleted file markers copied."
-                deletedFiles.isEmpty() && totalAccessible == 1 && fromGitHistoryCount == 1 ->
-                    "1 file copied (from Git history)."
-                deletedFiles.isEmpty() && totalAccessible == 1 ->
-                    "1 file copied."
+                deletedFiles.isEmpty() && actualCopied == 1 && fromGitHistoryCount == 1 ->
+                    "1 file copied (from Git history)$skippedSuffix."
+                deletedFiles.isEmpty() && actualCopied == 1 ->
+                    "1 file copied$skippedSuffix."
                 deletedFiles.isEmpty() && fromGitHistoryCount > 0 ->
-                    "$totalAccessible files copied ($fromDiskCount from disk, $fromGitHistoryCount from Git history)."
+                    "$actualCopied files copied ($fromDiskCount from disk, $fromGitHistoryCount from Git history)$skippedSuffix."
                 deletedFiles.isEmpty() ->
-                    "$totalAccessible files copied."
+                    "$actualCopied files copied$skippedSuffix."
                 fromGitHistoryCount > 0 ->
-                    "$totalFiles files copied ($fromDiskCount from disk, $fromGitHistoryCount from Git history, ${deletedFiles.size} deleted)."
+                    "$totalFiles files copied ($fromDiskCount from disk, $fromGitHistoryCount from Git history, ${deletedFiles.size} deleted)$skippedSuffix."
                 else ->
-                    "$totalFiles files copied ($totalAccessible with content, ${deletedFiles.size} deleted)."
+                    "$totalFiles files copied ($actualCopied with content, ${deletedFiles.size} deleted)$skippedSuffix."
             }
             CopyFileContentAction.showNotification("<html><b>$message</b></html>", NotificationType.INFORMATION, project)
         }
