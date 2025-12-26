@@ -109,7 +109,7 @@ intellijPlatform {
 
         ideaVersion {
             sinceBuild = properties("pluginSinceBuild")
-            untilBuild = properties("pluginUntilBuild").orNull
+            untilBuild = properties("pluginUntilBuild").map { it.ifEmpty { null } }.orNull
         }
     }
 
