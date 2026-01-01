@@ -69,7 +69,7 @@ intellijPlatform {
               <li><b>Fixed:</b> DELETED files in Git Staging Area (both staged and unstaged) can now be copied correctly</li>
               <li><b>Improved:</b> DELETED files now include full content from Git history instead of just a marker</li>
               <li><b>Added:</b> Git show fallback for reading deleted file content when ChangeListManager is unavailable</li>
-              <li><b>Expanded:</b> Plugin now supports IntelliJ IDEA 2023.1 and later versions</li>
+              <li><b>Expanded:</b> Plugin now supports IntelliJ IDEA 2023.2 and later versions</li>
             </ul>
 
             <h2>Version 1.0.0 - Initial Release</h2>
@@ -112,7 +112,7 @@ intellijPlatform {
               <li>Notification preferences</li>
             </ul>
 
-            <p><b>Compatibility:</b> IntelliJ IDEA 2023.1+ and all JetBrains IDEs</p>
+            <p><b>Compatibility:</b> IntelliJ IDEA 2023.2+ and all JetBrains IDEs</p>
         """.trimIndent()
 
         ideaVersion {

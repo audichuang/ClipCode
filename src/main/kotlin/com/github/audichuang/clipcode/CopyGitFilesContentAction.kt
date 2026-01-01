@@ -508,7 +508,6 @@ class CopyGitFilesContentAction : AnAction() {
 
                 // 嘗試從 Git 讀取刪除前的內容
                 try {
-                    val filePath = VcsUtil.getFilePath(statusInfo.path)
                     val changeListManager = ChangeListManager.getInstance(project)
                     // 嘗試透過 ChangeListManager 取得 Change 物件
                     val changes = changeListManager.allChanges
@@ -827,8 +826,8 @@ class CopyGitFilesContentAction : AnAction() {
                 return null
             }
 
-            // 使用 Git4Idea 的 GitFileUtils 讀取內容
-            val filePath = VcsUtil.getFilePath(absolutePath)
+            // 使用 Git4Idea API 讀取內容
+            val filePath = com.intellij.openapi.vcs.LocalFilePath(file.toPath(), false)
 
             // 根據來源決定使用哪個 revision
             // fromIndex=true: 從 staged (index) 讀取 -> git show :path
