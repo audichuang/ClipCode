@@ -21,19 +21,6 @@ class PasteAndRestoreFilesAction : AnAction() {
 
     companion object {
         /**
-         * Regex pattern to match one or more consecutive change type labels at the start of a path.
-         * Handles multiple labels like "[MODIFIED] [NEW] path" and optional whitespace.
-         * Non-capturing group (?:...) for efficiency.
-         */
-        private val CHANGE_TYPE_PATTERN = Regex("^(?:\\[(NEW|MODIFIED|DELETED|MOVED)\\]\\s*)+")
-
-        /**
-         * Regex pattern to extract ONLY the first change type label.
-         * Used for determining isDeleted flag to avoid false positives.
-         */
-        private val FIRST_LABEL_PATTERN = Regex("^\\[(NEW|MODIFIED|DELETED|MOVED)\\]")
-
-        /**
          * Generic fallback pattern to detect "file:" headers regardless of prefix style.
          * Matches: // file: xxx, # file: xxx, file: xxx, etc.
          */
@@ -44,6 +31,15 @@ class PasteAndRestoreFilesAction : AnAction() {
         val path: String,
         val content: String,
         val isDeleted: Boolean = false
+    )
+
+    /**
+     * Represents a file to be deleted during paste operation.
+     */
+    data class DeletionTarget(
+        val relativePath: String,
+        val virtualFile: VirtualFile?,
+        val exists: Boolean
     )
     
     override fun actionPerformed(e: AnActionEvent) {
@@ -93,48 +89,7 @@ class PasteAndRestoreFilesAction : AnAction() {
         val filesToCreate = parsedFiles.filter { !it.isDeleted }
         val deletedFiles = parsedFiles.filter { it.isDeleted }
 
-        // Log information about deleted files
-        if (deletedFiles.isNotEmpty()) {
-            val deletedList = deletedFiles.joinToString(", ") { it.path }
-            logger.info("Skipping ${deletedFiles.size} deleted file(s): $deletedList")
-        }
-
-        // Check if there are any files to restore
-        if (filesToCreate.isEmpty()) {
-            val message = if (deletedFiles.size == 1) {
-                "The file in clipboard is marked as [DELETED].\nDeleted files cannot be restored."
-            } else {
-                "All ${deletedFiles.size} files in clipboard are marked as [DELETED].\nDeleted files cannot be restored."
-            }
-            CopyFileContentAction.showNotification(
-                message,
-                NotificationType.WARNING,
-                project
-            )
-            return
-        }
-
-        // Show confirmation dialog with file list
-        val fileList = filesToCreate.joinToString("\n") { "• ${it.path}" }
-        val deletedNote = if (deletedFiles.isNotEmpty()) {
-            "\n\n(Skipped ${deletedFiles.size} deleted file${if (deletedFiles.size > 1) "s" else ""})"
-        } else {
-            ""
-        }
-        val message = "Found ${filesToCreate.size} file(s) to restore:\n\n$fileList$deletedNote\n\nDo you want to create these files?"
-        
-        val result = Messages.showYesNoDialog(
-            project,
-            message,
-            "Restore Files from Clipboard",
-            Messages.getQuestionIcon()
-        )
-        
-        if (result != Messages.YES) {
-            return
-        }
-        
-        // Get project root
+        // Get project root early (needed for deletion target discovery)
         val projectRoot = com.intellij.openapi.roots.ProjectRootManager.getInstance(project)
             .contentRoots.firstOrNull()
 
@@ -144,6 +99,85 @@ class PasteAndRestoreFilesAction : AnAction() {
                 NotificationType.ERROR,
                 project
             )
+            return
+        }
+
+        // Find deletion targets (files that exist and can be deleted)
+        val deletionTargets = if (deletedFiles.isNotEmpty()) {
+            findDeletionTargets(projectRoot, deletedFiles)
+        } else {
+            emptyList()
+        }
+        val existingDeletionTargets = deletionTargets.filter { it.exists }
+        val missingDeletionTargets = deletionTargets.filter { !it.exists }
+
+        // Log information about files
+        if (deletedFiles.isNotEmpty()) {
+            val deletedList = deletedFiles.joinToString(", ") { it.path }
+            logger.info("Found ${deletedFiles.size} deleted file(s): $deletedList")
+            if (missingDeletionTargets.isNotEmpty()) {
+                logger.info("${missingDeletionTargets.size} [DELETED] file(s) not found in project (already deleted or never existed)")
+            }
+        }
+
+        // Check if there are any actionable operations
+        if (filesToCreate.isEmpty() && existingDeletionTargets.isEmpty()) {
+            val message = when {
+                deletedFiles.isEmpty() -> "No files found in clipboard content."
+                missingDeletionTargets.isNotEmpty() ->
+                    "All ${missingDeletionTargets.size} file(s) marked as [DELETED] were not found in the project.\nNothing to do."
+                else -> "No actionable files in clipboard."
+            }
+            CopyFileContentAction.showNotification(
+                message,
+                NotificationType.WARNING,
+                project
+            )
+            return
+        }
+
+        // Build confirmation message
+        val createSection = if (filesToCreate.isNotEmpty()) {
+            val createList = filesToCreate.take(15).joinToString("\n") { "  + ${it.path}" }
+            val createMore = if (filesToCreate.size > 15) "\n  ... and ${filesToCreate.size - 15} more" else ""
+            "Files to CREATE (${filesToCreate.size}):\n$createList$createMore"
+        } else {
+            null
+        }
+
+        val deleteSection = if (existingDeletionTargets.isNotEmpty()) {
+            val deleteList = existingDeletionTargets.take(15).joinToString("\n") { "  - ${it.relativePath}" }
+            val deleteMore = if (existingDeletionTargets.size > 15) "\n  ... and ${existingDeletionTargets.size - 15} more" else ""
+            "Files to DELETE (${existingDeletionTargets.size}):\n$deleteList$deleteMore"
+        } else {
+            null
+        }
+
+        val skippedNote = if (missingDeletionTargets.isNotEmpty()) {
+            "(${missingDeletionTargets.size} deleted file(s) not found in project - skipped)"
+        } else {
+            null
+        }
+
+        val confirmMessage = listOfNotNull(createSection, deleteSection, skippedNote)
+            .joinToString("\n\n") + "\n\nDo you want to proceed?"
+
+        val dialogTitle = when {
+            filesToCreate.isNotEmpty() && existingDeletionTargets.isNotEmpty() -> "Restore and Delete Files"
+            existingDeletionTargets.isNotEmpty() -> "Delete Files"
+            else -> "Restore Files from Clipboard"
+        }
+
+        val result = Messages.showYesNoDialog(
+            project,
+            confirmMessage,
+            dialogTitle,
+            "Proceed",
+            "Cancel",
+            Messages.getQuestionIcon()
+        )
+
+        if (result != Messages.YES) {
             return
         }
 
@@ -204,8 +238,14 @@ class PasteAndRestoreFilesAction : AnAction() {
         var failCount = 0
         val errors = mutableListOf<String>()
 
+        // Track deletion results
+        var deleteSuccessCount = 0
+        var deleteFailCount = 0
+        val deleteErrors = mutableListOf<String>()
+
         ApplicationManager.getApplication().invokeLater {
             WriteCommandAction.runWriteCommandAction(project) {
+                // Create files
                 filesToCreate.forEach { parsedFile ->
                     try {
                         val created = createFile(project, projectRoot, parsedFile, overwriteAll, skipAll)
@@ -221,24 +261,48 @@ class PasteAndRestoreFilesAction : AnAction() {
                     }
                 }
 
+                // Delete files
+                existingDeletionTargets.forEach { target ->
+                    try {
+                        target.virtualFile?.delete(this@PasteAndRestoreFilesAction)
+                        deleteSuccessCount++
+                        logger.info("Deleted file: ${target.relativePath}")
+                    } catch (e: Exception) {
+                        deleteFailCount++
+                        deleteErrors.add("${target.relativePath}: ${e.message}")
+                        logger.error("Failed to delete file: ${target.relativePath}", e)
+                    }
+                }
+
                 // Show result notification
+                val resultParts = mutableListOf<String>()
                 if (successCount > 0) {
                     val skipNote = if (skipCount > 0) " ($skipCount skipped)" else ""
+                    resultParts.add("Created $successCount file(s)$skipNote")
+                }
+                if (deleteSuccessCount > 0) {
+                    resultParts.add("Deleted $deleteSuccessCount file(s)")
+                }
+
+                if (resultParts.isNotEmpty()) {
                     CopyFileContentAction.showNotification(
-                        "<html><b>Successfully restored $successCount file(s)$skipNote</b></html>",
+                        "<html><b>${resultParts.joinToString(", ")}</b></html>",
                         NotificationType.INFORMATION,
                         project
                     )
                 }
-                
-                if (failCount > 0) {
-                    val errorMessage = "<html><b>Failed to restore $failCount file(s):</b><br>" +
-                        errors.take(5).joinToString("<br>") { it } +
-                        (if (errors.size > 5) "<br>..." else "") +
+
+                // Show errors
+                val allErrors = errors + deleteErrors
+                val totalFailed = failCount + deleteFailCount
+                if (allErrors.isNotEmpty()) {
+                    val errorMessage = "<html><b>Failed: $totalFailed operation(s):</b><br>" +
+                        allErrors.take(5).joinToString("<br>") { it } +
+                        (if (allErrors.size > 5) "<br>..." else "") +
                         "</html>"
                     CopyFileContentAction.showNotification(
-                        errorMessage, 
-                        NotificationType.ERROR, 
+                        errorMessage,
+                        NotificationType.ERROR,
                         project
                     )
                 }
@@ -305,7 +369,7 @@ class PasteAndRestoreFilesAction : AnAction() {
                 // Extract path and strip Git labels
                 val rawPath = match.groups[1]?.value ?: continue
                 // Check if ANY label is DELETED (not just the first one)
-                currentIsDeleted = rawPath.contains("[DELETED]")
+                currentIsDeleted = ChangeTypeLabel.isDeleted(rawPath)
                 val pathWithoutLabel = stripChangeTypeLabel(rawPath)
                 currentFilePath = normalizePathForCurrentPlatform(pathWithoutLabel)
                 currentContent.clear()
@@ -342,9 +406,8 @@ class PasteAndRestoreFilesAction : AnAction() {
      * @return The path with all leading change type labels removed
      */
     private fun stripChangeTypeLabel(path: String): String {
-        // Use pre-compiled pattern from companion object
-        // Pattern matches one or more consecutive labels with optional whitespace
-        val stripped = CHANGE_TYPE_PATTERN.replace(path, "").trim()
+        // Use ChangeTypeLabel enum for consistent label handling
+        val stripped = ChangeTypeLabel.stripLabels(path)
 
         // Validate that we actually have a path
         if (stripped.isBlank()) {
@@ -449,7 +512,37 @@ class PasteAndRestoreFilesAction : AnAction() {
 
         return segments.joinToString("/")
     }
-    
+
+    /**
+     * Find files in project that match [DELETED] entries from clipboard.
+     * Only returns targets that exist within the project root.
+     */
+    private fun findDeletionTargets(
+        projectRoot: VirtualFile,
+        deletedFiles: List<ParsedFile>
+    ): List<DeletionTarget> {
+        return deletedFiles.mapNotNull { parsedFile ->
+            val relativePath = normalizePathForCurrentPlatform(parsedFile.path.trim())
+            if (relativePath.isEmpty()) return@mapNotNull null
+
+            val pathParts = relativePath.split("/")
+            var currentDir: VirtualFile? = projectRoot
+
+            for (i in 0 until pathParts.size - 1) {
+                currentDir = currentDir?.findChild(pathParts[i])
+                if (currentDir == null || !currentDir.isDirectory) break
+            }
+
+            val targetFile = currentDir?.findChild(pathParts.last())
+
+            DeletionTarget(
+                relativePath = relativePath,
+                virtualFile = targetFile,
+                exists = targetFile != null && targetFile.exists() && !targetFile.isDirectory
+            )
+        }
+    }
+
     override fun update(e: AnActionEvent) {
         val project = e.project
         e.presentation.isEnabledAndVisible = project != null

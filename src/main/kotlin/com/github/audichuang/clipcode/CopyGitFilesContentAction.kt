@@ -29,6 +29,16 @@ import javax.swing.tree.TreePath
 class CopyGitFilesContentAction : AnAction() {
     private val logger = Logger.getInstance(CopyGitFilesContentAction::class.java)
 
+    /**
+     * Data class to hold Git status information from GitFileStatusNode.
+     * Used for files in Git Staging Area that are not represented as Change objects.
+     */
+    data class GitStatusInfo(
+        val path: String,
+        val status: String,  // DELETED, MODIFIED, ADDED, etc.
+        val isStaged: Boolean = false  // true if from STAGED area, false if from UNSTAGED/workTree
+    )
+
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
 
     /**
@@ -63,6 +73,8 @@ class CopyGitFilesContentAction : AnAction() {
 
         // 收集 UNTRACKED 檔案的路徑（這些檔案不會有對應的 Change 物件）
         val untrackedFilePaths = mutableSetOf<String>()
+        // 收集 GitFileStatusNode 中的非 UNTRACKED 檔案（如 DELETED, MODIFIED 等）
+        val gitStatusNodes = mutableSetOf<GitStatusInfo>()
 
         if (component is ChangesTree) {
             try {
@@ -80,14 +92,82 @@ class CopyGitFilesContentAction : AnAction() {
                         }
                         else -> {
                             // 處理 GitFileStatusNode 等其他類型
-                            // 使用反射取得 path，因為 GitFileStatusNode 是內部類別
+                            // GitFileStatusNode 包含 status, kind, path 資訊，需要特別處理
                             try {
+                                // 嘗試取得 status - GitFileStatusNode.getStatus() 回傳 GitFileStatus 物件
+                                // GitFileStatus 包含 index 和 workTree 狀態碼：
+                                // D=Deleted, M=Modified, A=Added, ?=Untracked, 空格=未變更
+                                var normalizedStatus: String? = null
+                                var isStaged = false  // 判斷是 STAGED 還是 UNSTAGED
+                                try {
+                                    val statusMethod = obj?.javaClass?.getMethod("getStatus")
+                                    val statusObj = statusMethod?.invoke(obj)
+                                    val statusStr = statusObj?.toString() ?: ""
+                                    logger.warn("DEBUG   -> GitFileStatusNode status object: $statusStr")
+
+                                    // 解析 GitFileStatus(index=X, workTree=Y, ...) 格式
+                                    // 優先檢查 workTree，然後是 index
+                                    val workTreeMatch = Regex("workTree=([A-Z?])").find(statusStr)
+                                    val indexMatch = Regex("index=([A-Z?])").find(statusStr)
+
+                                    val workTreeCode = workTreeMatch?.groupValues?.get(1)?.trim()
+                                    val indexCode = indexMatch?.groupValues?.get(1)?.trim()
+
+                                    // 判斷是來自 STAGED 還是 UNSTAGED
+                                    // 從 obj.toString() 解析 kind=STAGED 或 kind=UNSTAGED
+                                    val objStr = obj.toString()
+                                    val kindMatch = Regex("kind=([A-Z]+)").find(objStr)
+                                    val kind = kindMatch?.groupValues?.get(1)
+                                    isStaged = (kind == "STAGED")
+                                    logger.warn("DEBUG   -> Parsed kind: $kind, isStaged: $isStaged")
+
+                                    // 根據 kind 決定使用哪個狀態碼
+                                    // STAGED: 使用 indexCode
+                                    // UNSTAGED: 使用 workTreeCode
+                                    val effectiveCode = if (isStaged) indexCode else workTreeCode
+                                    normalizedStatus = when (effectiveCode) {
+                                        "D" -> "DELETED"
+                                        "M" -> "MODIFIED"
+                                        "A" -> "ADDED"
+                                        "?" -> "UNTRACKED"
+                                        else -> when {
+                                            // Fallback: 如果 effectiveCode 不匹配，嘗試任一匹配
+                                            workTreeCode == "D" || indexCode == "D" -> "DELETED"
+                                            workTreeCode == "M" || indexCode == "M" -> "MODIFIED"
+                                            workTreeCode == "A" || indexCode == "A" -> "ADDED"
+                                            workTreeCode == "?" || indexCode == "?" -> "UNTRACKED"
+                                            else -> null
+                                        }
+                                    }
+                                    logger.warn("DEBUG   -> Normalized status: $normalizedStatus (workTree=$workTreeCode, index=$indexCode, isStaged=$isStaged)")
+                                } catch (ex: Exception) {
+                                    // 從 toString 解析 status（備用方案）
+                                    val objStr = obj.toString()
+                                    val statusMatch = Regex("status=([A-Z_]+)").find(objStr)
+                                    normalizedStatus = statusMatch?.groupValues?.get(1)
+                                    // 嘗試解析 kind
+                                    val kindMatch = Regex("kind=([A-Z]+)").find(objStr)
+                                    isStaged = (kindMatch?.groupValues?.get(1) == "STAGED")
+                                    logger.warn("DEBUG   -> Fallback status from toString: $normalizedStatus, isStaged: $isStaged")
+                                }
+
+                                // 取得 filePath
                                 val pathMethod = obj?.javaClass?.getMethod("getFilePath")
                                 val filePath = pathMethod?.invoke(obj)
                                 if (filePath != null) {
                                     val pathStr = filePath.toString()
                                     logger.warn("DEBUG   -> Extracted filePath: $pathStr")
-                                    untrackedFilePaths.add(pathStr)
+
+                                    // 根據 status 決定如何處理
+                                    if (normalizedStatus != null && normalizedStatus != "UNTRACKED") {
+                                        // 非 UNTRACKED 的狀態（如 DELETED, MODIFIED, ADDED）
+                                        gitStatusNodes.add(GitStatusInfo(pathStr, normalizedStatus, isStaged))
+                                        logger.warn("DEBUG   -> Added to gitStatusNodes: $pathStr with status $normalizedStatus, isStaged=$isStaged")
+                                    } else {
+                                        // UNTRACKED 或無法取得狀態的檔案
+                                        untrackedFilePaths.add(pathStr)
+                                        logger.warn("DEBUG   -> Added to untrackedFilePaths: $pathStr")
+                                    }
                                 }
                             } catch (ex: Exception) {
                                 // 嘗試其他方式取得路徑
@@ -168,16 +248,20 @@ class CopyGitFilesContentAction : AnAction() {
             }
         }
 
-        logger.warn("DEBUG Final merged changes count: ${allChangesMap.size}, untracked paths: ${untrackedFilePaths.size}")
+        logger.warn("DEBUG Final merged changes count: ${allChangesMap.size}, untracked paths: ${untrackedFilePaths.size}, git status nodes: ${gitStatusNodes.size}")
 
         // 儲存 untracked 檔案路徑供 actionPerformed 使用
         this.pendingUntrackedPaths = untrackedFilePaths
+        // 儲存 GitFileStatusNode 資訊供 actionPerformed 使用
+        this.pendingGitStatusNodes = gitStatusNodes
 
         return allChangesMap.values.toList()
     }
 
     // 暫存 UNTRACKED 檔案路徑
     private var pendingUntrackedPaths: Set<String> = emptySet()
+    // 暫存 GitFileStatusNode 資訊（非 UNTRACKED 狀態的檔案，如 DELETED, MODIFIED 等）
+    private var pendingGitStatusNodes: Set<GitStatusInfo> = emptySet()
 
     /**
      * Get selected files as fallback for Git Staging Area.
@@ -284,8 +368,9 @@ class CopyGitFilesContentAction : AnAction() {
             logger.warn("DEBUG   Change[$index]: ${change.afterRevision?.file?.path ?: change.beforeRevision?.file?.path}")
         }
 
-        // If no changes found, try fallback to selected files (for Git Staging Area)
-        if (selectedChanges.isEmpty()) {
+        // If no changes found, check if we have GitFileStatusNodes (e.g., DELETED files in unstaged area)
+        // Only fallback to selectedFiles if we also don't have any pending git status nodes
+        if (selectedChanges.isEmpty() && pendingGitStatusNodes.isEmpty() && pendingUntrackedPaths.isEmpty()) {
             val selectedFiles = getSelectedFiles(e)
             logger.warn("DEBUG actionPerformed: Fallback - selectedFiles.size = ${selectedFiles.size}")
 
@@ -386,7 +471,7 @@ class CopyGitFilesContentAction : AnAction() {
                 logger.warn("DEBUG   Added untracked file: $untrackedPath")
                 changeInfoList.add(ChangeInfo(
                     change = null,  // UNTRACKED 檔案沒有 Change 物件
-                    changeType = "[NEW]",  // 標記為新檔案
+                    changeType = ChangeTypeLabel.NEW.label,  // 標記為新檔案
                     filePath = untrackedPath,
                     virtualFile = virtualFile
                 ))
@@ -397,21 +482,130 @@ class CopyGitFilesContentAction : AnAction() {
         // 清空暫存
         pendingUntrackedPaths = emptySet()
 
+        // 🔧 處理 GitFileStatusNode 檔案（這些檔案沒有 Change 物件，但有狀態資訊）
+        val gitStatusInfos = pendingGitStatusNodes
+        logger.warn("DEBUG Processing ${gitStatusInfos.size} GitFileStatusNode entries")
+        for (statusInfo in gitStatusInfos) {
+            // 檢查是否已經在 changeInfoList 中
+            if (changeInfoList.any { it.filePath == statusInfo.path }) {
+                logger.warn("DEBUG   Skipping duplicate GitFileStatusNode path: ${statusInfo.path}")
+                continue
+            }
+
+            // 將 Git 狀態轉換為 ChangeTypeLabel
+            val changeType = when (statusInfo.status) {
+                "DELETED" -> ChangeTypeLabel.DELETED.label
+                "MODIFIED" -> ChangeTypeLabel.MODIFIED.label
+                "ADDED" -> ChangeTypeLabel.NEW.label
+                else -> ChangeTypeLabel.MODIFIED.label  // 預設為 MODIFIED
+            }
+
+            // 對於 DELETED 檔案，嘗試從 Git 讀取內容
+            if (statusInfo.status == "DELETED") {
+                logger.warn("DEBUG   Processing DELETED file from GitFileStatusNode: ${statusInfo.path}")
+                logger.warn("DEBUG   -> isStaged: ${statusInfo.isStaged}")
+                var contentFromRevision: String? = null
+
+                // 嘗試從 Git 讀取刪除前的內容
+                try {
+                    val filePath = VcsUtil.getFilePath(statusInfo.path)
+                    val changeListManager = ChangeListManager.getInstance(project)
+                    // 嘗試透過 ChangeListManager 取得 Change 物件
+                    val changes = changeListManager.allChanges
+                    logger.warn("DEBUG   -> ChangeListManager.allChanges count: ${changes.size}")
+                    val matchingChange = changes.find { change ->
+                        val changePath = change.beforeRevision?.file?.path ?: change.afterRevision?.file?.path
+                        changePath == statusInfo.path
+                    }
+                    if (matchingChange != null) {
+                        logger.warn("DEBUG   -> Found matching Change in ChangeListManager")
+                        logger.warn("DEBUG   -> Change type: ${matchingChange.type}")
+                        logger.warn("DEBUG   -> beforeRevision: ${matchingChange.beforeRevision}")
+                        contentFromRevision = matchingChange.beforeRevision?.content
+                        logger.warn("DEBUG   -> Content from beforeRevision available: ${contentFromRevision != null}")
+                        if (contentFromRevision != null) {
+                            logger.warn("DEBUG   -> Content length: ${contentFromRevision.length} chars")
+                        }
+                    } else {
+                        logger.warn("DEBUG   -> No matching Change found in ChangeListManager")
+                    }
+
+                    // 🔧 Fallback: 使用 git show 命令讀取內容
+                    // 對於 STAGED 的刪除：從 HEAD 讀取（因為 index 沒有這個檔案了）
+                    // 對於 UNSTAGED 的刪除：從 HEAD 讀取（因為 workTree 沒有這個檔案了）
+                    if (contentFromRevision == null) {
+                        logger.warn("DEBUG   -> Trying git show to read deleted file content")
+                        // 對於刪除的檔案，無論是 staged 還是 unstaged，都從 HEAD 讀取
+                        // 因為刪除意味著檔案在目標位置（index 或 workTree）已經不存在了
+                        contentFromRevision = getFileContentFromGit(project, statusInfo.path, fromIndex = false)
+                        if (contentFromRevision != null) {
+                            logger.warn("DEBUG   -> Successfully read content from git show HEAD:path")
+                            logger.warn("DEBUG   -> Content length: ${contentFromRevision.length} chars")
+                        } else {
+                            logger.warn("DEBUG   -> Failed to read content from git show HEAD:path")
+                        }
+                    }
+                } catch (ex: Exception) {
+                    logger.warn("DEBUG   -> Failed to get content for DELETED file: ${ex.message}")
+                    logger.warn("DEBUG   -> Exception type: ${ex.javaClass.name}")
+                }
+
+                changeInfoList.add(ChangeInfo(
+                    change = null,
+                    changeType = changeType,
+                    filePath = statusInfo.path,
+                    virtualFile = null,  // DELETED 檔案在磁碟上不存在
+                    contentFromRevision = contentFromRevision
+                ))
+                logger.warn("DEBUG   -> Added DELETED file to changeInfoList: ${statusInfo.path}, hasContent: ${contentFromRevision != null}")
+            } else {
+                // 對於非 DELETED 檔案，嘗試解析 VirtualFile
+                var virtualFile = LocalFileSystem.getInstance().findFileByPath(statusInfo.path)
+                if (virtualFile == null) {
+                    virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByPath(statusInfo.path)
+                }
+
+                if (virtualFile != null) {
+                    logger.warn("DEBUG   Added ${statusInfo.status} file from GitFileStatusNode: ${statusInfo.path}")
+                    changeInfoList.add(ChangeInfo(
+                        change = null,
+                        changeType = changeType,
+                        filePath = statusInfo.path,
+                        virtualFile = virtualFile
+                    ))
+                } else {
+                    logger.warn("DEBUG   Could not resolve GitFileStatusNode file: ${statusInfo.path}")
+                }
+            }
+        }
+        // 清空暫存
+        pendingGitStatusNodes = emptySet()
+
         if (changeInfoList.isEmpty()) {
             CopyFileContentAction.showNotification("No files found in selection.", NotificationType.WARNING, project)
             return
         }
 
         // Separate deleted files from accessible files
-        val deletedFiles = changeInfoList.filter { it.change?.type == Change.Type.DELETED }
-        val accessibleFiles = changeInfoList.filter {
-            (it.virtualFile != null && it.virtualFile.isValid && it.virtualFile.exists())
-            || it.contentFromRevision != null  // 🔧 包含從 Git 歷史讀取內容的檔案
+        // 🔧 DELETED 檔案的處理邏輯：
+        // - 如果有 contentFromRevision：放入 accessibleFiles（會顯示完整內容）
+        // - 如果沒有 contentFromRevision：放入 deletedFiles（只顯示刪除標記）
+        val deletedFilesWithoutContent = changeInfoList.filter {
+            (it.change?.type == Change.Type.DELETED || it.changeType == ChangeTypeLabel.DELETED.label) &&
+            it.contentFromRevision == null  // 只有沒有內容的 DELETED 檔案才放入 deletedFiles
         }
+        val accessibleFiles = changeInfoList.filter {
+            (it.virtualFile != null && it.virtualFile.isValid && it.virtualFile.exists()) ||
+            it.contentFromRevision != null  // 包含有內容的 DELETED 檔案
+        }
+        // 為了向後兼容，保留 deletedFiles 變數名
+        val deletedFiles = deletedFilesWithoutContent
 
         // Log files that couldn't be accessed and warn user
+        // 🔧 同時檢查 DELETED 標籤
         val skippedFiles = changeInfoList.filter {
             it.change?.type != Change.Type.DELETED &&
+            it.changeType != ChangeTypeLabel.DELETED.label &&
             (it.virtualFile == null || !it.virtualFile.isValid || !it.virtualFile.exists()) &&
             it.contentFromRevision == null  // 🔧 只有當也沒有 contentFromRevision 時才算 skipped
         }
@@ -577,13 +771,7 @@ class CopyGitFilesContentAction : AnAction() {
     }
 
     private fun getChangeTypeLabel(change: Change): String {
-        return when (change.type) {
-            Change.Type.NEW -> "[NEW]"
-            Change.Type.DELETED -> "[DELETED]"
-            Change.Type.MODIFICATION -> "[MODIFIED]"
-            Change.Type.MOVED -> "[MOVED]"
-            else -> ""
-        }
+        return ChangeTypeLabel.fromChangeType(change.type)?.label ?: ""
     }
 
     private fun getRelativePath(project: Project, absolutePath: String): String {
@@ -610,6 +798,106 @@ class CopyGitFilesContentAction : AnAction() {
         val project = e.project
         e.presentation.isVisible = project != null
         e.presentation.isEnabled = project != null
+    }
+
+    /**
+     * 使用 Git 命令讀取檔案內容（適用於已刪除或不存在的檔案）
+     * @param project 當前專案
+     * @param absolutePath 檔案的絕對路徑
+     * @param fromIndex 如果為 true，從 index (staged) 讀取；否則從 HEAD 讀取
+     * @return 檔案內容，如果讀取失敗則為 null
+     */
+    private fun getFileContentFromGit(project: Project, absolutePath: String, fromIndex: Boolean = false): String? {
+        try {
+            // 找到檔案所在的 Git repository root
+            val file = java.io.File(absolutePath)
+            val vFile = LocalFileSystem.getInstance().findFileByPath(file.parent ?: return null)
+                ?: LocalFileSystem.getInstance().refreshAndFindFileByPath(file.parent ?: return null)
+                ?: return null
+
+            val gitRepo = git4idea.GitUtil.getRepositoryManager(project)
+                .getRepositoryForFile(vFile)
+                ?: return null
+
+            val repoRoot = gitRepo.root.path
+            // 計算相對路徑
+            val relativePath = if (absolutePath.startsWith(repoRoot)) {
+                absolutePath.substring(repoRoot.length).trimStart('/')
+            } else {
+                return null
+            }
+
+            // 使用 Git4Idea 的 GitFileUtils 讀取內容
+            val filePath = VcsUtil.getFilePath(absolutePath)
+
+            // 根據來源決定使用哪個 revision
+            // fromIndex=true: 從 staged (index) 讀取 -> git show :path
+            // fromIndex=false: 從 HEAD 讀取 -> git show HEAD:path
+            val revision = if (fromIndex) {
+                git4idea.repo.GitRepositoryManager.getInstance(project)
+                    .getRepositoryForFile(vFile)
+                    ?.let { git4idea.GitRevisionNumber(":") }  // Index revision
+            } else {
+                git4idea.GitRevisionNumber.HEAD
+            }
+
+            if (revision != null) {
+                val contentRevision = git4idea.GitContentRevision.createRevision(
+                    filePath,
+                    revision,
+                    project
+                )
+                return contentRevision.content
+            }
+        } catch (ex: Exception) {
+            logger.warn("Failed to read file content from Git: ${ex.message}")
+        }
+
+        // Fallback: 嘗試使用 ProcessBuilder 直接執行 git 命令
+        return getFileContentFromGitCommand(project, absolutePath, fromIndex)
+    }
+
+    /**
+     * 使用 git 命令列直接讀取檔案內容（作為 fallback）
+     */
+    private fun getFileContentFromGitCommand(project: Project, absolutePath: String, fromIndex: Boolean = false): String? {
+        try {
+            val file = java.io.File(absolutePath)
+            val workDir = file.parentFile ?: return null
+
+            // 找到 git repository root
+            var currentDir = workDir
+            while (!java.io.File(currentDir, ".git").exists()) {
+                currentDir = currentDir.parentFile ?: return null
+            }
+
+            val repoRoot = currentDir.absolutePath
+            val relativePath = if (absolutePath.startsWith(repoRoot)) {
+                absolutePath.substring(repoRoot.length).trimStart('/')
+            } else {
+                return null
+            }
+
+            // 建立 git show 命令
+            // fromIndex=true: git show :relativePath (從 staged/index 讀取)
+            // fromIndex=false: git show HEAD:relativePath (從 HEAD 讀取)
+            val gitRef = if (fromIndex) ":$relativePath" else "HEAD:$relativePath"
+            val processBuilder = ProcessBuilder("git", "show", gitRef)
+                .directory(currentDir)
+                .redirectErrorStream(false)
+
+            val process = processBuilder.start()
+            val content = process.inputStream.bufferedReader().use { it.readText() }
+            val exitCode = process.waitFor()
+
+            if (exitCode == 0 && content.isNotEmpty()) {
+                logger.warn("DEBUG   Read ${content.length} chars from git show $gitRef")
+                return content
+            }
+        } catch (ex: Exception) {
+            logger.warn("Failed to execute git show command: ${ex.message}")
+        }
+        return null
     }
 
     private data class ChangeInfo(
