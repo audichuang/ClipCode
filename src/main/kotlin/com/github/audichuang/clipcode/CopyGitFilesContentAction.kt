@@ -20,7 +20,7 @@ import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.vcs.commit.CommitWorkflowUi
 import com.intellij.vcs.commit.AbstractCommitWorkflowHandler
-import com.intellij.vcsUtil.VcsUtil
+
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import javax.swing.JTree
@@ -238,7 +238,9 @@ class CopyGitFilesContentAction : AnAction() {
 
             val uiChanges = uiFromKey?.getIncludedChanges() ?: emptyList()
             if (uiChanges.isNotEmpty() && selectedFiles.isNotEmpty()) {
-                val selectedFilePaths = selectedFiles.map { VcsUtil.getFilePath(it) }.toSet()
+                val selectedFilePaths = selectedFiles.map { 
+                    com.intellij.openapi.vcs.LocalFilePath(it.toNioPath(), it.isDirectory) 
+                }.toSet()
                 val matchedChanges = uiChanges.filter { change ->
                     val changeFilePath = change.afterRevision?.file ?: change.beforeRevision?.file
                     changeFilePath != null && selectedFilePaths.contains(changeFilePath)
@@ -508,7 +510,6 @@ class CopyGitFilesContentAction : AnAction() {
 
                 // 嘗試從 Git 讀取刪除前的內容
                 try {
-                    val filePath = VcsUtil.getFilePath(statusInfo.path)
                     val changeListManager = ChangeListManager.getInstance(project)
                     // 嘗試透過 ChangeListManager 取得 Change 物件
                     val changes = changeListManager.allChanges
@@ -827,8 +828,8 @@ class CopyGitFilesContentAction : AnAction() {
                 return null
             }
 
-            // 使用 Git4Idea 的 GitFileUtils 讀取內容
-            val filePath = VcsUtil.getFilePath(absolutePath)
+            // 使用 Git4Idea API 讀取內容
+            val filePath = com.intellij.openapi.vcs.LocalFilePath(file.toPath(), false)
 
             // 根據來源決定使用哪個 revision
             // fromIndex=true: 從 staged (index) 讀取 -> git show :path
