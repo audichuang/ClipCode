@@ -4,7 +4,12 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
@@ -32,7 +37,26 @@ class CopyGitFilesContentAction : AnAction() {
             return
         }
 
-        val resolvedEntries = GitContentResolver(logger).resolve(project, selection)
+        ProgressManager.getInstance().run(
+            object : Task.Backgroundable(project, "Copying Git file content…", true) {
+                override fun run(indicator: ProgressIndicator) {
+                    indicator.isIndeterminate = true
+                    val resolvedEntries = GitContentResolver(logger).resolve(project, selection)
+                    indicator.checkCanceled()
+                    ApplicationManager.getApplication().invokeLater {
+                        handleResolvedEntries(e, project, pathResolver, resolvedEntries)
+                    }
+                }
+            }
+        )
+    }
+
+    private fun handleResolvedEntries(
+        e: AnActionEvent,
+        project: Project,
+        pathResolver: ClipboardPathResolver,
+        resolvedEntries: List<GitContentResolver.ResolvedGitEntry>
+    ) {
         if (resolvedEntries.isEmpty()) {
             CopyFileContentAction.showNotification(
                 "No files found in Git selection.",
