@@ -1,6 +1,6 @@
-import org.jetbrains.changelog.Changelog
-import org.jetbrains.changelog.markdownToHTML
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+import org.gradle.jvm.toolchain.JavaLanguageVersion
 
 fun properties(key: String) = providers.gradleProperty(key)
 fun environment(key: String) = providers.environmentVariable(key)
@@ -28,6 +28,10 @@ repositories {
 }
 
 dependencies {
+    testImplementation(kotlin("test"))
+    testCompileOnly("junit:junit:4.13.2")
+    testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.12.2")
+
     // IntelliJ Platform Gradle Plugin Dependencies Extension
     intellijPlatform {
         create(properties("platformType"), properties("platformVersion"))
@@ -44,10 +48,18 @@ dependencies {
     }
 }
 
-// Set the JVM language level used to build the project.
-kotlin {
-    jvmToolchain(17)
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(21))
+    }
 }
+
+kotlin {
+    jvmToolchain(21)
+}
+
+val localIdeSmokePath = providers.gradleProperty("localIdeSmokePath")
+    .orElse("/Applications/IntelliJ IDEA.app")
 
 // Configure IntelliJ Platform Gradle Plugin
 intellijPlatform {
@@ -64,12 +76,14 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
-            <h2>Version 1.0.2 - Git Deleted Files Fix</h2>
+            <h2>Version 1.1.0 - Major Refactor and Git Delete Reliability</h2>
             <ul>
-              <li><b>Fixed:</b> DELETED files in Git Staging Area (both staged and unstaged) can now be copied correctly</li>
-              <li><b>Improved:</b> DELETED files now include full content from Git history instead of just a marker</li>
-              <li><b>Added:</b> Git show fallback for reading deleted file content when ChangeListManager is unavailable</li>
-              <li><b>Expanded:</b> Plugin now supports IntelliJ IDEA 2023.2 and later versions</li>
+              <li><b>Fixed:</b> Pasting a file marked as [DELETED] (from Git Log, staging area, or changes view) now reliably removes the file in the current working tree</li>
+              <li><b>Fixed:</b> Git deleted-file clipboard paths now resolve consistently across project roots and modules</li>
+              <li><b>Improved:</b> Paste and Restore runs in the background, keeping the UI responsive for large operations</li>
+              <li><b>Improved:</b> Paste and Restore explains whether deleted targets were already absent, unresolved, or ambiguous</li>
+              <li><b>Upgraded:</b> Build toolchain now targets Java 21 and IntelliJ IDEA 2025.2+</li>
+              <li><b>Added:</b> Automated tests for clipboard parsing, path resolution, restore planning, and Git content resolution</li>
             </ul>
 
             <h2>Version 1.0.0 - Initial Release</h2>
@@ -112,7 +126,7 @@ intellijPlatform {
               <li>Notification preferences</li>
             </ul>
 
-            <p><b>Compatibility:</b> IntelliJ IDEA 2023.2+ and all JetBrains IDEs</p>
+            <p><b>Compatibility:</b> IntelliJ IDEA 2025.2+ and all JetBrains IDEs</p>
         """.trimIndent()
 
         ideaVersion {
@@ -134,7 +148,21 @@ intellijPlatform {
 
     pluginVerification {
         ides {
-            recommended()
+            create(IntelliJPlatformType.IntellijIdeaCommunity, "2025.2.6.1")
+            create(IntelliJPlatformType.IntellijIdea, "2025.3.4")
+            create(IntelliJPlatformType.IntellijIdea, "2026.1")
+        }
+    }
+}
+
+intellijPlatformTesting {
+    runIde.register("runIde2026_1Local") {
+        localPath = file(localIdeSmokePath.get())
+        sandboxDirectory = layout.buildDirectory.dir("idea-sandbox/local-2026.1")
+        task {
+            onlyIf("Local IntelliJ IDEA 2026.1 is available") {
+                file(localIdeSmokePath.get()).exists()
+            }
         }
     }
 }
@@ -157,6 +185,13 @@ kover {
 }
 
 tasks {
+    test {
+        useJUnitPlatform()
+        doFirst {
+            temporaryDir.mkdirs()
+        }
+    }
+
     wrapper {
         gradleVersion = properties("gradleVersion").get()
     }

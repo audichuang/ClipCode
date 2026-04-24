@@ -17,11 +17,7 @@ import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 
 class CopyFileContentAction : AnAction() {
-    private var fileCount = 0
-    private var skippedFileSizeCount = 0
-    private var fileLimitReached = false
     private val logger = Logger.getInstance(CopyFileContentAction::class.java)
-    private var externalLibraryHandler: ExternalLibraryHandler? = null
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: run {
@@ -166,22 +162,18 @@ class CopyFileContentAction : AnAction() {
         filesToCopy: Array<VirtualFile>,
         customHeaderGenerator: ((VirtualFile, String) -> String)? = null
     ) {
-        fileCount = 0
-        skippedFileSizeCount = 0
-        fileLimitReached = false
-        var totalChars = 0
-        var totalLines = 0
-        var totalWords = 0
-        var totalTokens = 0
-        val copiedFilePaths = mutableSetOf<String>()
-
         val project = e.project ?: return
-        // Initialize external library handler
-        externalLibraryHandler = ExternalLibraryHandler(project)
         val settings = CopyFileContentSettings.getInstance(project) ?: run {
             showNotification("Failed to load settings.", NotificationType.ERROR, project)
             return
         }
+        val session = CopySession(
+            externalLibraryHandler = ExternalLibraryHandler(project)
+        )
+        var totalChars = 0
+        var totalLines = 0
+        var totalWords = 0
+        var totalTokens = 0
 
         val fileContents = mutableListOf<String>().apply {
             add(settings.state.preText)
@@ -189,15 +181,15 @@ class CopyFileContentAction : AnAction() {
 
         for (file in filesToCopy) {
             // Check file limit only if the checkbox is selected.
-            if (settings.state.setMaxFileCount && fileCount >= settings.state.fileCountLimit) {
-                fileLimitReached = true
+            if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
+                session.fileLimitReached = true
                 break
             }
 
             val content = if (file.isDirectory) {
-                processDirectory(file, fileContents, copiedFilePaths, project, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
+                processDirectory(file, fileContents, session, project, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
             } else {
-                processFile(file, fileContents, copiedFilePaths, project, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
+                processFile(file, fileContents, session, project, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
             }
 
             totalChars += content.length
@@ -209,7 +201,7 @@ class CopyFileContentAction : AnAction() {
         fileContents.add(settings.state.postText)
         copyToClipboard(fileContents.joinToString(separator = "\n"))
 
-        if (fileLimitReached) {
+        if (session.fileLimitReached) {
             val fileLimitWarningMessage = """
                 <html>
                 <b>File Limit Reached:</b> The file limit of ${settings.state.fileCountLimit} files was reached.
@@ -220,12 +212,12 @@ class CopyFileContentAction : AnAction() {
 
         if (settings.state.showCopyNotification) {
             val fileCountMessage = when {
-                skippedFileSizeCount > 0 && fileCount == 1 ->
-                    "1 file copied ($skippedFileSizeCount skipped: size exceeded)."
-                skippedFileSizeCount > 0 ->
-                    "$fileCount files copied ($skippedFileSizeCount skipped: size exceeded)."
-                fileCount == 1 -> "1 file copied."
-                else -> "$fileCount files copied."
+                session.skippedFileSizeCount > 0 && session.fileCount == 1 ->
+                    "1 file copied (${session.skippedFileSizeCount} skipped: size exceeded)."
+                session.skippedFileSizeCount > 0 ->
+                    "${session.fileCount} files copied (${session.skippedFileSizeCount} skipped: size exceeded)."
+                session.fileCount == 1 -> "1 file copied."
+                else -> "${session.fileCount} files copied."
             }
 
             val statisticsMessage = """
@@ -251,19 +243,19 @@ class CopyFileContentAction : AnAction() {
     private fun processFile(
         file: VirtualFile,
         fileContents: MutableList<String>,
-        copiedFilePaths: MutableSet<String>,
+        session: CopySession,
         project: Project,
         addExtraLine: Boolean,
         customHeaderGenerator: ((VirtualFile, String) -> String)? = null
     ): String {
         val settings = CopyFileContentSettings.getInstance(project) ?: return ""
         val repositoryRoot = getRepositoryRoot(project)
-        val handler = externalLibraryHandler
+        val handler = session.externalLibraryHandler
         
         // Determine the file path to display
         val fileRelativePath = when {
             // First check if it's from external library
-            handler != null && handler.isFromExternalLibrary(file) -> {
+            handler.isFromExternalLibrary(file) -> {
                 handler.getCleanPath(file)
             }
             // Then check if it's from project
@@ -276,12 +268,12 @@ class CopyFileContentAction : AnAction() {
 
         // Skip already copied files (使用絕對路徑作為去重 key，避免路徑碰撞)
         val dedupeKey = file.path
-        if (dedupeKey in copiedFilePaths) {
+        if (dedupeKey in session.copiedFilePaths) {
             logger.info("Skipping already copied file: $fileRelativePath")
             return ""
         }
 
-        copiedFilePaths.add(dedupeKey)
+        session.copiedFilePaths.add(dedupeKey)
 
         var content = ""
         
@@ -353,7 +345,7 @@ class CopyFileContentAction : AnAction() {
         // 這樣可以避免讀取 2GB log 檔等超大檔案導致 IDE 崩潰
         if (file.length > maxFileSizeBytes) {
             logger.info("Skipping file: ${file.name} - File size (${file.length} bytes) exceeds limit ($maxFileSizeBytes bytes)")
-            skippedFileSizeCount++
+            session.skippedFileSizeCount++
             // 回傳提示字串，讓使用者知道哪些檔案被跳過（與 Git 模式保持一致的 UX）
             val header = customHeaderGenerator?.invoke(file, fileRelativePath)
                 ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
@@ -366,7 +358,7 @@ class CopyFileContentAction : AnAction() {
         }
         
         // Handle external library files differently
-        if (handler != null && handler.isFromExternalLibrary(file)) {
+        if (handler.isFromExternalLibrary(file)) {
             // Check if file should be processed
             if (!handler.shouldProcessFile(file)) {
                 logger.info("Skipping external library file: ${file.name}")
@@ -381,7 +373,7 @@ class CopyFileContentAction : AnAction() {
                     ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
                 fileContents.add(header)
                 fileContents.add(content)
-                fileCount++
+                session.fileCount++
                 if (addExtraLine) {
                     fileContents.add("")
                 }
@@ -398,7 +390,7 @@ class CopyFileContentAction : AnAction() {
                         ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
                     fileContents.add(header)
                     fileContents.add(content)
-                    fileCount++
+                    session.fileCount++
                     if (addExtraLine) {
                         fileContents.add("")
                     }
@@ -415,7 +407,7 @@ class CopyFileContentAction : AnAction() {
     private fun processDirectory(
         directory: VirtualFile,
         fileContents: MutableList<String>,
-        copiedFilePaths: MutableSet<String>,
+        session: CopySession,
         project: Project,
         addExtraLine: Boolean,
         customHeaderGenerator: ((VirtualFile, String) -> String)? = null
@@ -480,14 +472,14 @@ class CopyFileContentAction : AnAction() {
         }
 
         for (childFile in directory.children) {
-            if (settings.state.setMaxFileCount && fileCount >= settings.state.fileCountLimit) {
-                fileLimitReached = true
+            if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
+                session.fileLimitReached = true
                 break
             }
             val content = if (childFile.isDirectory) {
-                processDirectory(childFile, fileContents, copiedFilePaths, project, addExtraLine, customHeaderGenerator)
+                processDirectory(childFile, fileContents, session, project, addExtraLine, customHeaderGenerator)
             } else {
-                processFile(childFile, fileContents, copiedFilePaths, project, addExtraLine, customHeaderGenerator)
+                processFile(childFile, fileContents, session, project, addExtraLine, customHeaderGenerator)
             }
             if (content.isNotEmpty()) {
                 directoryContent.append(content)
@@ -550,6 +542,14 @@ class CopyFileContentAction : AnAction() {
             return notification
         }
     }
+
+    private data class CopySession(
+        val copiedFilePaths: MutableSet<String> = mutableSetOf(),
+        val externalLibraryHandler: ExternalLibraryHandler,
+        var fileCount: Int = 0,
+        var skippedFileSizeCount: Int = 0,
+        var fileLimitReached: Boolean = false
+    )
 
     private fun showNotificationWithSettingsAction(message: String, notificationType: NotificationType, project: Project?) {
         val notificationGroup = NotificationGroupManager.getInstance().getNotificationGroup("ClipCode")

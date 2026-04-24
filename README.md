@@ -56,7 +56,7 @@ Download the [latest release](https://github.com/audichuang/ClipCode/releases/la
 
 ## Compatibility
 
-- IntelliJ IDEA 2024.3 - 2025.2
+- IntelliJ IDEA 2025.2+
 - All JetBrains IDEs (WebStorm, PyCharm, Rider, etc.)
 
 ## Author

@@ -16,10 +16,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: 'temurin'
 
       - name: Setup Gradle
@@ -28,23 +28,58 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build Plugin
-        run: ./gradlew buildPlugin
+      - name: Build and sign plugin
+        run: ./gradlew buildPlugin signPlugin
+        env:
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
 
       - name: Get version from tag
         id: get_version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
-      - name: Extract change notes from plugin.xml
+      - name: Resolve plugin artifact
+        id: plugin_artifact
+        run: |
+          unsigned_zip="build/distributions/ClipCode-${{ steps.get_version.outputs.VERSION }}.zip"
+          signed_zip="build/distributions/ClipCode-${{ steps.get_version.outputs.VERSION }}-signed.zip"
+
+          if [ -f "$signed_zip" ]; then
+            echo "PLUGIN_ZIP=$signed_zip" >> "$GITHUB_OUTPUT"
+          elif [ -f "$unsigned_zip" ]; then
+            echo "PLUGIN_ZIP=$unsigned_zip" >> "$GITHUB_OUTPUT"
+          else
+            echo "Plugin artifact not found. Available distributions:" >&2
+            find build/distributions -maxdepth 1 -type f -print >&2 || true
+            exit 1
+          fi
+
+      - name: Extract change notes from patched plugin.xml
         id: changelog
+        env:
+          VERSION: ${{ steps.get_version.outputs.VERSION }}
         run: |
           # Extract content between <change-notes><![CDATA[ and ]]> and convert HTML to Markdown
           python3 << 'EOF'
+          import os
           import re
-          with open('src/main/resources/META-INF/plugin.xml', 'r') as f:
-              content = f.read()
+          from pathlib import Path
+
+          candidates = [
+              Path('build/tmp/patchPluginXml/plugin.xml'),
+              Path('build/patchedPluginXmlFiles/plugin.xml'),
+              Path('build/resources/main/META-INF/plugin.xml'),
+          ]
+          plugin_xml = next((path for path in candidates if path.exists()), None)
+          if plugin_xml is None:
+              raise FileNotFoundError("No patched plugin.xml found in known Gradle output locations")
+
+          content = plugin_xml.read_text()
+          print(f"Reading change notes from {plugin_xml}")
+
           # Match content between CDATA start and ]]> (they may be on separate lines)
-          match = re.search(r'<change-notes><!\[CDATA\[(.*?)\]\]>', content, re.DOTALL)
+          match = re.search(r'<change-notes>\s*<!\[CDATA\[(.*?)\]\]>\s*</change-notes>', content, re.DOTALL)
           if match:
               html = match.group(1).strip()
 
@@ -60,10 +95,10 @@ jobs:
               md = re.sub(r'\s*<li>(.*?)</li>', r'\n- \1', md)
               md = re.sub(r'\n{3,}', '\n\n', md)  # Clean up extra newlines
 
-              with open('changelog.md', 'w') as f:
-                  f.write(md.strip())
+              Path('changelog.md').write_text(md.strip() + '\n')
               print("Changelog extracted and converted to Markdown successfully")
           else:
+              Path('changelog.md').write_text(f"Release v{os.environ['VERSION']}\n")
               print("No changelog found")
           EOF
 
@@ -75,14 +110,16 @@ jobs:
         with:
           name: ClipCode v${{ steps.get_version.outputs.VERSION }}
           body_path: changelog.md
-          files: |
-            build/distributions/ClipCode-${{ steps.get_version.outputs.VERSION }}.zip
+          files: ${{ steps.plugin_artifact.outputs.PLUGIN_ZIP }}
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish to JetBrains Marketplace
-        run: ./gradlew publishPlugin
+        run: ./gradlew publishPlugin --rerun-tasks
         env:
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}

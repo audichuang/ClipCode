@@ -5,7 +5,7 @@ annotations = "24.1.0"
 # plugins
 kotlin = "2.2.0"
 changelog = "2.2.0"
-gradleIntelliJPlugin = "2.7.0"
+gradleIntelliJPlugin = "2.14.0"
 qodana = "2024.3.3"
 kover = "0.8.3"
 

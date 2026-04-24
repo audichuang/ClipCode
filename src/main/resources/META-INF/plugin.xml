@@ -1,7 +1,5 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <version>1.0.1</version>
-
     <id>com.github.audichuang.clipcode</id>
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.vcs</depends>
@@ -23,60 +21,6 @@
     </ul>
     ]]>
     </description>
-
-    <change-notes><![CDATA[
-    <h2>Version 1.0.1</h2>
-    <ul>
-      <li><b>Improved notification transparency</b>: Now shows skipped file count when files exceed size limit (e.g., "14 files copied (1 skipped: size exceeded)")</li>
-      <li><b>Fix Git Log copy</b>: Historical files, duplicate prevention, and better notifications</li>
-      <li><b>Fix UNTRACKED files</b>: Untracked files now properly copied from Commit window</li>
-      <li><b>IDE compatibility</b>: Removed upper version limit for better compatibility</li>
-      <li><b>OOM prevention</b>: Added file size pre-check to prevent out-of-memory errors</li>
-    </ul>
-
-    <h2>Version 1.0.0 - Initial Release</h2>
-    <p><b>ClipCode</b> - The ultimate code sharing tool for AI-assisted development!</p>
-
-    <h3>Core Features</h3>
-    <ul>
-      <li><b>Smart Copy</b>: Copy single or multiple files/directories with customizable headers</li>
-      <li><b>Copy All Open Tabs</b>: Quickly copy content from all open editor tabs</li>
-      <li><b>Statistics</b>: Shows file count, lines, words, and estimated token count</li>
-    </ul>
-
-    <h3>Git Integration</h3>
-    <ul>
-      <li>Copy from Git Staging Area (staged/unstaged files)</li>
-      <li>Copy from Git Changes view with change type labels ([NEW], [MODIFIED], [DELETED], [MOVED])</li>
-      <li>Copy from Git Log/History window</li>
-    </ul>
-
-    <h3>Paste & Restore</h3>
-    <ul>
-      <li>Restore files from clipboard content (Ctrl+Shift+Alt+V)</li>
-      <li>Automatic directory structure creation</li>
-      <li>Smart parsing of Git change labels</li>
-      <li>Overwrite protection with confirmation dialog</li>
-    </ul>
-
-    <h3>Advanced Filtering</h3>
-    <ul>
-      <li>PATH filters: Include/exclude specific directories</li>
-      <li>PATTERN filters: Wildcards for file names (e.g., *.java, test_*)</li>
-      <li>Individual rule enable/disable</li>
-      <li>File size and count limits</li>
-    </ul>
-
-    <h3>Customization</h3>
-    <ul>
-      <li>Configurable header format with $FILE_PATH placeholder</li>
-      <li>Pre/post text wrappers</li>
-      <li>Notification preferences</li>
-    </ul>
-
-    <p><b>Compatibility:</b> IntelliJ IDEA 2024.3 - 2025.2 and all JetBrains IDEs</p>
-    ]]>
-    </change-notes>
 
     <extensions defaultExtensionNs="com.intellij">
         <notificationGroup id="ClipCode" displayType="BALLOON" isLogByDefault="true" />

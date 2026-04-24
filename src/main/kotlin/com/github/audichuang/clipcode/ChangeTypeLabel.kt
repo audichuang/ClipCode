@@ -29,15 +29,22 @@ enum class ChangeTypeLabel(val label: String) {
             Change.Type.DELETED -> DELETED
             Change.Type.MODIFICATION -> MODIFIED
             Change.Type.MOVED -> MOVED
-            else -> null
         }
 
         /** Parse label string to enum (e.g., "[DELETED]" -> DELETED) */
         fun fromLabel(labelStr: String): ChangeTypeLabel? =
             entries.find { it.label.equals(labelStr, ignoreCase = true) }
 
-        /** Check if path contains DELETED label */
-        fun isDeleted(path: String): Boolean = path.contains(DELETED.label)
+        /** Parse all leading labels from a clipboard path header. */
+        fun extractLeadingLabels(path: String): Set<ChangeTypeLabel> {
+            val matchedPrefix = MULTI_LABEL_PATTERN.find(path)?.value ?: return emptySet()
+            return SINGLE_LABEL_PATTERN.findAll(matchedPrefix)
+                .mapNotNull { match -> fromLabel(match.value) }
+                .toSet()
+        }
+
+        /** Check if path starts with DELETED label. */
+        fun isDeleted(path: String): Boolean = extractLeadingLabels(path).contains(DELETED)
 
         /** Strip all change type labels from path */
         fun stripLabels(path: String): String =

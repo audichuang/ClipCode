@@ -287,7 +287,8 @@ This is a **major feature** - restores files from clipboard content!
 3. **Verify**:
    - Labels are automatically stripped
    - Files created with correct paths
-   - `[DELETED]` files are skipped with notification
+   - `[DELETED]` files delete matching targets when they exist
+   - Missing deleted targets show a clear "already absent" or "unresolved path" warning
 
 ### Test 6.4: Overwrite Protection
 
@@ -565,7 +566,8 @@ This is a **major feature** - restores files from clipboard content!
 - [ ] Automatic directory creation
 - [ ] Overwrite protection dialog
 - [ ] Works with Git change labels
-- [ ] Skips [DELETED] files
+- [ ] Deletes matching [DELETED] targets
+- [ ] Warns clearly when [DELETED] targets are already absent or unresolved
 
 **Advanced Filtering:**
 - [ ] PATH include filters work
@@ -618,4 +620,4 @@ You've tested all plugin features!
 - Close the IDE window or press `Ctrl+C` in terminal
 
 **Plugin build location:**
-- `build/distributions/ClipCode-1.0.0.zip`
+- `build/distributions/ClipCode-1.0.2.zip`
