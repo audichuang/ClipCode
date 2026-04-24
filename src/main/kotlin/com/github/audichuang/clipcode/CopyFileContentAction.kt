@@ -10,8 +10,6 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.roots.ProjectRootManager
-import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
@@ -168,7 +166,8 @@ class CopyFileContentAction : AnAction() {
             return
         }
         val session = CopySession(
-            externalLibraryHandler = ExternalLibraryHandler(project)
+            externalLibraryHandler = ExternalLibraryHandler(project),
+            pathResolver = ClipboardPathResolver.fromProject(project)
         )
         var totalChars = 0
         var totalLines = 0
@@ -249,7 +248,6 @@ class CopyFileContentAction : AnAction() {
         customHeaderGenerator: ((VirtualFile, String) -> String)? = null
     ): String {
         val settings = CopyFileContentSettings.getInstance(project) ?: return ""
-        val repositoryRoot = getRepositoryRoot(project)
         val handler = session.externalLibraryHandler
         
         // Determine the file path to display
@@ -259,8 +257,8 @@ class CopyFileContentAction : AnAction() {
                 handler.getCleanPath(file)
             }
             // Then check if it's from project
-            repositoryRoot != null && VfsUtil.getRelativePath(file, repositoryRoot, '/') != null -> {
-                VfsUtil.getRelativePath(file, repositoryRoot, '/')!!
+            !file.isDirectory -> {
+                CopyPathFormatter.displayPath(session.pathResolver, file.path)
             }
             // Fallback to presentable URL
             else -> file.presentableUrl
@@ -279,8 +277,7 @@ class CopyFileContentAction : AnAction() {
         
         // Check filters if enabled
         if (settings.state.useFilters) {
-            val projectRoot = getRepositoryRoot(project)
-            val fileRelativePathFromRoot = projectRoot?.let { VfsUtil.getRelativePath(file, it, '/') }
+            val fileRelativePathFromRoot = CopyPathFormatter.relativeFilterPath(session.pathResolver, file.path)
             val fileAbsolutePath = file.path
             
             // Get enabled filter rules
@@ -417,8 +414,7 @@ class CopyFileContentAction : AnAction() {
         
         // Check if directory should be processed based on filters
         if (settings.state.useFilters) {
-            val projectRoot = getRepositoryRoot(project)
-            val dirRelativePath = projectRoot?.let { VfsUtil.getRelativePath(directory, it, '/') }
+            val dirRelativePath = CopyPathFormatter.relativeFilterPath(session.pathResolver, directory.path)
             val dirAbsolutePath = directory.path
             
             // Get enabled filter rules
@@ -507,11 +503,6 @@ class CopyFileContentAction : AnAction() {
     private fun isBinaryFile(file: VirtualFile): Boolean {
         return FileTypeManager.getInstance().getFileTypeByFile(file).isBinary
     }
-
-    private fun getRepositoryRoot(project: Project): VirtualFile? {
-        val projectRootManager = ProjectRootManager.getInstance(project)
-        return projectRootManager.contentRoots.firstOrNull()
-    }
     
     private fun matchesPattern(fileName: String, pattern: String): Boolean {
         return try {
@@ -546,6 +537,7 @@ class CopyFileContentAction : AnAction() {
     private data class CopySession(
         val copiedFilePaths: MutableSet<String> = mutableSetOf(),
         val externalLibraryHandler: ExternalLibraryHandler,
+        val pathResolver: ClipboardPathResolver,
         var fileCount: Int = 0,
         var skippedFileSizeCount: Int = 0,
         var fileLimitReached: Boolean = false
