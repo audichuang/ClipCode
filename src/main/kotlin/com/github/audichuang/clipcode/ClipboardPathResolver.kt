@@ -10,6 +10,12 @@ class ClipboardPathResolver private constructor(
     private val orderedRoots: List<Path>,
     private val primaryRoot: Path?
 ) {
+    private data class TargetCandidate(
+        val root: Path,
+        val target: Path,
+        val isPrimary: Boolean
+    )
+
     data class ResolvedTarget(
         val relativePath: String,
         val absolutePath: String,
@@ -74,8 +80,13 @@ class ClipboardPathResolver private constructor(
 
     fun toClipboardPath(absolutePath: String): String {
         val normalizedAbsolutePath = normalizePathString(absolutePath)
+        primaryRoot?.let { root ->
+            relativizePath(normalizedAbsolutePath, root)?.let { return it }
+        }
+
         val directRelative = orderedRoots
             .asSequence()
+            .filter { root -> root != primaryRoot }
             .mapNotNull { root -> relativizePath(normalizedAbsolutePath, root) }
             .firstOrNull()
 
@@ -84,28 +95,44 @@ class ClipboardPathResolver private constructor(
 
     fun resolveWriteTarget(path: String): WriteResolution {
         val relativePath = toRelativeProjectPath(path) ?: return WriteResolution.Unresolved(path)
-        val existingCandidates = orderedRoots
-            .map { root -> root.resolve(relativePath).normalize() }
-            .filter { Files.exists(it) && !Files.isDirectory(it) }
-            .distinct()
+        val targetCandidates = targetCandidates(relativePath)
+        if (targetCandidates.isEmpty()) {
+            return WriteResolution.Unresolved(path)
+        }
+
+        val existingCandidates = targetCandidates
+            .filter { candidate -> Files.exists(candidate.target) && !Files.isDirectory(candidate.target) }
+
+        val primaryExisting = existingCandidates.firstOrNull { it.isPrimary }
+        val otherExistingCandidates = existingCandidates.filterNot { it.isPrimary }
+        val legacyModuleCandidates = legacyModuleDirectoryCandidates(relativePath, targetCandidates)
 
         return when {
-            existingCandidates.size > 1 -> WriteResolution.Ambiguous(
+            primaryExisting != null && otherExistingCandidates.isNotEmpty() && !hasNestedRootPrefix(relativePath) -> {
+                WriteResolution.Ambiguous(
+                    relativePath,
+                    candidatePaths(listOf(primaryExisting) + otherExistingCandidates)
+                )
+            }
+
+            primaryExisting != null && legacyModuleCandidates.isNotEmpty() -> {
+                WriteResolution.Ambiguous(
+                    relativePath,
+                    candidatePaths(listOf(primaryExisting) + legacyModuleCandidates)
+                )
+            }
+
+            primaryExisting != null -> {
+                WriteResolution.Resolved(primaryExisting.toResolvedTarget(relativePath, existed = true))
+            }
+
+            otherExistingCandidates.size > 1 -> WriteResolution.Ambiguous(
                 relativePath,
-                existingCandidates.map { normalizePathString(it.toString()) }
+                candidatePaths(otherExistingCandidates)
             )
 
-            existingCandidates.size == 1 -> {
-                val targetPath = existingCandidates.single()
-                val matchedRoot = orderedRoots.first { targetPath.startsWith(it) }
-                WriteResolution.Resolved(
-                    ResolvedTarget(
-                        relativePath = relativePath,
-                        absolutePath = normalizePathString(targetPath.toString()),
-                        rootPath = normalizePathString(matchedRoot.toString()),
-                        existed = true
-                    )
-                )
+            otherExistingCandidates.size == 1 -> {
+                WriteResolution.Resolved(otherExistingCandidates.single().toResolvedTarget(relativePath, existed = true))
             }
 
             else -> {
@@ -166,7 +193,13 @@ class ClipboardPathResolver private constructor(
             return sanitizeRelativePath(normalizedPath)?.takeIf { it.isNotBlank() }
         }
 
-        orderedRoots.forEach { root ->
+        primaryRoot?.let { root ->
+            relativizePath(normalizedPath, root)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { return it }
+        }
+
+        orderedRoots.filter { it != primaryRoot }.forEach { root ->
             relativizePath(normalizedPath, root)
                 ?.takeIf { it.isNotBlank() }
                 ?.let { return it }
@@ -223,4 +256,60 @@ class ClipboardPathResolver private constructor(
 
     private fun isAbsolutePath(path: String): Boolean =
         path.startsWith("/") || path.matches(Regex("^[A-Za-z]:/.*"))
+
+    private fun targetCandidates(relativePath: String): List<TargetCandidate> =
+        rootsPrimaryFirst()
+            .map { root ->
+                TargetCandidate(
+                    root = root,
+                    target = root.resolve(relativePath).normalize(),
+                    isPrimary = root == primaryRoot
+                )
+            }
+            .distinctBy { normalizePathString(it.target.toString()) }
+
+    private fun rootsPrimaryFirst(): List<Path> = buildList {
+        primaryRoot?.let(::add)
+        orderedRoots.filter { it != primaryRoot }.forEach(::add)
+    }.distinct()
+
+    private fun legacyModuleDirectoryCandidates(
+        relativePath: String,
+        targetCandidates: List<TargetCandidate>
+    ): List<TargetCandidate> {
+        if (hasNestedRootPrefix(relativePath)) {
+            return emptyList()
+        }
+
+        return targetCandidates
+            .filterNot { it.isPrimary }
+            .filter { candidate ->
+                candidate.target.parent?.let { parent -> Files.isDirectory(parent) } == true
+            }
+    }
+
+    private fun hasNestedRootPrefix(relativePath: String): Boolean {
+        val firstSegment = relativePath.substringBefore("/")
+        if (firstSegment.isBlank()) {
+            return false
+        }
+
+        return orderedRoots
+            .filter { it != primaryRoot }
+            .mapNotNull { it.name.takeIf(String::isNotBlank) }
+            .any { it == firstSegment }
+    }
+
+    private fun candidatePaths(candidates: List<TargetCandidate>): List<String> =
+        candidates
+            .map { normalizePathString(it.target.toString()) }
+            .distinct()
+
+    private fun TargetCandidate.toResolvedTarget(relativePath: String, existed: Boolean): ResolvedTarget =
+        ResolvedTarget(
+            relativePath = relativePath,
+            absolutePath = normalizePathString(target.toString()),
+            rootPath = normalizePathString(root.toString()),
+            existed = existed
+        )
 }
