@@ -6,6 +6,7 @@ import kotlin.io.path.createDirectories
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class RestorePlanBuilderTest {
     @Test
@@ -130,6 +131,61 @@ class RestorePlanBuilderTest {
         assertEquals("src/App.kt", plan.createOperations.single().relativePath)
         assertEquals(existingFile.systemIndependentPath(), plan.createOperations.single().absolutePath)
         assertEquals(true, plan.createOperations.single().existed)
+    }
+
+    @Test
+    fun `legacy module-relative clipboard still overwrites module file when primary root target is missing`() {
+        val projectRoot = Files.createTempDirectory("clipcode-plan-project-root")
+        val moduleRoot = projectRoot.resolve("inv-svc-adv")
+        val moduleFile = moduleRoot.resolve("src/main/java/Foo.kt")
+        moduleFile.parent.createDirectories()
+        moduleFile.writeText("old module content")
+
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(projectRoot.systemIndependentPath(), moduleRoot.systemIndependentPath()),
+            projectRoot.systemIndependentPath()
+        )
+        val plan = RestorePlanBuilder(resolver).build(
+            listOf(
+                ClipboardRestoreParser.ParsedClipboardEntry(
+                    path = "src/main/java/Foo.kt",
+                    content = "new module content"
+                )
+            )
+        )
+
+        assertEquals(emptyList(), plan.skippedOperations)
+        assertEquals(1, plan.createOperations.size)
+        assertEquals(moduleFile.systemIndependentPath(), plan.createOperations.single().absolutePath)
+        assertEquals(true, plan.createOperations.single().existed)
+    }
+
+    @Test
+    fun `legacy module-relative clipboard is ambiguous when primary root file exists and module directory also matches`() {
+        val projectRoot = Files.createTempDirectory("clipcode-plan-project-root")
+        val moduleRoot = projectRoot.resolve("inv-svc-adv")
+        projectRoot.resolve("src/test/java/cub/inv/svc/adv/loadtest").createDirectories()
+        moduleRoot.resolve("src/test/java/cub/inv/svc/adv/loadtest").createDirectories()
+        val unrelatedExisting = projectRoot.resolve("src/test/java/cub/inv/svc/adv/loadtest/AdvPdfSaveBurstTest.java")
+        unrelatedExisting.writeText("root copy")
+
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(projectRoot.systemIndependentPath(), moduleRoot.systemIndependentPath()),
+            projectRoot.systemIndependentPath()
+        )
+        val plan = RestorePlanBuilder(resolver).build(
+            listOf(
+                ClipboardRestoreParser.ParsedClipboardEntry(
+                    path = "src/test/java/cub/inv/svc/adv/loadtest/AdvPdfSaveBurstTest.java",
+                    content = "new module content"
+                )
+            )
+        )
+
+        assertEquals(emptyList(), plan.createOperations)
+        assertEquals(listOf(RestorePlan.SkipReason.AMBIGUOUS_TARGET), plan.skippedOperations.map { it.reason })
+        assertTrue(plan.skippedOperations.single().candidates.any { it == unrelatedExisting.systemIndependentPath() })
+        assertTrue(plan.skippedOperations.single().candidates.any { it.startsWith(moduleRoot.systemIndependentPath()) })
     }
 
     @Test

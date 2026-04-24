@@ -76,6 +76,14 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.1.1 - Multi-module path resolution</h2>
+            <ul>
+              <li><b>Fixed:</b> Copy now emits project-root-relative paths to preserve module prefix in multi-module projects</li>
+              <li><b>Fixed:</b> Paste correctly prefers the project root module when a clipboard path could match multiple locations</li>
+              <li><b>Improved:</b> Confirmation dialog now separates "Create (new)" from "Overwrite (existing)" and shows the absolute target path</li>
+              <li><b>Prevented:</b> Accidental data loss when an unrelated file with the same relative path exists outside the intended module</li>
+            </ul>
+
             <h2>Version 1.1.0 - Major Refactor and Git Delete Reliability</h2>
             <ul>
               <li><b>Fixed:</b> Pasting a file marked as [DELETED] (from Git Log, staging area, or changes view) now reliably removes the file in the current working tree</li>

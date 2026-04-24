@@ -9,10 +9,11 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class ClipboardPathResolverTest {
     @Test
-    fun `toClipboardPath uses longest matching root`() {
+    fun `toClipboardPath uses primary root when nested root also matches`() {
         val root = Files.createTempDirectory("clipcode-root")
         val moduleRoot = root.resolve("module-b").createDirectories()
         val resolver = ClipboardPathResolver.fromRootPaths(
@@ -21,8 +22,26 @@ class ClipboardPathResolverTest {
         )
 
         assertEquals(
-            "src/App.kt",
+            "module-b/src/App.kt",
             resolver.toClipboardPath(moduleRoot.resolve("src/App.kt").systemIndependentPath())
+        )
+    }
+
+    @Test
+    fun `toClipboardPath respects primaryRoot over longer module root`() {
+        val projectRoot = Files.createTempDirectory("clipcode-project-root")
+        val moduleRoot = projectRoot.resolve("inv-svc-adv").createDirectories()
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(projectRoot.systemIndependentPath(), moduleRoot.systemIndependentPath()),
+            projectRoot.systemIndependentPath()
+        )
+
+        assertEquals(
+            "inv-svc-adv/src/test/java/cub/inv/svc/adv/loadtest/AdvPdfSaveBurstTest.java",
+            resolver.toClipboardPath(
+                moduleRoot.resolve("src/test/java/cub/inv/svc/adv/loadtest/AdvPdfSaveBurstTest.java")
+                    .systemIndependentPath()
+            )
         )
     }
 
@@ -43,6 +62,70 @@ class ClipboardPathResolverTest {
         val resolution = resolver.resolveWriteTarget("src/App.kt")
         val ambiguous = assertIs<ClipboardPathResolver.WriteResolution.Ambiguous>(resolution)
         assertEquals(2, ambiguous.candidates.size)
+    }
+
+    @Test
+    fun `resolveWriteTarget does not overwrite primary root for legacy module-relative path with matching module directory`() {
+        val projectRoot = Files.createTempDirectory("clipcode-project-root")
+        val moduleRoot = projectRoot.resolve("inv-svc-adv").createDirectories()
+        projectRoot.resolve("src/test/java/cub/inv/svc/adv/loadtest").createDirectories()
+        moduleRoot.resolve("src/test/java/cub/inv/svc/adv/loadtest").createDirectories()
+        val unrelatedExisting = projectRoot.resolve("src/test/java/cub/inv/svc/adv/loadtest/AdvPdfSaveBurstTest.java")
+        unrelatedExisting.writeText("root copy")
+
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(projectRoot.systemIndependentPath(), moduleRoot.systemIndependentPath()),
+            projectRoot.systemIndependentPath()
+        )
+
+        val resolution = resolver.resolveWriteTarget("src/test/java/cub/inv/svc/adv/loadtest/AdvPdfSaveBurstTest.java")
+
+        val ambiguous = assertIs<ClipboardPathResolver.WriteResolution.Ambiguous>(resolution)
+        assertTrue(ambiguous.candidates.any { it == unrelatedExisting.systemIndependentPath() })
+        assertTrue(ambiguous.candidates.any { it.startsWith(moduleRoot.systemIndependentPath()) })
+    }
+
+    @Test
+    fun `resolveWriteTarget prefers primaryRoot for explicit project-root-relative module path`() {
+        val projectRoot = Files.createTempDirectory("clipcode-project-root")
+        val moduleRoot = projectRoot.resolve("inv-svc-adv").createDirectories()
+        val intendedTarget = moduleRoot.resolve("src/App.kt")
+        val duplicateTarget = moduleRoot.resolve("inv-svc-adv/src/App.kt")
+        intendedTarget.parent.createDirectories()
+        duplicateTarget.parent.createDirectories()
+        intendedTarget.writeText("intended")
+        duplicateTarget.writeText("duplicate")
+
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(projectRoot.systemIndependentPath(), moduleRoot.systemIndependentPath()),
+            projectRoot.systemIndependentPath()
+        )
+
+        val resolution = resolver.resolveWriteTarget("inv-svc-adv/src/App.kt")
+
+        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
+        assertEquals(intendedTarget.systemIndependentPath(), resolved.target.absolutePath)
+        assertTrue(resolved.target.existed)
+    }
+
+    @Test
+    fun `resolveWriteTarget falls back to other roots when primaryRoot target is missing`() {
+        val projectRoot = Files.createTempDirectory("clipcode-project-root")
+        val moduleRoot = projectRoot.resolve("inv-svc-adv").createDirectories()
+        val target = moduleRoot.resolve("src/main/java/Foo.kt")
+        target.parent.createDirectories()
+        target.writeText("module")
+
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(projectRoot.systemIndependentPath(), moduleRoot.systemIndependentPath()),
+            projectRoot.systemIndependentPath()
+        )
+
+        val resolution = resolver.resolveWriteTarget("src/main/java/Foo.kt")
+
+        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
+        assertEquals(target.systemIndependentPath(), resolved.target.absolutePath)
+        assertTrue(resolved.target.existed)
     }
 
     @Test

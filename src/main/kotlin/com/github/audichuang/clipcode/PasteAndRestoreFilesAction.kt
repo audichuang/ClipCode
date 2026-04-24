@@ -164,18 +164,35 @@ class PasteAndRestoreFilesAction : AnAction() {
 
     private fun buildConfirmationMessage(plan: RestorePlan): String {
         val sections = mutableListOf<String>()
+        val (willOverwrite, willCreate) = plan.createOperations.partition { it.existed }
 
-        if (plan.createOperations.isNotEmpty()) {
+        if (willCreate.isNotEmpty()) {
             sections.add(
-                "Files to CREATE (${plan.createOperations.size}):\n" +
-                    previewPaths(plan.createOperations.map { it.relativePath }, "+")
+                "Files to CREATE (new) (${willCreate.size}):\n" +
+                    previewPathsWithTargets(
+                        willCreate.map { it.relativePath to it.absolutePath },
+                        "+"
+                    )
+            )
+        }
+
+        if (willOverwrite.isNotEmpty()) {
+            sections.add(
+                "Files to OVERWRITE (existing) (${willOverwrite.size}):\n" +
+                    previewPathsWithTargets(
+                        willOverwrite.map { it.relativePath to it.absolutePath },
+                        "~"
+                    )
             )
         }
 
         if (plan.deleteOperations.isNotEmpty()) {
             sections.add(
                 "Files to DELETE (${plan.deleteOperations.size}):\n" +
-                    previewPaths(plan.deleteOperations.map { it.relativePath }, "-")
+                    previewPathsWithTargets(
+                        plan.deleteOperations.map { it.relativePath to it.absolutePath },
+                        "-"
+                    )
             )
         }
 
@@ -186,8 +203,10 @@ class PasteAndRestoreFilesAction : AnAction() {
         return sections.joinToString("\n\n") + "\n\nDo you want to proceed?"
     }
 
-    private fun previewPaths(paths: List<String>, prefix: String): String {
-        val preview = paths.take(15).joinToString("\n") { "  $prefix $it" }
+    private fun previewPathsWithTargets(paths: List<Pair<String, String>>, prefix: String): String {
+        val preview = paths.take(15).joinToString("\n") { (relativePath, absolutePath) ->
+            "  $prefix $relativePath\n    target: $absolutePath"
+        }
         val more = if (paths.size > 15) "\n  ... and ${paths.size - 15} more" else ""
         return preview + more
     }
