@@ -76,6 +76,13 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.1.2 - Multi-module edge case fixes</h2>
+            <ul>
+              <li><b>Fixed:</b> Copy All Open Tabs and default copy headers now use project-root-relative paths in multi-module projects</li>
+              <li><b>Fixed:</b> PATH filters and settings path selection now use the primary project root instead of the first content root</li>
+              <li><b>Fixed:</b> Paste no longer treats a nested module parent directory as ambiguous unless an actual duplicate file exists</li>
+            </ul>
+
             <h2>Version 1.1.1 - Multi-module path resolution</h2>
             <ul>
               <li><b>Fixed:</b> Copy now emits project-root-relative paths to preserve module prefix in multi-module projects</li>

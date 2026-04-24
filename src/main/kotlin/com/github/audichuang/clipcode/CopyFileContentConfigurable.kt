@@ -187,7 +187,7 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
     }
     
     private fun showPathChooser(action: CopyFileContentSettings.FilterAction) {
-        val projectRoot = com.intellij.openapi.roots.ProjectRootManager.getInstance(project).contentRoots.firstOrNull()
+        val projectRoot = ProjectPathRoots.primaryRoot(project)
         
         // Use FileChooserDescriptor with project scope
         val descriptor = FileChooserDescriptor(true, true, false, false, false, true)
@@ -251,7 +251,7 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
     
     private fun getPathIcon(path: String): Icon {
         // Check if path exists and is directory or file
-        val projectRoot = com.intellij.openapi.roots.ProjectRootManager.getInstance(project).contentRoots.firstOrNull()
+        val projectRoot = ProjectPathRoots.primaryRoot(project)
         val fullPath = if (path.startsWith("/")) {
             File(path)
         } else {

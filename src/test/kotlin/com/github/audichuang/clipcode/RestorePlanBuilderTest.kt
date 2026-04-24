@@ -161,13 +161,13 @@ class RestorePlanBuilderTest {
     }
 
     @Test
-    fun `legacy module-relative clipboard is ambiguous when primary root file exists and module directory also matches`() {
+    fun `legacy module-relative clipboard overwrites primary root when only module directory matches`() {
         val projectRoot = Files.createTempDirectory("clipcode-plan-project-root")
         val moduleRoot = projectRoot.resolve("inv-svc-adv")
         projectRoot.resolve("src/test/java/cub/inv/svc/adv/loadtest").createDirectories()
         moduleRoot.resolve("src/test/java/cub/inv/svc/adv/loadtest").createDirectories()
-        val unrelatedExisting = projectRoot.resolve("src/test/java/cub/inv/svc/adv/loadtest/AdvPdfSaveBurstTest.java")
-        unrelatedExisting.writeText("root copy")
+        val primaryExisting = projectRoot.resolve("src/test/java/cub/inv/svc/adv/loadtest/AdvPdfSaveBurstTest.java")
+        primaryExisting.writeText("root copy")
 
         val resolver = ClipboardPathResolver.fromRootPaths(
             listOf(projectRoot.systemIndependentPath(), moduleRoot.systemIndependentPath()),
@@ -182,10 +182,10 @@ class RestorePlanBuilderTest {
             )
         )
 
-        assertEquals(emptyList(), plan.createOperations)
-        assertEquals(listOf(RestorePlan.SkipReason.AMBIGUOUS_TARGET), plan.skippedOperations.map { it.reason })
-        assertTrue(plan.skippedOperations.single().candidates.any { it == unrelatedExisting.systemIndependentPath() })
-        assertTrue(plan.skippedOperations.single().candidates.any { it.startsWith(moduleRoot.systemIndependentPath()) })
+        assertEquals(emptyList(), plan.skippedOperations)
+        assertEquals(1, plan.createOperations.size)
+        assertEquals(primaryExisting.systemIndependentPath(), plan.createOperations.single().absolutePath)
+        assertEquals(true, plan.createOperations.single().existed)
     }
 
     @Test

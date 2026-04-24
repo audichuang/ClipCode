@@ -65,13 +65,13 @@ class ClipboardPathResolverTest {
     }
 
     @Test
-    fun `resolveWriteTarget does not overwrite primary root for legacy module-relative path with matching module directory`() {
+    fun `resolveWriteTarget prefers primary root when only legacy module directory matches`() {
         val projectRoot = Files.createTempDirectory("clipcode-project-root")
         val moduleRoot = projectRoot.resolve("inv-svc-adv").createDirectories()
         projectRoot.resolve("src/test/java/cub/inv/svc/adv/loadtest").createDirectories()
         moduleRoot.resolve("src/test/java/cub/inv/svc/adv/loadtest").createDirectories()
-        val unrelatedExisting = projectRoot.resolve("src/test/java/cub/inv/svc/adv/loadtest/AdvPdfSaveBurstTest.java")
-        unrelatedExisting.writeText("root copy")
+        val primaryExisting = projectRoot.resolve("src/test/java/cub/inv/svc/adv/loadtest/AdvPdfSaveBurstTest.java")
+        primaryExisting.writeText("root copy")
 
         val resolver = ClipboardPathResolver.fromRootPaths(
             listOf(projectRoot.systemIndependentPath(), moduleRoot.systemIndependentPath()),
@@ -80,9 +80,53 @@ class ClipboardPathResolverTest {
 
         val resolution = resolver.resolveWriteTarget("src/test/java/cub/inv/svc/adv/loadtest/AdvPdfSaveBurstTest.java")
 
+        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
+        assertEquals(primaryExisting.systemIndependentPath(), resolved.target.absolutePath)
+        assertTrue(resolved.target.existed)
+    }
+
+    @Test
+    fun `resolveWriteTarget prefers primary root when only nested module parent directory matches`() {
+        val projectRoot = Files.createTempDirectory("clipcode-project-root")
+        val moduleRoot = projectRoot.resolve("inv-svc-adv").createDirectories()
+        val primaryFile = projectRoot.resolve("src/main/java/Foo.kt")
+        primaryFile.parent.createDirectories()
+        moduleRoot.resolve("src/main/java").createDirectories()
+        primaryFile.writeText("primary")
+
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(projectRoot.systemIndependentPath(), moduleRoot.systemIndependentPath()),
+            projectRoot.systemIndependentPath()
+        )
+
+        val resolution = resolver.resolveWriteTarget("src/main/java/Foo.kt")
+
+        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
+        assertEquals(primaryFile.systemIndependentPath(), resolved.target.absolutePath)
+        assertTrue(resolved.target.existed)
+    }
+
+    @Test
+    fun `resolveWriteTarget remains ambiguous when primary and nested module files both exist`() {
+        val projectRoot = Files.createTempDirectory("clipcode-project-root")
+        val moduleRoot = projectRoot.resolve("inv-svc-adv").createDirectories()
+        val primaryFile = projectRoot.resolve("src/main/java/Foo.kt")
+        val moduleFile = moduleRoot.resolve("src/main/java/Foo.kt")
+        primaryFile.parent.createDirectories()
+        moduleFile.parent.createDirectories()
+        primaryFile.writeText("primary")
+        moduleFile.writeText("module")
+
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(projectRoot.systemIndependentPath(), moduleRoot.systemIndependentPath()),
+            projectRoot.systemIndependentPath()
+        )
+
+        val resolution = resolver.resolveWriteTarget("src/main/java/Foo.kt")
+
         val ambiguous = assertIs<ClipboardPathResolver.WriteResolution.Ambiguous>(resolution)
-        assertTrue(ambiguous.candidates.any { it == unrelatedExisting.systemIndependentPath() })
-        assertTrue(ambiguous.candidates.any { it.startsWith(moduleRoot.systemIndependentPath()) })
+        assertTrue(ambiguous.candidates.any { it == primaryFile.systemIndependentPath() })
+        assertTrue(ambiguous.candidates.any { it == moduleFile.systemIndependentPath() })
     }
 
     @Test

@@ -38,7 +38,7 @@ class ClipboardPathResolver private constructor(
 
     companion object {
         fun fromProject(project: Project): ClipboardPathResolver {
-            val projectBasePath = project.basePath
+            val projectBasePath = ProjectPathRoots.primaryRootPath(project)
             val rootPaths = buildList {
                 if (!projectBasePath.isNullOrBlank()) {
                     add(projectBasePath)
@@ -105,20 +105,12 @@ class ClipboardPathResolver private constructor(
 
         val primaryExisting = existingCandidates.firstOrNull { it.isPrimary }
         val otherExistingCandidates = existingCandidates.filterNot { it.isPrimary }
-        val legacyModuleCandidates = legacyModuleDirectoryCandidates(relativePath, targetCandidates)
 
         return when {
             primaryExisting != null && otherExistingCandidates.isNotEmpty() && !hasNestedRootPrefix(relativePath) -> {
                 WriteResolution.Ambiguous(
                     relativePath,
                     candidatePaths(listOf(primaryExisting) + otherExistingCandidates)
-                )
-            }
-
-            primaryExisting != null && legacyModuleCandidates.isNotEmpty() -> {
-                WriteResolution.Ambiguous(
-                    relativePath,
-                    candidatePaths(listOf(primaryExisting) + legacyModuleCandidates)
                 )
             }
 
@@ -272,21 +264,6 @@ class ClipboardPathResolver private constructor(
         primaryRoot?.let(::add)
         orderedRoots.filter { it != primaryRoot }.forEach(::add)
     }.distinct()
-
-    private fun legacyModuleDirectoryCandidates(
-        relativePath: String,
-        targetCandidates: List<TargetCandidate>
-    ): List<TargetCandidate> {
-        if (hasNestedRootPrefix(relativePath)) {
-            return emptyList()
-        }
-
-        return targetCandidates
-            .filterNot { it.isPrimary }
-            .filter { candidate ->
-                candidate.target.parent?.let { parent -> Files.isDirectory(parent) } == true
-            }
-    }
 
     private fun hasNestedRootPrefix(relativePath: String): Boolean {
         val firstSegment = relativePath.substringBefore("/")

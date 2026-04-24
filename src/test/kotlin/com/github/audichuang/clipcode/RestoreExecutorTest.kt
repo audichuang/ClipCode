@@ -128,6 +128,41 @@ class RestoreExecutorTest : BasePlatformTestCase() {
         }
     }
 
+    fun testFileCreatedAfterPlanIsSkippedWhenOverwriteWasNotApproved() {
+        val root = Files.createTempDirectory("clipcode-executor-race-skip")
+        try {
+            val targetFile = root.resolve("src/Race.kt")
+            targetFile.parent.createDirectories()
+            val rootPath = root.systemIndependentPath()
+            val executor = RestoreExecutor(project)
+            val plan = RestorePlan(
+                createOperations = listOf(
+                    RestorePlan.CreateOperation(
+                        relativePath = "src/Race.kt",
+                        absolutePath = targetFile.systemIndependentPath(),
+                        rootPath = rootPath,
+                        content = "new content",
+                        existed = false
+                    )
+                ),
+                deleteOperations = emptyList(),
+                skippedOperations = emptyList()
+            )
+
+            targetFile.writeText("appeared after planning")
+
+            val result = executor.execute(plan, overwriteExisting = false, skipExisting = false)
+
+            assertEquals(0, result.createdCount)
+            assertEquals(0, result.overwrittenCount)
+            assertEquals(1, result.skippedExistingCount)
+            assertEquals("appeared after planning", targetFile.readText())
+            assertTrue(result.errors.isEmpty())
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     fun testCollectsCreateErrors() {
         val root = Files.createTempDirectory("clipcode-executor-errors")
         try {
