@@ -4,6 +4,11 @@ object CopyPathFormatter {
     fun displayPath(pathResolver: ClipboardPathResolver, absolutePath: String): String =
         pathResolver.toClipboardPath(absolutePath)
 
+    fun displayPathOrFallback(pathResolver: ClipboardPathResolver, absolutePath: String, fallbackPath: String): String {
+        val displayPath = displayPath(pathResolver, absolutePath)
+        return if (isAbsolutePath(displayPath)) fallbackPath else displayPath
+    }
+
     fun relativeFilterPath(pathResolver: ClipboardPathResolver, absolutePath: String): String? {
         val clipboardPath = pathResolver.toClipboardPath(absolutePath)
         return clipboardPath.takeUnless(::isAbsolutePath)

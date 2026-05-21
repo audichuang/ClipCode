@@ -2,13 +2,13 @@ package com.github.audichuang.clipcode
 
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptor
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.fileChooser.ex.FileChooserDialogImpl
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.ide.util.TreeFileChooser
 import com.intellij.ide.util.TreeFileChooserFactory
 import com.intellij.psi.PsiFile
@@ -187,21 +187,24 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
     }
     
     private fun showPathChooser(action: CopyFileContentSettings.FilterAction) {
-        val projectRoot = ProjectPathRoots.primaryRoot(project)
+        val chooserRoots = projectChooserRoots()
+        val initialRoot = ProjectPathRoots.primaryRoot(project) ?: chooserRoots.firstOrNull()
+        val pathResolver = ClipboardPathResolver.fromProject(project)
         
         // Use FileChooserDescriptor with project scope
         val descriptor = FileChooserDescriptor(true, true, false, false, false, true)
         descriptor.title = "Select Files or Folders to ${if (action == CopyFileContentSettings.FilterAction.INCLUDE) "Include" else "Exclude"}"
         descriptor.description = "Choose files or folders from the project"
-        projectRoot?.let { descriptor.roots = listOf(it) }
+        if (chooserRoots.isNotEmpty()) {
+            descriptor.roots = chooserRoots
+        }
         
         // Use FileChooserDialog with project scope
         val dialog = com.intellij.openapi.fileChooser.ex.FileChooserDialogImpl(descriptor, project)
-        val selectedFiles = dialog.choose(project, projectRoot)
+        val selectedFiles = dialog.choose(project, initialRoot)
         
         selectedFiles.forEach { virtualFile ->
-            val relativePath = projectRoot?.let { VfsUtil.getRelativePath(virtualFile, it, '/') }
-            val pathToAdd = relativePath ?: virtualFile.path
+            val pathToAdd = pathResolver.toClipboardPath(virtualFile.path)
             
             addFilterRule(action, pathToAdd, virtualFile.isDirectory)
         }
@@ -251,11 +254,13 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
     
     private fun getPathIcon(path: String): Icon {
         // Check if path exists and is directory or file
-        val projectRoot = ProjectPathRoots.primaryRoot(project)
-        val fullPath = if (path.startsWith("/")) {
+        val resolvedPath = ClipboardPathResolver.fromProject(project).resolveExistingPath(path) ?: path
+        val fullPath = if (PathRuleMatcher.isAbsolutePath(resolvedPath)) {
+            File(resolvedPath)
+        } else if (path.startsWith("/")) {
             File(path)
         } else {
-            projectRoot?.let { File(it.path, path) } ?: File(path)
+            ProjectPathRoots.primaryRoot(project)?.let { File(it.path, path) } ?: File(path)
         }
         
         return when {
@@ -264,6 +269,11 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
             else -> AllIcons.FileTypes.Any_type
         }
     }
+
+    private fun projectChooserRoots(): List<VirtualFile> = buildList {
+        ProjectPathRoots.primaryRoot(project)?.let(::add)
+        addAll(ProjectRootManager.getInstance(project).contentRoots)
+    }.distinctBy { it.path }
     
     private fun setupFilterTableRenderers() {
         // Checkbox column

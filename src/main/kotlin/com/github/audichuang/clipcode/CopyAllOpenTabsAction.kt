@@ -4,6 +4,7 @@ import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.fileEditor.FileEditorManager
 
+@IdeBoundCode
 class CopyAllOpenTabsAction : AnAction() {
 
     override fun actionPerformed(e: AnActionEvent) {

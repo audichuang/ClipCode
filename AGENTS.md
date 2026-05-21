@@ -159,77 +159,73 @@ See `TESTING_GUIDE.md` for comprehensive manual testing procedures covering all 
 <claude-mem-context>
 # Memory Context
 
-# [ClipCode] recent context, 2026-04-24 8:56am GMT+8
+# [ClipCode] recent context, 2026-05-21 11:18pm GMT+8
 
 Legend: 🎯session 🔴bugfix 🟣feature 🔄refactor ✅change 🔵discovery ⚖️decision 🚨security_alert 🔐security_note
 Format: ID TIME TYPE TITLE
 Fetch details: get_observations([IDs]) | Search: mem-search skill
 
-Stats: 50 obs (5,671t read) | 686,085t work | 99% savings
+Stats: 50 obs (7,504t read) | 907,866t work | 99% savings
 
 ### Apr 24, 2026
-7979 6:04a 🔵 備份原始 ChangeTypeLabel 程式碼
-7982 " 🔵 盤點重構後的程式碼結構
-7985 " 🔵 分析 CopyGitFilesContentAction 原始實作邏輯
-7987 " 🔄 Gradle 建置環境升級與配置更新
-7990 " 🔵 確認重構後 CopyGitFilesContentAction 的精簡狀態
-7992 " 🔵 確認 build.gradle.kts 檔案狀態
-7993 " 🔵 確認 settings.gradle.kts 配置
-8002 " 🔵 CopyGitFilesContentAction 程式碼審查
 S282 審查 ClipCode 插件的增量修正與測試覆蓋率，確認是否符合發佈標準。 (Apr 24 at 6:07 AM)
 S274 審查 IntelliJ 外掛重構後的 Gradle 配置、程式碼邏輯等價性與測試覆蓋率 (Apr 24 at 6:07 AM)
-8080 6:11a 🔵 IJGP 2.x 遷移關鍵技術債盤點
-8086 " 🔵 專案結構重構與遷移進度確認
-8088 " 🔵 專案技術債與配置狀態盤點
-8090 " 🔵 專案檔案結構確認
-8107 6:12a 🔵 RestoreExecutor 測試邏輯分析
-8109 " 🔵 GitClipboardFormatter 測試覆蓋範圍分析
-8112 " 🔵 RestorePlanBuilder 邏輯架構分析
-8115 " 🔵 RestorePlanBuilder 測試覆蓋範圍分析
-8119 " 🔵 Gradle 依賴版本配置分析
-8122 " 🔵 專案建置屬性與相容性配置盤點
-8125 " 🔵 核心模組 Git 狀態確認
-8129 " 🔵 核心模組重構分析：PasteAndRestoreFilesAction 與其依賴
-8132 " 🔵 PasteAndRestoreFilesAction 重構前狀態分析
-8146 6:13a 🔵 重構前剪貼簿解析邏輯分析
-8152 " 🔵 建置產出物與插件描述檔分析
-8155 " 🔵 Gradle 插件發佈與驗證任務清單分析
-8157 " 🔵 IntelliJ Platform Gradle Plugin 版本歷史盤點
-8163 " 🔵 Gradle publishPlugin 任務執行狀態確認
-8164 " 🔵 Gradle signPlugin 任務執行狀態確認
-8166 " 🔵 Gradle buildPlugin 任務執行狀態確認
-8369 6:37a 🔄 ClipCode 插件架構與發布流程優化
-8373 6:38a ✅ ClipCode 專案大規模重構與功能擴充
-8375 " 🔄 PasteAndRestoreFilesAction 執行緒模型重構
-8377 " 🔵 RestoreExecutor 模組化實作
-8378 " 🔄 RestoreExecutor 檔案 IO 操作實作
-8381 " 🔄 ClipboardPathResolver 路徑解析邏輯強化
-8382 " ✅ CI/CD 發布工作流更新
-8384 " 🔵 CI/CD 工作流：plugin.xml 多路徑解析策略
-8388 6:39a 🔵 GitSelectionCollector 變更擷取邏輯
-8391 " 🔵 GitSelectionCollector 狀態解析機制
 S292 追蹤並驗證 Git DELETED 檔案的端對端還原流程，確認舊版 Bug 是否已修復。 (Apr 24 at 6:40 AM)
-8775 8:48a 🔵 Git 版本控制與刪除紀錄一致性檢查
-8782 8:49a 🔵 驗證 ClipboardPathResolverTest 測試覆蓋率
-8783 " 🔵 驗證 ClipboardRestoreParserTest 測試覆蓋率
-8784 " 🔵 驗證 RestoreExecutorTest 測試覆蓋率
-8785 " 🔵 驗證 RestorePlanBuilderTest 測試覆蓋率
-8786 " 🔵 驗證 ChangeTypeLabelTest 測試邏輯
-8787 " 🔵 驗證 GitClipboardFormatterTest 格式化邏輯
-8788 " 🔵 ClipboardPathResolverTest 測試邏輯深度分析
-8789 " 🔵 ClipboardRestoreParserTest 測試邏輯深度分析
-8790 " 🔵 RestoreExecutorTest 測試邏輯深度分析
-8791 " 🔵 RestorePlanBuilderTest 測試邏輯深度分析
-8823 8:53a 🔄 程式碼優化與嚴謹性測試流程建立
-S293 為 ClipCode 專案建立完整的重構驗收與測試補強提示詞，確保優化過程不破壞現有功能。 (Apr 24 at 8:54 AM)
-**Investigated**: 分析了 ClipCode 專案的架構，特別是 `CopyGitFilesContentAction` 與 `PasteAndRestoreFilesAction` 的拆分狀態，以及針對 Git DELETED 檔案處理的三層修復機制。
+S293 為 ClipCode 專案建立完整的重構驗收與測試補強提示詞，確保優化過程不破壞現有功能。 (Apr 24 at 8:52 AM)
+S301 驗證 GitContentResolver 與 RestoreExecutor 的重構邏輯及測試覆蓋率，並確認 Gradle 建置環境穩定性。 (Apr 24 at 9:18 AM)
+### Apr 26, 2026
+14089 10:04a 🔵 核心 SDK 模組中未發現 ProjectFileIndex
+14093 " 🔵 SDK 核心 JAR 檔案定位搜尋
+14094 " 🔵 特定版本 SDK JAR 檔案定位
+14095 " 🔵 本地專案目錄 JAR 檔案清單確認
+14096 " 🔵 成功定位 SDK 核心 JAR 檔案
+14097 " 🔵 SDK 測試與工具模組清單確認
+14098 " 🔵 API 類別定位結果：intellij.platform.core.jar
+14099 " 🔵 API 類別定位結果：intellij.platform.core.impl.jar
+14101 " 🔵 SDK 核心目錄 JAR 檔案規模確認
+14102 " 🔵 ProjectFileIndex 類別定位程序啟動
+14616 10:20a 🔵 多模組專案路徑解析邏輯檢視
+14621 " 🔄 強化多模組專案的路徑解析與標籤機制
+14624 " 🔵 ClipboardPathResolver 程式碼結構確認
+14615 " 🔵 確認 RTK (Rust Token Killer) 工具配置
+14618 " 🔵 專案狀態與檔案變更確認
+14620 " 🔄 大幅重構 ClipboardPathResolver 與測試覆蓋
+14623 " 🔵 分析 IntelliJ Plugin 檔案選取邏輯
+14626 " 🔵 分析 IntelliJ Plugin 設定介面與過濾規則邏輯
+14627 " 🔵 分析 PathRuleMatcher 路徑比對邏輯
+14628 " 🔄 重構 ClipboardPathResolver 以支援多模組路徑標籤
+14630 " 🔄 整合 PathRuleMatcher 與 ClipboardPathResolver 邏輯
+14632 " 🔵 確認 PathRuleMatcher 實作細節
+14629 " 🔵 確認 PathRuleMatcher 的路徑比對邊界條件
+14631 " 🔵 確認 CopyFileContentAction 的檔案處理與過濾邏輯
+14634 " 🔵 確認多模組專案路徑解析與過濾機制
+14636 " 🔵 分析 ClipboardPathResolver 的路徑解析機制
+14638 " 🔵 深入分析 ClipboardPathResolver 的路徑解析與正規化實作
+14637 " 🔵 ClipboardPathResolver 完整實作審查
+14639 " 🔵 CopyFileContentAction 整合路徑解析與過濾邏輯
+14640 " 🔵 CopyFileContentConfigurable UI 整合路徑解析
+14642 " 🔵 分析 CopyPathFormatter 的路徑格式化邏輯
+14660 10:21a 🔵 分析 CopyFileContentConfigurable 的設定儲存與規則解析邏輯
+14697 10:22a 🔵 ClipboardPathResolverTest 測試覆蓋率確認
+15463 1:08p 🔴 修復潛在的邊緣案例錯誤
+### May 7, 2026
+54461 11:27a 🔵 觀察到大型程式碼區塊在傳輸過程中被截斷
+54462 " 🔵 RTK (Rust Token Killer) 工具說明與規範
+54463 " 🔵 ClipCode 外掛程式碼架構與限制機制分析
+54464 " 🔵 批次處理服務檔案大小統計
+54465 " 🔵 ClipCode 檔案處理邏輯與 OOM 防護機制
+54466 " 🔵 ClipCode 目錄遞迴處理與二進位檔案過濾機制
+54467 " 🔵 批次處理服務錯誤處理與重試機制分析
+54469 " 🔵 ClipCode 設定資料結構分析
+54530 11:32a 🔵 設定檔持久化機制與執行環境確認
+### May 16, 2026
+55503 7:25a 🔵 Agent learned 'using-superpowers' skill
+55504 " 🔵 Agent learned about RTK (Rust Token Killer) CLI proxy
+55505 12:05p 🔵 Discovered file extraction logic in GitSelectionCollector
+55519 8:21p 🔵 RTK (Rust Token Killer) CLI tool documentation retrieved
+55520 " 🔵 ClipCode plugin file structure identified
+55518 8:22p 🔵 Skill file not found during initial setup
+55521 " 🔵 Superpowers skill documentation retrieved
 
-**Learned**: 確認了專案目前的核心風險點在於重構後的行為回歸，特別是 VFS 操作、Git 標籤解析以及執行緒切換的正確性，並明確了 12 項亟需補齊的測試盲點。
-
-**Completed**: 產出了詳盡的 Codex 提示詞（Prompt），涵蓋了角色定義、專案背景、重構驗收標準、測試補齊清單及禁止事項，並提供了驗證指令集。
-
-**Next Steps**: 將提示詞交付給 Codex 執行，並準備在乾淨的開發環境（如建立 worktree）中進行程式碼審查與測試補齊，確保所有 Gradle 驗證指令通過。
-
-
-Access 686k tokens of past work via get_observations([IDs]) or mem-search skill.
+Access 908k tokens of past work via get_observations([IDs]) or mem-search skill.
 </claude-mem-context>

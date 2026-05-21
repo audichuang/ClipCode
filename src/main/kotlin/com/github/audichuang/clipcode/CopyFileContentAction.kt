@@ -3,13 +3,18 @@ package com.github.audichuang.clipcode
 import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.fileTypes.FileTypeManager
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
@@ -17,6 +22,9 @@ import java.awt.datatransfer.StringSelection
 class CopyFileContentAction : AnAction() {
     private val logger = Logger.getInstance(CopyFileContentAction::class.java)
 
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
+
+    @IdeBoundCode
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: run {
             showNotification("No project found. Action cannot proceed.", NotificationType.ERROR, null)
@@ -39,6 +47,7 @@ class CopyFileContentAction : AnAction() {
      * External Libraries 裡的檔案通常透過 PSI_FILE 或 NAVIGATABLE 提供，而非 VIRTUAL_FILE_ARRAY。
      * 同時支援選取 Package（資料夾）節點，會遞歸取得所有子檔案。
      */
+    @IdeBoundCode
     private fun getSelectedVirtualFiles(e: AnActionEvent): Array<VirtualFile> {
         val collectedFiles = mutableListOf<VirtualFile>()
         
@@ -155,6 +164,9 @@ class CopyFileContentAction : AnAction() {
         }
     }
 
+
+
+
     fun performCopyFilesContent(
         e: AnActionEvent,
         filesToCopy: Array<VirtualFile>,
@@ -165,42 +177,87 @@ class CopyFileContentAction : AnAction() {
             showNotification("Failed to load settings.", NotificationType.ERROR, project)
             return
         }
-        val session = CopySession(
-            externalLibraryHandler = ExternalLibraryHandler(project),
-            pathResolver = ClipboardPathResolver.fromProject(project)
-        )
-        var totalChars = 0
-        var totalLines = 0
-        var totalWords = 0
-        var totalTokens = 0
 
-        val fileContents = mutableListOf<String>().apply {
-            add(settings.state.preText)
-        }
+        ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Copying file content…", true) {
+            private var payload: CopyPayload? = null
 
-        for (file in filesToCopy) {
-            // Check file limit only if the checkbox is selected.
-            if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
-                session.fileLimitReached = true
-                break
+            override fun run(indicator: ProgressIndicator) {
+                indicator.isIndeterminate = true
+                payload = buildCopyPayload(project, filesToCopy, settings, customHeaderGenerator, indicator)
             }
 
-            val content = if (file.isDirectory) {
-                processDirectory(file, fileContents, session, project, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
-            } else {
-                processFile(file, fileContents, session, project, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
+            override fun onSuccess() {
+                if (project.isDisposed) return
+                val result = payload ?: return
+                copyToClipboard(result.text)
+                showCopyNotifications(project, settings, result)
+            }
+        })
+    }
+
+    private fun buildCopyPayload(
+        project: Project,
+        filesToCopy: Array<VirtualFile>,
+        settings: CopyFileContentSettings,
+        customHeaderGenerator: ((VirtualFile, String) -> String)?,
+        indicator: ProgressIndicator
+    ): CopyPayload {
+        // 整段在 BGT 跑，VFS 存取需在 ReadAction 內，否則 2024.3+ strict mode 直接拋 read-lock 錯誤
+        return ReadAction.compute<CopyPayload, RuntimeException> {
+            val session = CopySession(
+                externalLibraryHandler = ExternalLibraryHandler(project),
+                pathResolver = ClipboardPathResolver.fromProject(project)
+            )
+            var totalChars = 0
+            var totalLines = 0
+            var totalWords = 0
+            var totalTokens = 0
+
+            val fileContents = mutableListOf<String>().apply {
+                add(settings.state.preText)
             }
 
-            totalChars += content.length
-            totalLines += content.count { it == '\n' } + (if (content.isNotEmpty()) 1 else 0)
-            totalWords += content.split("\\s+".toRegex()).filter { it.isNotEmpty() }.size
-            totalTokens += estimateTokens(content)
+            for (file in filesToCopy) {
+                indicator.checkCanceled()
+                if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
+                    session.fileLimitReached = true
+                    break
+                }
+
+                val content = if (file.isDirectory) {
+                    processDirectory(file, fileContents, session, project, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
+                } else {
+                    processFile(file, fileContents, session, project, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
+                }
+
+                totalChars += content.length
+                totalLines += content.count { it == '\n' } + (if (content.isNotEmpty()) 1 else 0)
+                totalWords += content.split("\\s+".toRegex()).filter { it.isNotEmpty() }.size
+                totalTokens += estimateTokens(content)
+            }
+
+            fileContents.add(settings.state.postText)
+
+            CopyPayload(
+                text = fileContents.joinToString(separator = "\n"),
+                fileCount = session.fileCount,
+                skippedFileSizeCount = session.skippedFileSizeCount,
+                fileLimitReached = session.fileLimitReached,
+                totalChars = totalChars,
+                totalLines = totalLines,
+                totalWords = totalWords,
+                totalTokens = totalTokens
+            )
         }
+    }
 
-        fileContents.add(settings.state.postText)
-        copyToClipboard(fileContents.joinToString(separator = "\n"))
-
-        if (session.fileLimitReached) {
+    @IdeBoundCode
+    private fun showCopyNotifications(
+        project: Project,
+        settings: CopyFileContentSettings,
+        result: CopyPayload
+    ) {
+        if (result.fileLimitReached) {
             val fileLimitWarningMessage = """
                 <html>
                 <b>File Limit Reached:</b> The file limit of ${settings.state.fileCountLimit} files was reached.
@@ -209,29 +266,40 @@ class CopyFileContentAction : AnAction() {
             showNotificationWithSettingsAction(fileLimitWarningMessage, NotificationType.WARNING, project)
         }
 
-        if (settings.state.showCopyNotification) {
-            val fileCountMessage = when {
-                session.skippedFileSizeCount > 0 && session.fileCount == 1 ->
-                    "1 file copied (${session.skippedFileSizeCount} skipped: size exceeded)."
-                session.skippedFileSizeCount > 0 ->
-                    "${session.fileCount} files copied (${session.skippedFileSizeCount} skipped: size exceeded)."
-                session.fileCount == 1 -> "1 file copied."
-                else -> "${session.fileCount} files copied."
-            }
+        if (!settings.state.showCopyNotification) return
 
-            val statisticsMessage = """
-                <html>
-                Total characters: $totalChars<br>
-                Total lines: $totalLines<br>
-                Total words: $totalWords<br>
-                Estimated tokens: $totalTokens
-                </html>
-            """.trimIndent()
-
-            showNotification(statisticsMessage, NotificationType.INFORMATION, project)
-            showNotification("<html><b>$fileCountMessage</b></html>", NotificationType.INFORMATION, project)
+        val fileCountMessage = when {
+            result.skippedFileSizeCount > 0 && result.fileCount == 1 ->
+                "1 file copied (${result.skippedFileSizeCount} skipped: size exceeded)."
+            result.skippedFileSizeCount > 0 ->
+                "${result.fileCount} files copied (${result.skippedFileSizeCount} skipped: size exceeded)."
+            result.fileCount == 1 -> "1 file copied."
+            else -> "${result.fileCount} files copied."
         }
+
+        val statisticsMessage = """
+            <html>
+            Total characters: ${result.totalChars}<br>
+            Total lines: ${result.totalLines}<br>
+            Total words: ${result.totalWords}<br>
+            Estimated tokens: ${result.totalTokens}
+            </html>
+        """.trimIndent()
+
+        showNotification(statisticsMessage, NotificationType.INFORMATION, project)
+        showNotification("<html><b>$fileCountMessage</b></html>", NotificationType.INFORMATION, project)
     }
+
+    private data class CopyPayload(
+        val text: String,
+        val fileCount: Int,
+        val skippedFileSizeCount: Int,
+        val fileLimitReached: Boolean,
+        val totalChars: Int,
+        val totalLines: Int,
+        val totalWords: Int,
+        val totalTokens: Int
+    )
 
     private fun estimateTokens(content: String): Int {
         val words = content.split("\\s+".toRegex()).filter { it.isNotEmpty() }
@@ -249,12 +317,19 @@ class CopyFileContentAction : AnAction() {
     ): String {
         val settings = CopyFileContentSettings.getInstance(project) ?: return ""
         val handler = session.externalLibraryHandler
+        val isExternalLibrary = handler.isFromExternalLibrary(file)
         
         // Determine the file path to display
         val fileRelativePath = when {
-            // First check if it's from external library
-            handler.isFromExternalLibrary(file) -> {
-                handler.getCleanPath(file)
+            // Project files can be marked as library files when they live under excluded/library roots
+            // such as node_modules. Keep those headers project-relative so Paste and Restore can map
+            // them back into the current project.
+            isExternalLibrary -> {
+                CopyPathFormatter.displayPathOrFallback(
+                    session.pathResolver,
+                    file.path,
+                    handler.getCleanPath(file)
+                )
             }
             // Then check if it's from project
             !file.isDirectory -> {
@@ -293,13 +368,11 @@ class CopyFileContentAction : AnAction() {
                             matchesPattern(file.name, rule.value)
                         }
                         CopyFileContentSettings.FilterType.PATH -> {
-                            if (rule.value.startsWith("/")) {
-                                fileAbsolutePath.startsWith(rule.value) || fileAbsolutePath == rule.value
+                            if (PathRuleMatcher.isAbsolutePath(rule.value)) {
+                                PathRuleMatcher.matchesPath(fileAbsolutePath, rule.value)
                             } else {
-                                fileRelativePathFromRoot != null && (
-                                    fileRelativePathFromRoot.startsWith(rule.value) ||
-                                    fileRelativePathFromRoot == rule.value
-                                )
+                                fileRelativePathFromRoot != null &&
+                                    PathRuleMatcher.matchesPath(fileRelativePathFromRoot, rule.value)
                             }
                         }
                     }
@@ -318,13 +391,11 @@ class CopyFileContentAction : AnAction() {
                             matchesPattern(file.name, rule.value)
                         }
                         CopyFileContentSettings.FilterType.PATH -> {
-                            if (rule.value.startsWith("/")) {
-                                fileAbsolutePath.startsWith(rule.value) || fileAbsolutePath == rule.value
+                            if (PathRuleMatcher.isAbsolutePath(rule.value)) {
+                                PathRuleMatcher.matchesPath(fileAbsolutePath, rule.value)
                             } else {
-                                fileRelativePathFromRoot != null && (
-                                    fileRelativePathFromRoot.startsWith(rule.value) ||
-                                    fileRelativePathFromRoot == rule.value
-                                )
+                                fileRelativePathFromRoot != null &&
+                                    PathRuleMatcher.matchesPath(fileRelativePathFromRoot, rule.value)
                             }
                         }
                     }
@@ -355,7 +426,7 @@ class CopyFileContentAction : AnAction() {
         }
         
         // Handle external library files differently
-        if (handler.isFromExternalLibrary(file)) {
+        if (isExternalLibrary) {
             // Check if file should be processed
             if (!handler.shouldProcessFile(file)) {
                 logger.info("Skipping external library file: ${file.name}")
@@ -431,13 +502,11 @@ class CopyFileContentAction : AnAction() {
             // Check excludes first
             if (settings.state.useExcludeFilters && excludePathRules.isNotEmpty()) {
                 val isExcluded = excludePathRules.any { rule ->
-                    if (rule.value.startsWith("/")) {
-                        dirAbsolutePath.startsWith(rule.value) || dirAbsolutePath == rule.value
+                    if (PathRuleMatcher.isAbsolutePath(rule.value)) {
+                        PathRuleMatcher.matchesPath(dirAbsolutePath, rule.value)
                     } else {
-                        dirRelativePath != null && (
-                            dirRelativePath.startsWith(rule.value) ||
-                            dirRelativePath == rule.value
-                        )
+                        dirRelativePath != null &&
+                            PathRuleMatcher.matchesPath(dirRelativePath, rule.value)
                     }
                 }
                 if (isExcluded) {
@@ -449,15 +518,11 @@ class CopyFileContentAction : AnAction() {
             // Check includes if specified
             if (settings.state.useIncludeFilters && includePathRules.isNotEmpty()) {
                 val shouldProcess = includePathRules.any { rule ->
-                    if (rule.value.startsWith("/")) {
-                        dirAbsolutePath.startsWith(rule.value) || 
-                        rule.value.startsWith(dirAbsolutePath)
+                    if (PathRuleMatcher.isAbsolutePath(rule.value)) {
+                        PathRuleMatcher.overlapsDirectory(dirAbsolutePath, rule.value)
                     } else {
-                        dirRelativePath != null && (
-                            dirRelativePath.startsWith(rule.value) ||
-                            rule.value.startsWith(dirRelativePath) ||
-                            dirRelativePath == rule.value
-                        )
+                        dirRelativePath != null &&
+                            PathRuleMatcher.overlapsDirectory(dirRelativePath, rule.value)
                     }
                 }
                 if (!shouldProcess) {
@@ -485,24 +550,26 @@ class CopyFileContentAction : AnAction() {
         return directoryContent.toString()
     }
 
+    @IdeBoundCode
     private fun copyToClipboard(text: String) {
         val clipboard = Toolkit.getDefaultToolkit().systemClipboard
         val data = StringSelection(text)
         clipboard.setContents(data, null)
     }
 
+    @IdeBoundCode
     private fun readFileContents(file: VirtualFile): String {
         return try {
-            String(file.contentsToByteArray(), Charsets.UTF_8)
+            // VfsUtilCore.loadText 會依檔案編碼解碼，避免強制 UTF-8 造成中文/big5/sjis 亂碼
+            VfsUtilCore.loadText(file)
         } catch (e: Exception) {
             logger.error("Failed to read file contents: ${e.message}")
             ""
         }
     }
 
-    private fun isBinaryFile(file: VirtualFile): Boolean {
-        return FileTypeManager.getInstance().getFileTypeByFile(file).isBinary
-    }
+    @IdeBoundCode
+    private fun isBinaryFile(file: VirtualFile): Boolean = file.fileType.isBinary
     
     private fun matchesPattern(fileName: String, pattern: String): Boolean {
         return try {
@@ -522,6 +589,7 @@ class CopyFileContentAction : AnAction() {
     }
 
     companion object {
+        @IdeBoundCode
         fun showNotification(
             message: String,
             notificationType: NotificationType,
@@ -543,6 +611,7 @@ class CopyFileContentAction : AnAction() {
         var fileLimitReached: Boolean = false
     )
 
+    @IdeBoundCode
     private fun showNotificationWithSettingsAction(message: String, notificationType: NotificationType, project: Project?) {
         val notificationGroup = NotificationGroupManager.getInstance().getNotificationGroup("ClipCode")
         val notification = notificationGroup.createNotification(message, notificationType).setImportant(true)

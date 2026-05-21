@@ -5,12 +5,16 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vcs.LocalFilePath
 import com.intellij.openapi.vcs.changes.Change
 import com.intellij.openapi.vcs.changes.ChangeListManager
+import com.intellij.openapi.vcs.changes.ContentRevision
+import com.intellij.openapi.vcs.changes.CurrentContentRevision
+import com.intellij.openapi.vcs.history.VcsRevisionNumber
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import git4idea.GitContentRevision
 import git4idea.GitRevisionNumber
 import git4idea.GitUtil
 import java.io.File
+import com.intellij.openapi.vcs.VcsException
 
 class GitContentResolver(
     private val logger: Logger
@@ -39,7 +43,7 @@ class GitContentResolver(
             val changeType = ChangeTypeLabel.fromChangeType(change.type) ?: ChangeTypeLabel.MODIFIED
             entriesByPath.putIfAbsent(
                 filePath,
-                resolveChange(project, change, filePath, changeType)
+                resolveChange(project, change, filePath, changeType, selection.source)
             )
         }
 
@@ -67,6 +71,7 @@ class GitContentResolver(
                 "DELETED" -> ChangeTypeLabel.DELETED
                 "MODIFIED" -> ChangeTypeLabel.MODIFIED
                 "ADDED" -> ChangeTypeLabel.NEW
+                "MOVED" -> ChangeTypeLabel.MOVED
                 else -> ChangeTypeLabel.MODIFIED
             }
 
@@ -96,8 +101,18 @@ class GitContentResolver(
         project: Project,
         change: Change,
         filePath: String,
-        changeType: ChangeTypeLabel
+        changeType: ChangeTypeLabel,
+        source: SelectionSource
     ): ResolvedGitEntry {
+        if (source != SelectionSource.LOCAL_CHANGES_OR_COMMIT_UI) {
+            return ResolvedGitEntry(
+                changeType = changeType,
+                filePath = filePath,
+                virtualFile = null,
+                contentFromRevision = readSelectedRevisionContent(change, changeType)
+            )
+        }
+
         val virtualFile = if (changeType == ChangeTypeLabel.DELETED) {
             null
         } else {
@@ -108,7 +123,7 @@ class GitContentResolver(
         }
 
         val contentFromRevision = if (virtualFile == null || changeType == ChangeTypeLabel.DELETED) {
-            readRevisionContent(change) ?: if (changeType == ChangeTypeLabel.DELETED) {
+            readAnyRevisionContent(change) ?: if (changeType == ChangeTypeLabel.DELETED) {
                 resolveDeletedContent(project, filePath)
             } else {
                 null
@@ -125,21 +140,55 @@ class GitContentResolver(
         )
     }
 
-    private fun readRevisionContent(change: Change): String? =
+    private fun readSelectedRevisionContent(
+        change: Change,
+        changeType: ChangeTypeLabel
+    ): String? {
+        val revision = if (changeType == ChangeTypeLabel.DELETED) {
+            change.beforeRevision
+        } else {
+            change.afterRevision
+        }
+
+        if (isLocalRevision(revision)) {
+            logger.warn("Refusing to read local Git revision for non-local selection: ${revision?.file?.path}")
+            return null
+        }
+
+        return readRevisionContent(revision)
+    }
+
+    private fun readAnyRevisionContent(change: Change): String? =
+        readRevisionContent(change.afterRevision) ?: readRevisionContent(change.beforeRevision)
+
+    private fun readRevisionContent(revision: ContentRevision?): String? =
         try {
-            change.afterRevision?.content ?: change.beforeRevision?.content
+            revision?.content
         } catch (e: Exception) {
             logger.warn("Failed to read Git content revision", e)
             null
         }
 
+    private fun isLocalRevision(revision: ContentRevision?): Boolean {
+        if (revision == null) {
+            return false
+        }
+        if (revision is CurrentContentRevision) {
+            return true
+        }
+        val revisionNumber = revision.revisionNumber
+        return revisionNumber == VcsRevisionNumber.NULL ||
+            revisionNumber.asString().equals("LOCAL", ignoreCase = true)
+    }
+
+    @IdeBoundCode
     private fun resolveDeletedContent(project: Project, absolutePath: String): String? {
         val matchingChange = ChangeListManager.getInstance(project).allChanges.find { change ->
             val changePath = change.beforeRevision?.file?.path ?: change.afterRevision?.file?.path
             changePath == absolutePath
         }
 
-        val fromChangeList = matchingChange?.let(::readRevisionContent)
+        val fromChangeList = matchingChange?.let(::readAnyRevisionContent)
         if (fromChangeList != null) {
             return fromChangeList
         }
@@ -147,57 +196,28 @@ class GitContentResolver(
         return getFileContentFromGit(project, absolutePath)
     }
 
+    @IdeBoundCode
     private fun getFileContentFromGit(project: Project, absolutePath: String): String? {
-        var repositoryRoot: String? = null
-        var relativePath: String? = null
-        try {
+        return try {
             val parentPath = File(absolutePath).parent ?: return null
             val parentDir = findFile(parentPath) ?: return null
             val repository = GitUtil.getRepositoryManager(project).getRepositoryForFile(parentDir) ?: return null
-            val resolvedRepositoryRoot = repository.root.path
             val normalizedAbsolutePath = absolutePath.replace('\\', '/')
-            val normalizedRepositoryRoot = resolvedRepositoryRoot.replace('\\', '/')
-            if (normalizedAbsolutePath != normalizedRepositoryRoot && !normalizedAbsolutePath.startsWith("$normalizedRepositoryRoot/")) {
+            val normalizedRepositoryRoot = repository.root.path.replace('\\', '/')
+            if (normalizedAbsolutePath != normalizedRepositoryRoot &&
+                !normalizedAbsolutePath.startsWith("$normalizedRepositoryRoot/")
+            ) {
                 return null
             }
-            val resolvedRelativePath = normalizedAbsolutePath
-                .removePrefix(normalizedRepositoryRoot)
-                .trimStart('/')
-                .takeIf(String::isNotBlank)
-                ?: return null
-            repositoryRoot = resolvedRepositoryRoot
-            relativePath = resolvedRelativePath
 
             val filePath = LocalFilePath(File(absolutePath).toPath(), false)
             val contentRevision = GitContentRevision.createRevision(filePath, GitRevisionNumber.HEAD, project)
-            return contentRevision.content ?: getFileContentFromGitCommand(resolvedRepositoryRoot, resolvedRelativePath)
-        } catch (e: Exception) {
+            contentRevision.content
+        } catch (e: VcsException) {
             logger.warn("Failed to read deleted file content via Git API", e)
-        }
-
-        return if (repositoryRoot != null && relativePath != null) {
-            getFileContentFromGitCommand(repositoryRoot, relativePath)
-        } else {
             null
-        }
-    }
-
-    private fun getFileContentFromGitCommand(repositoryRoot: String, relativePath: String): String? {
-        return try {
-            val process = ProcessBuilder("git", "show", "HEAD:$relativePath")
-                .directory(File(repositoryRoot))
-                .redirectErrorStream(false)
-                .start()
-
-            val content = process.inputStream.bufferedReader().use { it.readText() }
-            val exitCode = process.waitFor()
-            if (exitCode == 0 && content.isNotEmpty()) {
-                content
-            } else {
-                null
-            }
         } catch (e: Exception) {
-            logger.warn("Failed to read deleted file content via git show", e)
+            logger.warn("Unexpected error reading Git HEAD content", e)
             null
         }
     }

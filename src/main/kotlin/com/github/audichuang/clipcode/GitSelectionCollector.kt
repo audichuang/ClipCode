@@ -13,11 +13,22 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.vcs.commit.AbstractCommitWorkflowHandler
 import com.intellij.vcs.commit.CommitWorkflowUi
 import com.intellij.vcsUtil.VcsUtil
+import git4idea.index.ui.GitFileStatusNode
+import git4idea.index.ui.NodeKind
 import javax.swing.JTree
 import javax.swing.tree.TreePath
 
+enum class SelectionSource {
+    LOCAL_CHANGES_OR_COMMIT_UI,
+    GIT_LOG_OR_HISTORY,
+    UNKNOWN
+}
+
 class GitSelectionCollector(
-    private val logger: Logger
+    private val logger: Logger,
+    private val localChangesProvider: (com.intellij.openapi.project.Project) -> Collection<Change> = {
+        ChangeListManager.getInstance(it).allChanges
+    }
 ) {
     data class GitStatusInfo(
         val path: String,
@@ -29,7 +40,8 @@ class GitSelectionCollector(
         val changes: List<Change>,
         val selectedFiles: List<VirtualFile>,
         val untrackedPaths: Set<String>,
-        val gitStatusNodes: Set<GitStatusInfo>
+        val gitStatusNodes: Set<GitStatusInfo>,
+        val source: SelectionSource
     ) {
         val hasGitMetadata: Boolean
             get() = changes.isNotEmpty() || untrackedPaths.isNotEmpty() || gitStatusNodes.isNotEmpty()
@@ -40,6 +52,10 @@ class GitSelectionCollector(
         val allChangesMap = linkedMapOf<String, Change>()
         val untrackedFilePaths = linkedSetOf<String>()
         val gitStatusNodes = linkedSetOf<GitStatusInfo>()
+        val commitWorkflowHandler = e.getData(VcsDataKeys.COMMIT_WORKFLOW_HANDLER) as? AbstractCommitWorkflowHandler<*, *>
+        val commitWorkflowUi: CommitWorkflowUi? = e.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)
+            ?: commitWorkflowHandler?.ui
+        val hasCommitWorkflowHint = commitWorkflowUi != null || commitWorkflowHandler != null
 
         fun addChange(change: Change) {
             val path = change.afterRevision?.file?.path ?: change.beforeRevision?.file?.path ?: return
@@ -82,9 +98,6 @@ class GitSelectionCollector(
         }
 
         if (project != null && allChangesMap.isEmpty() && untrackedFilePaths.isEmpty()) {
-            val commitWorkflowUi: CommitWorkflowUi? = e.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)
-                ?: (e.getData(VcsDataKeys.COMMIT_WORKFLOW_HANDLER) as? AbstractCommitWorkflowHandler<*, *>)?.ui
-
             val includedChanges = commitWorkflowUi?.getIncludedChanges() ?: emptyList()
             if (includedChanges.isNotEmpty() && selectedFiles.isNotEmpty()) {
                 val selectedFilePaths = selectedFiles.map(VcsUtil::getFilePath).toSet()
@@ -97,66 +110,101 @@ class GitSelectionCollector(
             }
         }
 
+        val changes = allChangesMap.values.toList()
         return Selection(
-            changes = allChangesMap.values.toList(),
+            changes = changes,
             selectedFiles = selectedFiles,
             untrackedPaths = untrackedFilePaths,
-            gitStatusNodes = gitStatusNodes
+            gitStatusNodes = gitStatusNodes,
+            source = detectSource(
+                project = project,
+                component = component,
+                changes = changes,
+                hasCommitWorkflowHint = hasCommitWorkflowHint
+            )
         )
     }
+
+    private fun detectSource(
+        project: com.intellij.openapi.project.Project?,
+        component: Any?,
+        changes: List<Change>,
+        hasCommitWorkflowHint: Boolean
+    ): SelectionSource {
+        if (hasCommitWorkflowHint) {
+            return SelectionSource.LOCAL_CHANGES_OR_COMMIT_UI
+        }
+
+        if (changes.isEmpty()) {
+            return SelectionSource.UNKNOWN
+        }
+
+        if (project != null && component is ChangesTree && changes.any { matchesLocalChange(project, it) }) {
+            return SelectionSource.LOCAL_CHANGES_OR_COMMIT_UI
+        }
+
+        return SelectionSource.GIT_LOG_OR_HISTORY
+    }
+
+    private fun matchesLocalChange(
+        project: com.intellij.openapi.project.Project,
+        selectedChange: Change
+    ): Boolean =
+        try {
+            val selectedPaths = selectedChange.normalizedPaths()
+            localChangesProvider(project).any { localChange ->
+                localChange == selectedChange || localChange.normalizedPaths().any { it in selectedPaths }
+            }
+        } catch (e: Exception) {
+            logger.warn("Failed to compare selected Git change with local changes", e)
+            false
+        }
+
+    private fun Change.normalizedPaths(): Set<String> =
+        listOfNotNull(afterRevision?.file?.path, beforeRevision?.file?.path)
+            .map { it.replace('\\', '/') }
+            .toSet()
 
     private fun collectGitStatusNode(
         userObject: Any?,
         untrackedFilePaths: MutableSet<String>,
         gitStatusNodes: MutableSet<GitStatusInfo>
     ) {
-        if (userObject == null) {
+        if (userObject !is GitFileStatusNode) {
             return
         }
 
-        try {
-            val statusObject = userObject.javaClass.getMethod("getStatus").invoke(userObject)
-            val statusText = statusObject?.toString().orEmpty()
-            val workTreeCode = Regex("workTree=([A-Z?])").find(statusText)?.groupValues?.get(1)?.trim()
-            val indexCode = Regex("index=([A-Z?])").find(statusText)?.groupValues?.get(1)?.trim()
-            val nodeText = userObject.toString()
-            val kind = Regex("kind=([A-Z]+)").find(nodeText)?.groupValues?.get(1)
-            val isStaged = kind == "STAGED"
-            val effectiveCode = if (isStaged) indexCode else workTreeCode
-            val normalizedStatus = when (effectiveCode) {
-                "D" -> "DELETED"
-                "M" -> "MODIFIED"
-                "A" -> "ADDED"
-                "?" -> "UNTRACKED"
-                else -> when {
-                    workTreeCode == "D" || indexCode == "D" -> "DELETED"
-                    workTreeCode == "M" || indexCode == "M" -> "MODIFIED"
-                    workTreeCode == "A" || indexCode == "A" -> "ADDED"
-                    workTreeCode == "?" || indexCode == "?" -> "UNTRACKED"
+        val filePath = userObject.status.path.path
+        if (filePath.isBlank()) {
+            return
+        }
+
+        when (userObject.kind) {
+            NodeKind.UNTRACKED -> {
+                untrackedFilePaths.add(filePath)
+            }
+            NodeKind.STAGED, NodeKind.UNSTAGED -> {
+                val isStaged = userObject.kind == NodeKind.STAGED
+                val code = if (isStaged) userObject.status.index else userObject.status.workTree
+                // Git index status codes: M/A/D/R/C/T (typechange) — 對應 GitIndexStatusUtil.kt 的分類
+                val normalizedStatus = when (code) {
+                    'D' -> "DELETED"
+                    'M', 'T' -> "MODIFIED"
+                    'A' -> "ADDED"
+                    'R', 'C' -> "MOVED"
                     else -> null
                 }
+                if (normalizedStatus != null) {
+                    gitStatusNodes.add(GitStatusInfo(filePath, normalizedStatus, isStaged))
+                }
             }
-
-            val filePath = userObject.javaClass.getMethod("getFilePath").invoke(userObject)?.toString()
-                ?: Regex("path=([^,)]+)").find(nodeText)?.groupValues?.get(1)
-
-            if (filePath.isNullOrBlank()) {
-                return
-            }
-
-            if (normalizedStatus == null || normalizedStatus == "UNTRACKED") {
-                untrackedFilePaths.add(filePath)
-            } else {
-                gitStatusNodes.add(GitStatusInfo(filePath, normalizedStatus, isStaged))
-            }
-        } catch (_: Exception) {
-            val path = Regex("path=([^,)]+)").find(userObject.toString())?.groupValues?.get(1)
-            if (!path.isNullOrBlank()) {
-                untrackedFilePaths.add(path)
+            NodeKind.CONFLICTED, NodeKind.IGNORED -> {
+                // Skip — conflicted/ignored 不在 copy 範圍內
             }
         }
     }
 
+    @IdeBoundCode
     private fun getSelectedFiles(e: AnActionEvent): Array<VirtualFile> {
         val component = e.getData(PlatformDataKeys.CONTEXT_COMPONENT)
 
@@ -198,6 +246,7 @@ class GitSelectionCollector(
         return emptyArray()
     }
 
+    @IdeBoundCode
     private fun extractFilesFromNode(node: Any?, files: MutableList<VirtualFile>) {
         if (node !is ChangesBrowserNode<*>) {
             return

@@ -1,9 +1,9 @@
 package com.github.audichuang.clipcode
 
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
@@ -13,9 +13,13 @@ import com.intellij.openapi.ui.Messages
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 
+@IdeBoundCode
 class PasteAndRestoreFilesAction : AnAction() {
     private val logger = Logger.getInstance(PasteAndRestoreFilesAction::class.java)
 
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
+
+    @IdeBoundCode
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: run {
             CopyFileContentAction.showNotification(
@@ -49,26 +53,28 @@ class PasteAndRestoreFilesAction : AnAction() {
         val pathResolver = ClipboardPathResolver.fromProject(project)
 
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Preparing Restore Plan", true) {
+            private var parsedEntries: List<ClipboardRestoreParser.ParsedClipboardEntry> = emptyList()
+            private var plan: RestorePlan? = null
+
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                val parsedEntries = ClipboardRestoreParser().parse(clipboardContent, headerFormat)
+                parsedEntries = ClipboardRestoreParser().parse(clipboardContent, headerFormat)
                 indicator.checkCanceled()
-                val plan = if (parsedEntries.isNotEmpty()) {
+                plan = if (parsedEntries.isNotEmpty()) {
                     RestorePlanBuilder(pathResolver).build(parsedEntries)
                 } else {
                     null
                 }
+            }
 
-                ApplicationManager.getApplication().invokeLater {
-                    if (project.isDisposed) {
-                        return@invokeLater
-                    }
-                    continueOnEdt(project, parsedEntries, plan)
-                }
+            override fun onSuccess() {
+                if (project.isDisposed) return
+                continueOnEdt(project, parsedEntries, plan)
             }
         })
     }
 
+    @IdeBoundCode
     private fun continueOnEdt(
         project: Project,
         parsedEntries: List<ClipboardRestoreParser.ParsedClipboardEntry>,
@@ -127,21 +133,23 @@ class PasteAndRestoreFilesAction : AnAction() {
         }
 
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Restoring Files from Clipboard", true) {
+            private var executionResult: RestoreExecutor.ExecutionResult? = null
+
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
                 indicator.checkCanceled()
+                executionResult = executor.execute(plan, overwriteAll, skipExisting)
+            }
 
-                val executionResult = executor.execute(plan, overwriteAll, skipExisting)
-                ApplicationManager.getApplication().invokeLater {
-                    if (project.isDisposed) {
-                        return@invokeLater
-                    }
-                    showExecutionNotifications(project, executionResult, plan.skippedOperations)
-                }
+            override fun onSuccess() {
+                if (project.isDisposed) return
+                val result = executionResult ?: return
+                showExecutionNotifications(project, result, plan.skippedOperations)
             }
         })
     }
 
+    @IdeBoundCode
     private fun getClipboardContent(): String? {
         return try {
             val clipboard = Toolkit.getDefaultToolkit().systemClipboard
@@ -239,6 +247,7 @@ class PasteAndRestoreFilesAction : AnAction() {
         }
     }
 
+    @IdeBoundCode
     private fun showOverwriteDialog(
         project: Project,
         existingFiles: List<String>
@@ -263,6 +272,7 @@ class PasteAndRestoreFilesAction : AnAction() {
         }
     }
 
+    @IdeBoundCode
     private fun showExecutionNotifications(
         project: Project,
         executionResult: RestoreExecutor.ExecutionResult,

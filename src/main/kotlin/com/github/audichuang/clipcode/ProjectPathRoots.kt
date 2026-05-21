@@ -5,6 +5,7 @@ import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 
+@IdeBoundCode
 object ProjectPathRoots {
     @Suppress("DEPRECATION")
     fun primaryRootPath(project: Project): String? =
