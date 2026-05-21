@@ -189,6 +189,67 @@ class RestorePlanBuilderTest {
     }
 
     @Test
+    fun `builds create operation from Windows node_modules absolute clipboard path`() {
+        val root = Files.createTempDirectory("clipcode-plan-node-modules")
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(root.systemIndependentPath()),
+            root.systemIndependentPath()
+        )
+
+        val plan = RestorePlanBuilder(resolver).build(
+            listOf(
+                ClipboardRestoreParser.ParsedClipboardEntry(
+                    path = "D:\\Users\\00508726\\Documents\\Project\\cat\\inv-web-console\\node_modules\\cub-lib-view-rootng\\styles\\cdk\\_a11y-theme.scss",
+                    content = "content"
+                )
+            )
+        )
+
+        assertEquals(emptyList(), plan.skippedOperations)
+        assertEquals(1, plan.createOperations.size)
+        assertEquals(
+            "node_modules/cub-lib-view-rootng/styles/cdk/_a11y-theme.scss",
+            plan.createOperations.single().relativePath
+        )
+        assertEquals(
+            root.resolve("node_modules/cub-lib-view-rootng/styles/cdk/_a11y-theme.scss").systemIndependentPath(),
+            plan.createOperations.single().absolutePath
+        )
+    }
+
+    @Test
+    fun `builds create operation under existing primary child directory from Windows node_modules path`() {
+        val root = Files.createTempDirectory("clipcode-plan-wrapper-root")
+        root.resolve("inv-web-console").createDirectories()
+        root.resolve("node_modules").createDirectories()
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(root.systemIndependentPath()),
+            root.systemIndependentPath()
+        )
+
+        val plan = RestorePlanBuilder(resolver).build(
+            listOf(
+                ClipboardRestoreParser.ParsedClipboardEntry(
+                    path = "D:\\Users\\00508726\\Documents\\Project\\cat\\inv-web-console\\node_modules\\cub-lib-view-rootng\\styles\\cdk\\_a11y-theme.scss",
+                    content = "content"
+                )
+            )
+        )
+
+        assertEquals(emptyList(), plan.skippedOperations)
+        assertEquals(1, plan.createOperations.size)
+        assertEquals(
+            "inv-web-console/node_modules/cub-lib-view-rootng/styles/cdk/_a11y-theme.scss",
+            plan.createOperations.single().relativePath
+        )
+        assertEquals(
+            root.resolve("inv-web-console/node_modules/cub-lib-view-rootng/styles/cdk/_a11y-theme.scss")
+                .systemIndependentPath(),
+            plan.createOperations.single().absolutePath
+        )
+    }
+
+    @Test
     fun `marks unresolved path when clipboard path is invalid`() {
         val root = Files.createTempDirectory("clipcode-plan-invalid")
         val plan = planFor(
@@ -202,6 +263,57 @@ class RestorePlanBuilderTest {
         )
 
         assertEquals(listOf(RestorePlan.SkipReason.UNRESOLVED_PATH), plan.skippedOperations.map { it.reason })
+    }
+
+    @Test
+    fun `marks unresolved path for delete operation with invalid path`() {
+        val root = Files.createTempDirectory("clipcode-plan-del-invalid")
+        val plan = planFor(
+            root,
+            listOf(
+                ClipboardRestoreParser.ParsedClipboardEntry(
+                    path = "../traversal.kt",
+                    content = "",
+                    changeTypes = setOf(ChangeTypeLabel.DELETED)
+                )
+            )
+        )
+
+        assertEquals(emptyList(), plan.deleteOperations)
+        assertEquals(listOf(RestorePlan.SkipReason.UNRESOLVED_PATH), plan.skippedOperations.map { it.reason })
+    }
+
+    @Test
+    fun `empty entries produce empty plan`() {
+        val root = Files.createTempDirectory("clipcode-plan-empty")
+        val plan = planFor(root, emptyList())
+        assertTrue(plan.createOperations.isEmpty())
+        assertTrue(plan.deleteOperations.isEmpty())
+        assertTrue(plan.skippedOperations.isEmpty())
+    }
+
+    @Test
+    fun `mixed batch with all skip reasons`() {
+        val root = Files.createTempDirectory("clipcode-plan-mixed-skip")
+        // 製造 ALREADY_ABSENT (delete missing) + UNRESOLVED (invalid path) 兩種
+        val plan = planFor(
+            root,
+            listOf(
+                ClipboardRestoreParser.ParsedClipboardEntry(
+                    path = "src/Missing.kt",
+                    content = "",
+                    changeTypes = setOf(ChangeTypeLabel.DELETED)
+                ),
+                ClipboardRestoreParser.ParsedClipboardEntry(
+                    path = "../bad.kt",
+                    content = "bad"
+                )
+            )
+        )
+
+        val reasons = plan.skippedOperations.map { it.reason }.toSet()
+        assertTrue(reasons.contains(RestorePlan.SkipReason.ALREADY_ABSENT))
+        assertTrue(reasons.contains(RestorePlan.SkipReason.UNRESOLVED_PATH))
     }
 
     private fun planFor(root: Path, entries: List<ClipboardRestoreParser.ParsedClipboardEntry>): RestorePlan {

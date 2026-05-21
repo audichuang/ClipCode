@@ -1,6 +1,7 @@
 // file: src/main/kotlin/com/github/audichuang/clipcode/ExternalLibraryHandler.kt
 package com.github.audichuang.clipcode
 
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.impl.LoadTextUtil
 import com.intellij.openapi.project.Project
@@ -14,6 +15,7 @@ import java.io.IOException
  * Handler for processing files from External Libraries.
  * Handles special cases like decompiled .class files, files within JARs/ZIPs, and JRT (Java 9+) modules.
  */
+@IdeBoundCode
 class ExternalLibraryHandler(private val project: Project) {
     private val logger = Logger.getInstance(ExternalLibraryHandler::class.java)
     
@@ -21,16 +23,21 @@ class ExternalLibraryHandler(private val project: Project) {
      * Check if a file is from an external library.
      * Uses IntelliJ's ProjectFileIndex for robust detection, plus checks for JAR/ZIP/JRT protocols.
      */
+    @IdeBoundCode
     fun isFromExternalLibrary(file: VirtualFile): Boolean {
         // 1. 使用 IntelliJ 官方 API 檢查是否屬於 Library (最準確)
-        if (ProjectFileIndex.getInstance(project).isInLibrary(file)) {
+        // ProjectFileIndex.isInLibrary 標註 @RequiresReadLock，必須包在 ReadAction 內
+        val isInLibrary = ReadAction.compute<Boolean, RuntimeException> {
+            ProjectFileIndex.getInstance(project).isInLibrary(file)
+        }
+        if (isInLibrary) {
             return true
         }
 
         // 2. 備用檢查：檢查檔案協議 (Protocol)
         val protocol = file.fileSystem.protocol
-        return protocol == "jar" || 
-               protocol == "zip" || 
+        return protocol == "jar" ||
+               protocol == "zip" ||
                protocol == "jrt" || // Java 9+ Runtime environment
                file.path.contains("!/")
     }
@@ -115,23 +122,24 @@ class ExternalLibraryHandler(private val project: Project) {
     /**
      * Get decompiled content from .class files using IntelliJ's PSI system.
      */
+    @IdeBoundCode
     private fun getDecompiledClassContent(file: VirtualFile): String {
         return try {
-            // Method 1: The standard IntelliJ PSI way (Most Robust)
-            val psiFile = PsiManager.getInstance(project).findFile(file)
-            if (psiFile is PsiCompiledElement) {
-                // .mirror returns the PsiFile representing the source code (decompiled or from attached sources)
-                return psiFile.mirror.text
+            // PsiManager.findFile / PsiCompiledElement.mirror 標 @RequiresReadLock，
+            // 必須在 ReadAction 內存取，否則 2024.3+ strict mode 會拋錯
+            ReadAction.compute<String, RuntimeException> {
+                val psiFile = PsiManager.getInstance(project).findFile(file)
+                if (psiFile is PsiCompiledElement) {
+                    return@compute psiFile.mirror.text
+                }
+
+                val text = LoadTextUtil.loadText(file)
+                if (text.isNotEmpty()) {
+                    return@compute text.toString()
+                }
+
+                psiFile?.viewProvider?.document?.text ?: ""
             }
-            
-            // Method 2: Fallback to LoadTextUtil
-            val text = LoadTextUtil.loadText(file)
-            if (text.isNotEmpty()) {
-                return text.toString()
-            }
-            
-            return psiFile?.viewProvider?.document?.text ?: ""
-            
         } catch (e: Exception) {
             logger.warn("Could not decompile ${file.name}: ${e.message}")
             "// Error: Could not retrieve source code for ${file.name}"
@@ -169,6 +177,8 @@ class ExternalLibraryHandler(private val project: Project) {
     }
     
     private fun isBinaryFile(file: VirtualFile): Boolean {
+        // 對外部 library 採白名單策略：未知副檔名一律視為二進位避免噴亂碼
+        // (FileTypeManager 對 jar 內未註冊副檔名常常回 UnknownFileType 而非 binary)
         val textExtensions = setOf(
             "java", "kt", "kts", "groovy", "scala", "py", "js", "ts", "tsx", "jsx",
             "xml", "json", "yaml", "yml", "properties", "txt", "md", "html", "css",

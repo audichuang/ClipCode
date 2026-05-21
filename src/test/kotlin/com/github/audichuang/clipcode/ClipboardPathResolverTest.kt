@@ -46,6 +46,77 @@ class ClipboardPathResolverTest {
     }
 
     @Test
+    fun `toClipboardPath prefixes sibling content root label`() {
+        val workspace = Files.createTempDirectory("clipcode-workspace")
+        val projectRoot = workspace.resolve("main-app").createDirectories()
+        val siblingRoot = workspace.resolve("shared-lib").createDirectories()
+        val file = siblingRoot.resolve("src/App.kt")
+        file.parent.createDirectories()
+
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(projectRoot.systemIndependentPath(), siblingRoot.systemIndependentPath()),
+            projectRoot.systemIndependentPath()
+        )
+
+        assertEquals(
+            "shared-lib/src/App.kt",
+            resolver.toClipboardPath(file.systemIndependentPath())
+        )
+    }
+
+    @Test
+    fun `sibling label colliding with primary child copies absolute and restores ambiguously`() {
+        val workspace = Files.createTempDirectory("clipcode-label-collision")
+        val projectRoot = workspace.resolve("main-app").createDirectories()
+        val primarySharedRoot = projectRoot.resolve("shared-lib").createDirectories()
+        val siblingRoot = Files.createTempDirectory("clipcode-external")
+            .resolve("shared-lib")
+            .createDirectories()
+        val primaryFile = primarySharedRoot.resolve("src/App.kt")
+        val siblingFile = siblingRoot.resolve("src/App.kt")
+        primaryFile.parent.createDirectories()
+        siblingFile.parent.createDirectories()
+        primaryFile.writeText("primary")
+        siblingFile.writeText("sibling")
+
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(projectRoot.systemIndependentPath(), siblingRoot.systemIndependentPath()),
+            projectRoot.systemIndependentPath()
+        )
+
+        assertEquals("shared-lib/src/App.kt", resolver.toClipboardPath(primaryFile.systemIndependentPath()))
+        assertEquals(siblingFile.systemIndependentPath(), resolver.toClipboardPath(siblingFile.systemIndependentPath()))
+
+        val writeResolution = resolver.resolveWriteTarget("shared-lib/src/App.kt")
+        val ambiguousWrite = assertIs<ClipboardPathResolver.WriteResolution.Ambiguous>(writeResolution)
+        assertTrue(ambiguousWrite.candidates.any { it == primaryFile.systemIndependentPath() })
+        assertTrue(ambiguousWrite.candidates.any { it == siblingFile.systemIndependentPath() })
+
+        val deleteResolution = resolver.resolveDeleteTarget("shared-lib/src/App.kt")
+        val ambiguousDelete = assertIs<ClipboardPathResolver.DeleteResolution.Ambiguous>(deleteResolution)
+        assertTrue(ambiguousDelete.candidates.any { it == primaryFile.systemIndependentPath() })
+        assertTrue(ambiguousDelete.candidates.any { it == siblingFile.systemIndependentPath() })
+    }
+
+    @Test
+    fun `resolveExistingPath resolves explicit sibling root label`() {
+        val workspace = Files.createTempDirectory("clipcode-existing-sibling")
+        val projectRoot = workspace.resolve("main-app").createDirectories()
+        val siblingRoot = workspace.resolve("shared-lib").createDirectories()
+        val file = siblingRoot.resolve("src/App.kt")
+        file.parent.createDirectories()
+        file.writeText("content")
+
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(projectRoot.systemIndependentPath(), siblingRoot.systemIndependentPath()),
+            projectRoot.systemIndependentPath()
+        )
+
+        assertEquals(siblingRoot.systemIndependentPath(), resolver.resolveExistingPath("shared-lib"))
+        assertEquals(file.systemIndependentPath(), resolver.resolveExistingPath("shared-lib/src/App.kt"))
+    }
+
+    @Test
     fun `resolveWriteTarget detects ambiguous existing file across roots`() {
         val rootOne = Files.createTempDirectory("clipcode-root-one")
         val rootTwo = Files.createTempDirectory("clipcode-root-two")
@@ -173,6 +244,48 @@ class ClipboardPathResolverTest {
     }
 
     @Test
+    fun `resolveWriteTarget writes explicit sibling root label to sibling root`() {
+        val workspace = Files.createTempDirectory("clipcode-write-sibling")
+        val projectRoot = workspace.resolve("main-app").createDirectories()
+        val siblingRoot = workspace.resolve("shared-lib").createDirectories()
+        val target = siblingRoot.resolve("src/New.kt")
+
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(projectRoot.systemIndependentPath(), siblingRoot.systemIndependentPath()),
+            projectRoot.systemIndependentPath()
+        )
+
+        val resolution = resolver.resolveWriteTarget("shared-lib/src/New.kt")
+
+        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
+        assertEquals("src/New.kt", resolved.target.relativePath)
+        assertEquals(target.systemIndependentPath(), resolved.target.absolutePath)
+        assertEquals(siblingRoot.systemIndependentPath(), resolved.target.rootPath)
+        assertFalse(resolved.target.existed)
+    }
+
+    @Test
+    fun `resolveWriteTarget keeps legacy sibling path fallback when primary target is missing`() {
+        val workspace = Files.createTempDirectory("clipcode-legacy-sibling")
+        val projectRoot = workspace.resolve("main-app").createDirectories()
+        val siblingRoot = workspace.resolve("shared-lib").createDirectories()
+        val target = siblingRoot.resolve("src/App.kt")
+        target.parent.createDirectories()
+        target.writeText("existing sibling")
+
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(projectRoot.systemIndependentPath(), siblingRoot.systemIndependentPath()),
+            projectRoot.systemIndependentPath()
+        )
+
+        val resolution = resolver.resolveWriteTarget("src/App.kt")
+
+        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
+        assertEquals(target.systemIndependentPath(), resolved.target.absolutePath)
+        assertTrue(resolved.target.existed)
+    }
+
+    @Test
     fun `resolveDeleteTarget finds file in second content root`() {
         val rootOne = Files.createTempDirectory("clipcode-root-primary")
         val rootTwo = Files.createTempDirectory("clipcode-root-secondary")
@@ -188,6 +301,81 @@ class ClipboardPathResolverTest {
         val resolution = resolver.resolveDeleteTarget("nested/Old.kt")
         val resolved = assertIs<ClipboardPathResolver.DeleteResolution.Resolved>(resolution)
         assertEquals(target.systemIndependentPath(), resolved.target.absolutePath)
+    }
+
+    @Test
+    fun `resolveDeleteTarget deletes explicit sibling root label from sibling root`() {
+        val workspace = Files.createTempDirectory("clipcode-delete-sibling")
+        val projectRoot = workspace.resolve("main-app").createDirectories()
+        val siblingRoot = workspace.resolve("shared-lib").createDirectories()
+        val target = siblingRoot.resolve("src/Old.kt")
+        target.parent.createDirectories()
+        target.writeText("obsolete")
+
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(projectRoot.systemIndependentPath(), siblingRoot.systemIndependentPath()),
+            projectRoot.systemIndependentPath()
+        )
+
+        val resolution = resolver.resolveDeleteTarget("shared-lib/src/Old.kt")
+
+        val resolved = assertIs<ClipboardPathResolver.DeleteResolution.Resolved>(resolution)
+        assertEquals("src/Old.kt", resolved.target.relativePath)
+        assertEquals(target.systemIndependentPath(), resolved.target.absolutePath)
+        assertEquals(siblingRoot.systemIndependentPath(), resolved.target.rootPath)
+    }
+
+    @Test
+    fun `duplicate sibling root labels fall back to absolute copy path and ambiguous restore`() {
+        val projectRoot = Files.createTempDirectory("clipcode-primary-root")
+        val workspaceOne = Files.createTempDirectory("clipcode-ws-one")
+        val workspaceTwo = Files.createTempDirectory("clipcode-ws-two")
+        val siblingRootOne = workspaceOne.resolve("shared-lib").createDirectories()
+        val siblingRootTwo = workspaceTwo.resolve("shared-lib").createDirectories()
+        val file = siblingRootOne.resolve("src/App.kt")
+        file.parent.createDirectories()
+
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(
+                projectRoot.systemIndependentPath(),
+                siblingRootOne.systemIndependentPath(),
+                siblingRootTwo.systemIndependentPath()
+            ),
+            projectRoot.systemIndependentPath()
+        )
+
+        assertEquals(file.systemIndependentPath(), resolver.toClipboardPath(file.systemIndependentPath()))
+
+        val absoluteResolution = resolver.resolveWriteTarget(file.systemIndependentPath())
+        val absoluteResolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(absoluteResolution)
+        assertEquals(file.systemIndependentPath(), absoluteResolved.target.absolutePath)
+        assertEquals(siblingRootOne.systemIndependentPath(), absoluteResolved.target.rootPath)
+        assertFalse(absoluteResolved.target.existed)
+
+        val resolution = resolver.resolveWriteTarget("shared-lib/src/App.kt")
+        val ambiguous = assertIs<ClipboardPathResolver.WriteResolution.Ambiguous>(resolution)
+        assertEquals(2, ambiguous.candidates.size)
+    }
+
+    @Test
+    fun `resolveWriteTarget rejects cross machine absolute suffix when sibling root names repeat`() {
+        val projectRoot = Files.createTempDirectory("clipcode-primary-root")
+        val workspaceOne = Files.createTempDirectory("clipcode-ws-one")
+        val workspaceTwo = Files.createTempDirectory("clipcode-ws-two")
+        val siblingRootOne = workspaceOne.resolve("shared-lib").createDirectories()
+        val siblingRootTwo = workspaceTwo.resolve("shared-lib").createDirectories()
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(
+                projectRoot.systemIndependentPath(),
+                siblingRootOne.systemIndependentPath(),
+                siblingRootTwo.systemIndependentPath()
+            ),
+            projectRoot.systemIndependentPath()
+        )
+
+        val resolution = resolver.resolveWriteTarget("D:/old-workspace/shared-lib/src/App.kt")
+
+        assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(resolution)
     }
 
     @Test
@@ -266,6 +454,87 @@ class ClipboardPathResolverTest {
         val resolution = resolver.resolveWriteTarget("D:/Users/audi/projects/ClipCode/src/main/App.kt")
         val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
         assertEquals("src/main/App.kt", resolved.target.relativePath)
+    }
+
+    @Test
+    fun `resolveWriteTarget prefers primary root suffix for cross machine absolute path under nested content root`() {
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(
+                "C:/workspace/cat",
+                "C:/workspace/cat/inv-web-console"
+            ),
+            "C:/workspace/cat"
+        )
+
+        val resolution = resolver.resolveWriteTarget(
+            "D:\\Users\\00508726\\Documents\\Project\\cat\\inv-web-console\\node_modules\\cub-lib-view-rootng\\styles\\cdk\\_a11y-theme.scss"
+        )
+
+        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
+        assertEquals(
+            "inv-web-console/node_modules/cub-lib-view-rootng/styles/cdk/_a11y-theme.scss",
+            resolved.target.relativePath
+        )
+    }
+
+    @Test
+    fun `resolveWriteTarget matches cross machine Windows suffix case insensitively`() {
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(
+                "C:/workspace/CAT",
+                "C:/workspace/CAT/INV-WEB-CONSOLE"
+            ),
+            "C:/workspace/CAT"
+        )
+
+        val resolution = resolver.resolveWriteTarget(
+            "D:\\Users\\00508726\\Documents\\Project\\cat\\inv-web-console\\node_modules\\cub-lib-view-rootng\\styles\\cdk\\_overlay-theme.scss"
+        )
+
+        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
+        assertEquals(
+            "inv-web-console/node_modules/cub-lib-view-rootng/styles/cdk/_overlay-theme.scss",
+            resolved.target.relativePath
+        )
+    }
+
+    @Test
+    fun `resolveWriteTarget accepts Windows node_modules absolute path without matching project root name`() {
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf("C:/workspace/current-project"),
+            "C:/workspace/current-project"
+        )
+
+        val resolution = resolver.resolveWriteTarget(
+            "D:\\Users\\00508726\\Documents\\Project\\cat\\inv-web-console\\node_modules\\cub-lib-view-rootng\\styles\\cdk\\_a11y-theme.scss"
+        )
+
+        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
+        assertEquals(
+            "node_modules/cub-lib-view-rootng/styles/cdk/_a11y-theme.scss",
+            resolved.target.relativePath
+        )
+    }
+
+    @Test
+    fun `resolveWriteTarget prefers existing primary child directory before node_modules fallback`() {
+        val root = Files.createTempDirectory("clipcode-root-wrapper")
+        root.resolve("inv-web-console").createDirectories()
+        root.resolve("node_modules").createDirectories()
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(root.systemIndependentPath()),
+            root.systemIndependentPath()
+        )
+
+        val resolution = resolver.resolveWriteTarget(
+            "D:\\Users\\00508726\\Documents\\Project\\cat\\inv-web-console\\node_modules\\cub-lib-view-rootng\\styles\\cdk\\_a11y-theme.scss"
+        )
+
+        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
+        assertEquals(
+            "inv-web-console/node_modules/cub-lib-view-rootng/styles/cdk/_a11y-theme.scss",
+            resolved.target.relativePath
+        )
     }
 
     @Test

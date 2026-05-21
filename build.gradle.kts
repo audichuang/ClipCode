@@ -76,6 +76,31 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.1.7 - Wrapper root paste path detection</h2>
+            <ul>
+              <li><b>Fixed:</b> Paste and Restore now prefers an existing top-level child directory under the current project root, such as inv-web-console, before falling back to node_modules for detached Windows absolute paths</li>
+            </ul>
+
+            <h2>Version 1.1.6 - Paste Windows node_modules paths</h2>
+            <ul>
+              <li><b>Fixed:</b> Paste and Restore now accepts Windows absolute clipboard paths that point into node_modules packages, safely restoring them under the current project's node_modules directory when no project-root suffix is available</li>
+            </ul>
+
+            <h2>Version 1.1.5 - Project-relative node_modules copy paths</h2>
+            <ul>
+              <li><b>Fixed:</b> Files under project roots, including node_modules packages that IntelliJ marks as libraries, now copy with project-relative headers so Paste and Restore can resolve them reliably</li>
+            </ul>
+
+            <h2>Version 1.1.4 - Windows path casing compatibility</h2>
+            <ul>
+              <li><b>Fixed:</b> Paste and Restore resolves copied Windows absolute paths even when IDE project roots use different casing than the copied path</li>
+            </ul>
+
+            <h2>Version 1.1.3 - Restore Windows absolute paths</h2>
+            <ul>
+              <li><b>Fixed:</b> Paste and Restore now resolves copied Windows absolute paths from another machine when they point into a nested content root</li>
+            </ul>
+
             <h2>Version 1.1.2 - Multi-module edge case fixes</h2>
             <ul>
               <li><b>Fixed:</b> Copy All Open Tabs and default copy headers now use project-root-relative paths in multi-module projects</li>
@@ -191,6 +216,33 @@ changelog {
 // Configure Gradle Kover Plugin - read more: https://github.com/Kotlin/kotlinx-kover#configuration
 kover {
     reports {
+        filters {
+            excludes {
+                // 排除純 Swing UI 設定面板（測試 ROI 過低，業界慣例）
+                classes(
+                    "com.github.audichuang.clipcode.CopyFileContentConfigurable",
+                    "com.github.audichuang.clipcode.CopyFileContentConfigurable\$*"
+                )
+                // 排除背景 Task lambda（IntelliJ Task.Backgroundable 內部閉包，無法穩定測試）
+                classes(
+                    "com.github.audichuang.clipcode.*Action\$actionPerformed\$*",
+                    "com.github.audichuang.clipcode.*Action\$continueOnEdt\$*",
+                    "com.github.audichuang.clipcode.*Action\$handleResolvedEntries\$*",
+                    "com.github.audichuang.clipcode.*Action\$copyResolvedEntries\$*",
+                    "com.github.audichuang.clipcode.*Action\$copySelectedFilesWithoutGitMetadata\$*",
+                    "com.github.audichuang.clipcode.*Action\$showExecutionNotifications\$*",
+                    "com.github.audichuang.clipcode.*Action\$showOverwriteDialog\$*",
+                    "com.github.audichuang.clipcode.*Action\$performCopyFilesContent\$*"
+                )
+                // 整體 IDE Action wrapper class（純 Action 入口，內部 logic 已抽到 helper class 並單獨測試）
+                classes(
+                    "com.github.audichuang.clipcode.CopyAllOpenTabsAction"
+                )
+                // 透過 @IdeBoundCode annotation 排除 IDE-only 程式碼路徑
+                // （modal dialog、ProgressManager、IDE data context、git binary 等）
+                annotatedBy("com.github.audichuang.clipcode.IdeBoundCode")
+            }
+        }
         total {
             xml {
                 onCheck = true
