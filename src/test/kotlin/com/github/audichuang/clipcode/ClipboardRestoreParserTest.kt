@@ -116,4 +116,50 @@ class ClipboardRestoreParserTest {
         assertEquals(listOf("fun a() = 1", "fun b() = 2"), entries.map { it.content })
         assertEquals(setOf(ChangeTypeLabel.NEW), entries[1].changeTypes)
     }
+
+    @Test
+    fun `does not split javascript object property named file as header`() {
+        val clipboard = """
+            // file: inv-web-console/node_modules/cub-lib-view-rootng/fesm2022/cub-lib-view-rootng-component-upload.mjs
+            let error = {
+                file: undefined,
+                errorTypes: [],
+            };
+            export { CubUpload, CubUploadModule };
+        """.trimIndent()
+
+        val entries = parser.parse(clipboard, "// file: \$FILE_PATH")
+
+        assertEquals(1, entries.size)
+        assertEquals(
+            """
+            let error = {
+                file: undefined,
+                errorTypes: [],
+            };
+            export { CubUpload, CubUploadModule };
+            """.trimIndent(),
+            entries.single().content
+        )
+    }
+
+    @Test
+    fun `does not split inline header text inside source content`() {
+        val clipboard = """
+            // file: src/app.js
+            const marker = "// file: docs/readme.md";
+            console.log(marker);
+        """.trimIndent()
+
+        val entries = parser.parse(clipboard, "// file: \$FILE_PATH")
+
+        assertEquals(1, entries.size)
+        assertEquals(
+            """
+            const marker = "// file: docs/readme.md";
+            console.log(marker);
+            """.trimIndent(),
+            entries.single().content
+        )
+    }
 }

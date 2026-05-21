@@ -76,6 +76,12 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.1.8 - Safer paste header parsing</h2>
+            <ul>
+              <li><b>Fixed:</b> Paste and Restore no longer treats JavaScript object properties such as <code>file: undefined,</code> as ClipCode file headers, preventing restored bundles from being truncated</li>
+              <li><b>Fixed:</b> Paste and Restore only accepts custom file headers when the whole line matches, so strings containing <code>// file:</code> inside source content no longer split files unexpectedly</li>
+            </ul>
+
             <h2>Version 1.1.7 - Wrapper root paste path detection</h2>
             <ul>
               <li><b>Fixed:</b> Paste and Restore now prefers an existing top-level child directory under the current project root, such as inv-web-console, before falling back to node_modules for detached Windows absolute paths</li>
