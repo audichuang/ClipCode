@@ -76,6 +76,13 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.1.10 - Reliable copy/restore round-trip</h2>
+            <ul>
+              <li><b>Fixed:</b> A file whose own content contains a line like <code>// file: ...</code> now round-trips correctly — such lines are escaped on copy and restored verbatim on paste, instead of being split into a phantom file</li>
+              <li><b>Fixed:</b> Paste and Restore preserves a file's own leading indentation and interior blank lines; only the structural separators the format inserts between files are trimmed</li>
+              <li>Clipboard format stays compatible with the ClipCode VS Code extension (Snipcode) — both sides were updated together</li>
+            </ul>
+
             <h2>Version 1.1.8 - Safer paste header parsing</h2>
             <ul>
               <li><b>Fixed:</b> Paste and Restore no longer treats JavaScript object properties such as <code>file: undefined,</code> as ClipCode file headers, preventing restored bundles from being truncated</li>
