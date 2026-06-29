@@ -212,7 +212,7 @@ class CopyGitFilesContentAction : AnAction() {
         var skippedSizeCount = 0
 
         if (!settings?.state?.preText.isNullOrEmpty()) {
-            fileContents.add(settings!!.state.preText)
+            fileContents.add(ClipboardRestoreParser.escapeContent(settings!!.state.preText, headerFormat))
         }
 
         // VFS bytes 讀取需在 ReadAction 內 (2024.3+ strict mode)
@@ -227,7 +227,7 @@ class CopyGitFilesContentAction : AnAction() {
                         changeType = entry.changeType
                     )
                 )
-                skipped += appendContent(fileContents, entry, maxFileSizeBytes)
+                skipped += appendContent(fileContents, entry, maxFileSizeBytes, headerFormat)
                 if (addExtraLine) {
                     fileContents.add("")
                 }
@@ -250,7 +250,7 @@ class CopyGitFilesContentAction : AnAction() {
         }
 
         if (!settings?.state?.postText.isNullOrEmpty()) {
-            fileContents.add(settings!!.state.postText)
+            fileContents.add(ClipboardRestoreParser.escapeContent(settings!!.state.postText, headerFormat))
         }
 
         val filesFromDisk = contentEntries.count { it.hasVirtualFileContent } - skippedSizeCount.coerceAtMost(contentEntries.count { it.hasVirtualFileContent })
@@ -285,7 +285,8 @@ class CopyGitFilesContentAction : AnAction() {
     private fun appendContent(
         fileContents: MutableList<String>,
         entry: GitContentResolver.ResolvedGitEntry,
-        maxFileSizeBytes: Long
+        maxFileSizeBytes: Long,
+        headerFormat: String
     ): Int {
         val revisionContent = entry.contentFromRevision
         if (revisionContent != null) {
@@ -296,7 +297,7 @@ class CopyGitFilesContentAction : AnAction() {
                 return 1
             }
 
-            fileContents.add(revisionContent)
+            fileContents.add(ClipboardRestoreParser.escapeContent(revisionContent, headerFormat))
             return 0
         }
 
@@ -310,7 +311,7 @@ class CopyGitFilesContentAction : AnAction() {
 
             return try {
                 // 用 VfsUtilCore.loadText 走檔案編碼，而非強制 UTF-8
-                fileContents.add(VfsUtilCore.loadText(virtualFile))
+                fileContents.add(ClipboardRestoreParser.escapeContent(VfsUtilCore.loadText(virtualFile), headerFormat))
                 0
             } catch (e: Exception) {
                 logger.warn("Failed to read Git file content: ${entry.filePath}", e)

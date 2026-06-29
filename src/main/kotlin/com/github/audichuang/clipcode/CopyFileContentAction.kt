@@ -214,7 +214,7 @@ class CopyFileContentAction : AnAction() {
             var totalTokens = 0
 
             val fileContents = mutableListOf<String>().apply {
-                add(settings.state.preText)
+                add(ClipboardRestoreParser.escapeContent(settings.state.preText, settings.state.headerFormat))
             }
 
             for (file in filesToCopy) {
@@ -236,7 +236,7 @@ class CopyFileContentAction : AnAction() {
                 totalTokens += estimateTokens(content)
             }
 
-            fileContents.add(settings.state.postText)
+            fileContents.add(ClipboardRestoreParser.escapeContent(settings.state.postText, settings.state.headerFormat))
 
             CopyPayload(
                 text = fileContents.joinToString(separator = "\n"),
@@ -440,7 +440,7 @@ class CopyFileContentAction : AnAction() {
                 val header = customHeaderGenerator?.invoke(file, fileRelativePath)
                     ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
                 fileContents.add(header)
-                fileContents.add(content)
+                fileContents.add(ClipboardRestoreParser.escapeContent(content, settings.state.headerFormat))
                 session.fileCount++
                 if (addExtraLine) {
                     fileContents.add("")
@@ -457,7 +457,7 @@ class CopyFileContentAction : AnAction() {
                     val header = customHeaderGenerator?.invoke(file, fileRelativePath)
                         ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
                     fileContents.add(header)
-                    fileContents.add(content)
+                    fileContents.add(ClipboardRestoreParser.escapeContent(content, settings.state.headerFormat))
                     session.fileCount++
                     if (addExtraLine) {
                         fileContents.add("")

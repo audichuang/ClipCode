@@ -18,11 +18,93 @@ class ClipboardRestoreParser {
             "^\\s*(?:(//|#|/\\*)\\s*)?file:\\s*(.+?)\\s*(?:\\*/)?$",
             RegexOption.IGNORE_CASE
         )
+
+        /**
+         * Scheme A escape marker. Prefixed onto any content line that would parse
+         * as a header so it round-trips as content, not a phantom file boundary.
+         * MUST be byte-identical to the VS Code mirror (ClipCodeVSCode
+         * src/clipboardFormat.ts ESCAPE_MARKER) or cross-tool restore breaks.
+         */
+        const val ESCAPE_MARKER = "//clipcode-esc: "
+
+        /** Build side: escape content/pre/post lines that would parse as headers. */
+        fun escapeContent(text: String, headerFormat: String): String {
+            if (text.isEmpty()) return text
+            val customRegex = toHeaderPattern(headerFormat)
+            return text.split("\n").joinToString("\n") { line ->
+                if (needsEscape(line, customRegex)) ESCAPE_MARKER + line else line
+            }
+        }
+
+        /** Parse side: strip exactly one leading marker per line (inverse of escape). */
+        fun unescapeContent(text: String): String =
+            text.split("\n").joinToString("\n") { line ->
+                if (line.startsWith(ESCAPE_MARKER)) line.removePrefix(ESCAPE_MARKER) else line
+            }
+
+        // Mirror of the VS Code joinContent: drop only the structural blank lines the
+        // builder injects (empty pre/post wrappers + the addExtraLineBetweenFiles
+        // separator) while preserving the file's own leading indentation, interior
+        // blank lines, and trailing spaces. Replaces a blanket String.trim() so a
+        // copy made in VS Code restores byte-for-byte the same way in IntelliJ.
+        fun joinContent(text: String): String {
+            val lines = text.split("\n")
+            var start = 0
+            var end = lines.size
+            while (start < end && lines[start].isBlank()) start++
+            while (end > start && lines[end - 1].isBlank()) end--
+            return lines.subList(start, end).joinToString("\n")
+        }
+
+        // Escape a line if it would parse as a header (must be hidden) or already
+        // starts with the marker (so unescape stays a true inverse). Skip it when
+        // prefixing the marker wouldn't stop it parsing as a header anyway — a
+        // degenerate headerFormat that matches everything — so we don't mark every line.
+        private fun needsEscape(line: String, customRegex: Regex?): Boolean {
+            if (line.startsWith(ESCAPE_MARKER)) return true
+            if (findHeaderPath(line, customRegex) == null) return false
+            return findHeaderPath(ESCAPE_MARKER + line, customRegex) == null
+        }
+
+        private fun findHeaderPath(line: String, customRegex: Regex?): String? {
+            val customMatch = customRegex?.matchEntire(line)
+            if (customMatch != null && customMatch.groups.size > 1) {
+                return customMatch.groups[1]?.value
+            }
+
+            val genericMatch = GENERIC_FILE_HEADER.matchEntire(line) ?: return null
+            val prefix = genericMatch.groups[1]?.value
+            val rawPath = genericMatch.groups[2]?.value ?: return null
+            if (prefix == null && !isLikelyBareFileHeaderPath(rawPath)) {
+                return null
+            }
+
+            return rawPath
+        }
+
+        private fun isLikelyBareFileHeaderPath(rawPath: String): Boolean {
+            val path = ChangeTypeLabel.stripLabels(rawPath).trim()
+            if (path.isBlank()) return false
+            if (path.startsWith("\"") || path.startsWith("'")) return false
+            if (path.endsWith(",") || path.endsWith(";")) return false
+
+            return path.contains('/') || path.contains('\\') || path.contains('.')
+        }
+
+        private fun toHeaderPattern(headerFormat: String): Regex? {
+            val placeholder = "\$FILE_PATH"
+            val placeholderIndex = headerFormat.indexOf(placeholder)
+            if (placeholderIndex < 0) return null
+
+            val prefix = Regex.escape(headerFormat.substring(0, placeholderIndex))
+            val suffix = Regex.escape(headerFormat.substring(placeholderIndex + placeholder.length))
+            return Regex("^$prefix(.+?)$suffix$")
+        }
     }
 
     fun parse(content: String, headerFormat: String): List<ParsedClipboardEntry> {
         val parsedEntries = mutableListOf<ParsedClipboardEntry>()
-        val customRegex = toHeaderPattern(headerFormat)?.let(::Regex)
+        val customRegex = toHeaderPattern(headerFormat)
         val lines = content.lines()
 
         var currentFilePath: String? = null
@@ -36,7 +118,7 @@ class ClipboardRestoreParser {
                     parsedEntries.add(
                         ParsedClipboardEntry(
                             path = currentFilePath,
-                            content = currentContent.toString().trim(),
+                            content = unescapeContent(joinContent(currentContent.toString())),
                             changeTypes = currentChangeTypes
                         )
                     )
@@ -57,47 +139,12 @@ class ClipboardRestoreParser {
             parsedEntries.add(
                 ParsedClipboardEntry(
                     path = currentFilePath,
-                    content = currentContent.toString().trim(),
+                    content = unescapeContent(joinContent(currentContent.toString())),
                     changeTypes = currentChangeTypes
                 )
             )
         }
 
         return parsedEntries
-    }
-
-    private fun findHeaderPath(line: String, customRegex: Regex?): String? {
-        val customMatch = customRegex?.matchEntire(line)
-        if (customMatch != null && customMatch.groups.size > 1) {
-            return customMatch.groups[1]?.value
-        }
-
-        val genericMatch = GENERIC_FILE_HEADER.matchEntire(line) ?: return null
-        val prefix = genericMatch.groups[1]?.value
-        val rawPath = genericMatch.groups[2]?.value ?: return null
-        if (prefix == null && !isLikelyBareFileHeaderPath(rawPath)) {
-            return null
-        }
-
-        return rawPath
-    }
-
-    private fun isLikelyBareFileHeaderPath(rawPath: String): Boolean {
-        val path = ChangeTypeLabel.stripLabels(rawPath).trim()
-        if (path.isBlank()) return false
-        if (path.startsWith("\"") || path.startsWith("'")) return false
-        if (path.endsWith(",") || path.endsWith(";")) return false
-
-        return path.contains('/') || path.contains('\\') || path.contains('.')
-    }
-
-    private fun toHeaderPattern(headerFormat: String): String? {
-        val placeholder = "\$FILE_PATH"
-        val placeholderIndex = headerFormat.indexOf(placeholder)
-        if (placeholderIndex < 0) return null
-
-        val prefix = Regex.escape(headerFormat.substring(0, placeholderIndex))
-        val suffix = Regex.escape(headerFormat.substring(placeholderIndex + placeholder.length))
-        return "^$prefix(.+?)$suffix$"
     }
 }
