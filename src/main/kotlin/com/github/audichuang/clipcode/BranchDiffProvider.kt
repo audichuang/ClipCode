@@ -37,10 +37,10 @@ class BranchDiffProvider(private val logger: Logger) {
         return try {
             val upstream = repository.currentBranch
                 ?.findTrackedBranch(repository)
-                ?.nameForRemoteOperations
+                ?.name
 
             val remoteBranchNames = repository.branches.remoteBranches
-                .map { it.nameForRemoteOperations }
+                .map { it.name }
 
             val ordered = linkedSetOf<String>()
             upstream?.let { ordered.add(it) }
@@ -68,7 +68,7 @@ class BranchDiffProvider(private val logger: Logger) {
         val repository = firstRepository(project) ?: return RemoteStatus(0, 0, null, false)
 
         val upstream = try {
-            repository.currentBranch?.findTrackedBranch(repository)?.nameForRemoteOperations
+            repository.currentBranch?.findTrackedBranch(repository)?.name
         } catch (e: Exception) {
             logger.warn("Failed to resolve tracked branch", e)
             null
@@ -81,9 +81,12 @@ class BranchDiffProvider(private val logger: Logger) {
         var fetched = false
         if (doFetch) {
             fetched = try {
+                // 靜默降級:throwExceptionIfFailed() 只讀 isFailed 拋例外,不彈 IDE 通知;
+                // 失敗改由 panel banner 自己顯示,fetched=false 後仍用本地快取算 ahead/behind
                 GitFetchSupport.fetchSupport(project)
                     .fetchAllRemotes(listOf(repository))
-                    .showNotificationIfFailed()
+                    .throwExceptionIfFailed()
+                true
             } catch (e: Exception) {
                 logger.warn("Failed to fetch remote", e)
                 false
