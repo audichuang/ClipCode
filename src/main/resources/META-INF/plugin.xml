@@ -29,6 +29,12 @@
             id="ClipCodeConfigurable"
             displayName="ClipCode Settings"
             instance="com.github.audichuang.clipcode.CopyFileContentConfigurable"/>
+
+        <toolWindow id="ClipCode PR"
+                    anchor="right"
+                    secondary="true"
+                    icon="AllIcons.Vcs.Branch"
+                    factoryClass="com.github.audichuang.clipcode.ClipCodePrToolWindowFactory"/>
     </extensions>
     <actions>
         <!-- For general IntelliJ IDEs -->
