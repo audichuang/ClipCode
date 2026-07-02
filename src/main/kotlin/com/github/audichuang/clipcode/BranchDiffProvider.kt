@@ -9,6 +9,7 @@ import git4idea.commands.Git
 import git4idea.commands.GitCommand
 import git4idea.commands.GitLineHandler
 import git4idea.fetch.GitFetchSupport
+import git4idea.history.GitHistoryUtils
 import git4idea.repo.GitRepository
 
 /**
@@ -53,11 +54,18 @@ class BranchDiffProvider(private val logger: Logger) {
         }
     }
 
-    // base..HEAD 的變更;base 為 ref 字串(如 "origin/main")
+    // merge-base(baseRef, HEAD)..HEAD 的變更(three-dot semantics):只顯示本分支自己引入的變更,
+    // 不受 baseRef 之後領先的 commit 影響。merge-base 解不出來時退回 baseRef..HEAD(two-dot)。
     fun diffChanges(project: Project, baseRef: String): List<Change> {
         val repository = firstRepository(project) ?: return emptyList()
         return try {
-            GitChangeUtils.getDiff(repository, baseRef, "HEAD", true)?.toList() ?: emptyList()
+            val mergeBaseSha = try {
+                GitHistoryUtils.getMergeBase(project, repository.root, baseRef, "HEAD")?.asString()
+            } catch (e: Exception) {
+                logger.warn("Failed to resolve merge base for $baseRef..HEAD, falling back to two-dot diff", e)
+                null
+            }
+            GitChangeUtils.getDiff(repository, mergeBaseSha ?: baseRef, "HEAD", true)?.toList() ?: emptyList()
         } catch (e: Exception) {
             logger.warn("Failed to compute diff for $baseRef..HEAD", e)
             emptyList()
