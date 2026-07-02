@@ -230,7 +230,7 @@ class ClipCodePrPanel(private val project: Project) : JPanel(BorderLayout()) {
 
                 status.behind > 0 ->
                     RemoteBanner(
-                        "⚠ origin 有 ${status.behind} 個新 commit，建議 pull$offlineNote",
+                        "⚠ ${status.upstream ?: "origin"} 有 ${status.behind} 個新 commit，建議 pull$offlineNote",
                         showFetchButton = true
                     )
 

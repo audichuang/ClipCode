@@ -20,6 +20,7 @@ class ClipCodePrPanelTest {
         val banner = ClipCodePrPanel.formatRemoteBanner(
             BranchDiffProvider.RemoteStatus(ahead = 1, behind = 3, upstream = "origin/main", fetched = true, fetchAttempted = true)
         )
+        assertTrue(banner.text.contains("origin/main"))
         assertTrue(banner.text.contains("3"))
         assertTrue(banner.text.contains("pull"))
         assertTrue(banner.showFetchButton)
