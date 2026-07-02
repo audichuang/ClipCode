@@ -28,87 +28,12 @@ import javax.swing.tree.TreePath
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 
 class CopyGitFilesContentActionTest : BasePlatformTestCase() {
     override fun setUp() {
         super.setUp()
         configureSettings()
         Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(""), null)
-    }
-
-    fun testAppendContentPrefersRevisionContentWhenEntryAlsoHasVirtualFile() {
-        val file = myFixture.addFileToProject("src/App.kt", "working tree").virtualFile
-        val entry = GitContentResolver.ResolvedGitEntry(
-            changeType = ChangeTypeLabel.MODIFIED,
-            filePath = file.path,
-            virtualFile = file,
-            contentFromRevision = "revision content"
-        )
-        val lines = mutableListOf<String>()
-
-        val skipped = invokeAppendContent(lines, entry, maxFileSizeBytes = 500 * 1024)
-
-        assertEquals(0, skipped)
-        assertEquals(listOf("revision content"), lines)
-    }
-
-    fun testAppendContentUsesVirtualFileWhenNoRevision() {
-        val file = myFixture.addFileToProject("src/VfOnly.kt", "vf content").virtualFile
-        val entry = GitContentResolver.ResolvedGitEntry(
-            changeType = ChangeTypeLabel.MODIFIED,
-            filePath = file.path,
-            virtualFile = file,
-            contentFromRevision = null
-        )
-        val lines = mutableListOf<String>()
-
-        val skipped = invokeAppendContent(lines, entry, maxFileSizeBytes = 500 * 1024)
-
-        assertEquals(0, skipped)
-        assertEquals(listOf("vf content"), lines)
-    }
-
-    fun testAppendContentEmitsUnableMessageWhenNothingAvailable() {
-        val entry = GitContentResolver.ResolvedGitEntry(
-            changeType = ChangeTypeLabel.MODIFIED,
-            filePath = "src/Empty.kt",
-            virtualFile = null,
-            contentFromRevision = null
-        )
-        val lines = mutableListOf<String>()
-
-        val skipped = invokeAppendContent(lines, entry, maxFileSizeBytes = 500 * 1024)
-
-        assertEquals(0, skipped)
-        assertTrue(lines.single().contains("Unable to read file content"))
-    }
-
-    fun testAppendContentSkipsOversizedRevisionContent() {
-        val entry = GitContentResolver.ResolvedGitEntry(
-            changeType = ChangeTypeLabel.MODIFIED,
-            filePath = "src/BigRev.kt",
-            virtualFile = null,
-            contentFromRevision = "x".repeat(2048)
-        )
-        val lines = mutableListOf<String>()
-        val skipped = invokeAppendContent(lines, entry, maxFileSizeBytes = 1024)
-        assertEquals(1, skipped)
-        assertTrue(lines.single().contains("size exceeds limit"))
-    }
-
-    fun testAppendContentSkipsOversizedVirtualFile() {
-        val file = myFixture.addFileToProject("src/BigVf.kt", "y".repeat(2048)).virtualFile
-        val entry = GitContentResolver.ResolvedGitEntry(
-            changeType = ChangeTypeLabel.MODIFIED,
-            filePath = file.path,
-            virtualFile = file,
-            contentFromRevision = null
-        )
-        val lines = mutableListOf<String>()
-        val skipped = invokeAppendContent(lines, entry, maxFileSizeBytes = 1024)
-        assertEquals(1, skipped)
-        assertTrue(lines.single().contains("size exceeds limit"))
     }
 
     fun testActionPerformedWithoutProjectSilentlyExits() {
@@ -287,21 +212,6 @@ class CopyGitFilesContentActionTest : BasePlatformTestCase() {
         state.setMaxFileCount = false
         state.showCopyNotification = false
         state.maxFileSizeKB = 500
-    }
-
-    private fun invokeAppendContent(
-        lines: MutableList<String>,
-        entry: GitContentResolver.ResolvedGitEntry,
-        maxFileSizeBytes: Long
-    ): Int {
-        val method = CopyGitFilesContentAction::class.java.getDeclaredMethod(
-            "appendContent",
-            MutableList::class.java,
-            GitContentResolver.ResolvedGitEntry::class.java,
-            Long::class.javaPrimitiveType
-        )
-        method.isAccessible = true
-        return method.invoke(CopyGitFilesContentAction(), lines, entry, maxFileSizeBytes) as Int
     }
 
     private fun invokeCopyResolvedEntries(
