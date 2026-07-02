@@ -41,6 +41,9 @@ class ClipCodePrPanel(private val project: Project) : JPanel(BorderLayout()) {
     /** 忽略 populateBaseRefs() 內程式化 setSelectedItem 觸發的 actionListener，避免重複 reload。 */
     private var isUpdatingCombo = false
 
+    /** 每次 reload 遞增；onSuccess 只在自己仍是最新一代且 base 未變時套用結果，避免舊 task 覆蓋。 */
+    private var reloadGeneration = 0
+
     init {
         val baseRow = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
             add(JLabel("Base:"))
@@ -112,6 +115,7 @@ class ClipCodePrPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun reload(baseRef: String, doFetch: Boolean) {
+        val generation = ++reloadGeneration
         copyButton.isEnabled = false
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Loading ClipCode PR diff…", true) {
             private var changes: List<Change> = emptyList()
@@ -119,13 +123,14 @@ class ClipCodePrPanel(private val project: Project) : JPanel(BorderLayout()) {
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                changes = branchDiffProvider.diffChanges(project, baseRef)
-                indicator.checkCanceled()
+                // fetch 先落地（在 remoteStatus 內），diff 才會算在 post-fetch 的 ref 上
                 remoteStatus = branchDiffProvider.remoteStatus(project, doFetch)
+                indicator.checkCanceled()
+                changes = branchDiffProvider.diffChanges(project, baseRef)
             }
 
             override fun onSuccess() {
-                if (project.isDisposed) return
+                if (project.isDisposed || generation != reloadGeneration || selectedBaseRef() != baseRef) return
                 populateChangesList(changes)
                 remoteStatus?.let(::applyRemoteBanner)
             }
@@ -218,7 +223,7 @@ class ClipCodePrPanel(private val project: Project) : JPanel(BorderLayout()) {
          * 抽出以便單元測試（無 IDE 依賴）。
          */
         fun formatRemoteBanner(status: BranchDiffProvider.RemoteStatus): RemoteBanner {
-            val offlineNote = if (!status.fetched) "（未能連線 remote，以下為本地快取狀態）" else ""
+            val offlineNote = if (status.fetchAttempted && !status.fetched) "（未能連線 remote，以下為本地快取狀態）" else ""
             return when {
                 status.upstream == null ->
                     RemoteBanner("本分支無對應 origin 分支", showFetchButton = false)

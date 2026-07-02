@@ -17,10 +17,11 @@ import git4idea.repo.GitRepository
  */
 class BranchDiffProvider(private val logger: Logger) {
     data class RemoteStatus(
-        val ahead: Int,          // 本地領先 origin 幾個 commit
-        val behind: Int,         // 本地落後 origin 幾個 commit(> 0 → 提醒 pull)
-        val upstream: String?,   // 對應的 origin ref,如 "origin/main";null = 無 upstream
-        val fetched: Boolean     // 這次是否成功 fetch(false = 用本地快取,離線/認證失敗)
+        val ahead: Int,              // 本地領先 origin 幾個 commit
+        val behind: Int,             // 本地落後 origin 幾個 commit(> 0 → 提醒 pull)
+        val upstream: String?,       // 對應的 origin ref,如 "origin/main";null = 無 upstream
+        val fetched: Boolean,        // fetch 是否成功(僅在 fetchAttempted 時有意義)
+        val fetchAttempted: Boolean  // 這次是否嘗試 fetch(doFetch);false = 未嘗試,fetched 無意義
     )
 
     private fun firstRepository(project: Project): GitRepository? =
@@ -65,7 +66,7 @@ class BranchDiffProvider(private val logger: Logger) {
 
     // 相對 origin 的新鮮度;doFetch = true 時先背景 fetch
     fun remoteStatus(project: Project, doFetch: Boolean): RemoteStatus {
-        val repository = firstRepository(project) ?: return RemoteStatus(0, 0, null, false)
+        val repository = firstRepository(project) ?: return RemoteStatus(0, 0, null, false, doFetch)
 
         val upstream = try {
             repository.currentBranch?.findTrackedBranch(repository)?.name
@@ -75,7 +76,7 @@ class BranchDiffProvider(private val logger: Logger) {
         }
 
         if (upstream == null) {
-            return RemoteStatus(0, 0, null, false)
+            return RemoteStatus(0, 0, null, false, doFetch)
         }
 
         var fetched = false
@@ -107,7 +108,7 @@ class BranchDiffProvider(private val logger: Logger) {
             0 to 0
         }
 
-        return RemoteStatus(ahead = ahead, behind = behind, upstream = upstream, fetched = fetched)
+        return RemoteStatus(ahead = ahead, behind = behind, upstream = upstream, fetched = fetched, fetchAttempted = doFetch)
     }
 
     companion object {
