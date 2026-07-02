@@ -27,7 +27,9 @@ Format authority on this side: `ChangeTypeLabel.kt` (label set + regexes),
 `ClipCodeVSCode/src/clipboardFormat.ts`. **Change the label set, bracket syntax,
 header rule, or escape marker on one side → update the other, or cross-tool restore
 silently breaks.** Round-trip is covered by `ClipCodeVSCode` unit + e2e tests; the
-Kotlin side has no test harness, so verify its mirror by hand against those.
+Kotlin side has JUnit tests (incl. `GitClipboardPayloadBuilderTest`) but no
+dedicated cross-tool round-trip harness, so verify the format mirror by hand
+against the VS Code tests.
 
 ## Build / run
 
@@ -35,8 +37,13 @@ Kotlin side has no test harness, so verify its mirror by hand against those.
     ./gradlew runIde       # launch a sandbox IDE with the plugin installed
     ./gradlew buildPlugin  # → build/distributions/ClipCode-<version>.zip
 
-Targets IntelliJ 2024.3–2025.2. There are no unit tests — testing is manual per
-`TESTING_GUIDE.md`.
+Targets IntelliJ 2024.3–2025.2. There IS a JUnit test suite under
+`src/test/kotlin/` (~210 tests) run by the `test` task, so `./gradlew build`
+includes it — `BUILD FAILED` on a red test. Judge pass/fail by the
+`BUILD SUCCESSFUL` / `N failed` text, not a piped exit code (`| tail`/`| grep`
+swallow gradle's real exit code). Pure logic should have unit tests; UI /
+git4idea-runtime paths that can't run headless are still verified manually via
+`./gradlew runIde` per `TESTING_GUIDE.md`.
 
 ## Release (tag-triggered → JetBrains Marketplace)
 
