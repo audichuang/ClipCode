@@ -69,6 +69,10 @@ mapping: `GitContentResolver` / `GitSelectionCollector`. Path & filter logic:
 → `ClipboardRestoreParser` → `RestoreExecutor`. For full structure read
 `src/main/kotlin/com/github/audichuang/clipcode/` — don't trust a hand-written tree.
 
+PR panel (Tool Window, base...HEAD three-dot diff + copy + origin behind-check):
+`ClipCodePrToolWindowFactory` / `ClipCodePrPanel` + `BranchDiffProvider` (git4idea diff +
+ahead/behind); copy reuses `GitClipboardPayloadBuilder`.
+
 ## Permissions
 
 Settings are project-level (`.idea/CopyFileContentSettings.xml`). Ask before
