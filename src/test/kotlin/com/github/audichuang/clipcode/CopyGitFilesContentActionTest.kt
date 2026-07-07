@@ -174,13 +174,8 @@ class CopyGitFilesContentActionTest : BasePlatformTestCase() {
     fun testHandleResolvedEntriesNotifiesWhenAllEmpty() {
         // 空 entries 應該短路通知（不更動 clipboard）
         Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection("untouched"), null)
-        val event = actionEvent(
-            SimpleDataContext.builder()
-                .add(CommonDataKeys.PROJECT, project)
-                .build()
-        )
         val resolver = ClipboardPathResolver.fromProject(project)
-        invokeHandleResolvedEntries(event, project, resolver, emptyList())
+        invokeHandleResolvedEntries(project, resolver, emptyList())
         assertEquals("untouched", clipboardText())
     }
 
@@ -191,13 +186,8 @@ class CopyGitFilesContentActionTest : BasePlatformTestCase() {
             virtualFile = null,
             contentFromRevision = "history-content"
         )
-        val event = actionEvent(
-            SimpleDataContext.builder()
-                .add(CommonDataKeys.PROJECT, project)
-                .build()
-        )
         val resolver = ClipboardPathResolver.fromProject(project)
-        invokeHandleResolvedEntries(event, project, resolver, listOf(entry))
+        invokeHandleResolvedEntries(project, resolver, listOf(entry))
         assertContains(clipboardText(), "history-content")
     }
 
@@ -241,20 +231,18 @@ class CopyGitFilesContentActionTest : BasePlatformTestCase() {
     }
 
     private fun invokeHandleResolvedEntries(
-        event: AnActionEvent,
         project: Project,
         pathResolver: ClipboardPathResolver,
         resolved: List<GitContentResolver.ResolvedGitEntry>
     ) {
         val method = CopyGitFilesContentAction::class.java.getDeclaredMethod(
             "handleResolvedEntries",
-            AnActionEvent::class.java,
             Project::class.java,
             ClipboardPathResolver::class.java,
             List::class.java
         )
         method.isAccessible = true
-        method.invoke(CopyGitFilesContentAction(), event, project, pathResolver, resolved)
+        method.invoke(CopyGitFilesContentAction(), project, pathResolver, resolved)
     }
 
     private fun actionEvent(dataContext: DataContext): AnActionEvent =

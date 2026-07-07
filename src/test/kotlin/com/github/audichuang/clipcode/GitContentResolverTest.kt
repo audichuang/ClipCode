@@ -48,6 +48,41 @@ class GitContentResolverTest : BasePlatformTestCase() {
         assertNull(entries.single().contentFromRevision)
     }
 
+    fun testLocalSourceWithHistoricalAfterRevisionUsesRevisionContent() {
+        // Vcs.Log 的變更樹在路徑跟本地變更重疊時會被歸類為 LOCAL 來源；
+        // afterRevision 非本地就必須讀該版本內容，不能拿工作區檔案
+        val file = createDiskFile("src/HistoricalHit.kt", "working tree edited")
+        val path = VcsUtil.getFilePath(file)
+        val change = Change(
+            TestContentRevision("base revision", path, "base-sha"),
+            TestContentRevision("commit revision", path, "commit-sha")
+        )
+
+        val entries = resolver.resolve(project, selection(change, SelectionSource.LOCAL_CHANGES_OR_COMMIT_UI))
+
+        assertEquals(1, entries.size)
+        assertNull(entries.single().virtualFile)
+        assertEquals("commit revision", entries.single().contentFromRevision)
+    }
+
+    fun testLocalSourceWithHistoricalAfterRevisionDoesNotFallBackToBeforeRevision() {
+        // afterRevision 讀不到時不能退回 beforeRevision（那是 base 版本，內容是錯的），
+        // 也不能退回工作區 — 寧可標記為無內容讓 UI 顯示 unresolved
+        val file = createDiskFile("src/HistoricalFail.kt", "working tree")
+        val path = VcsUtil.getFilePath(file)
+        val change = Change(
+            TestContentRevision("base revision", path, "base-sha"),
+            TestContentRevision(null, path, "commit-sha")
+        )
+
+        val entries = resolver.resolve(project, selection(change, SelectionSource.LOCAL_CHANGES_OR_COMMIT_UI))
+
+        assertEquals(1, entries.size)
+        assertNull(entries.single().virtualFile)
+        assertNull(entries.single().contentFromRevision)
+        assertFalse(entries.single().hasContent)
+    }
+
     fun testGitLogSourceModifiedUsesRevisionContentInsteadOfWorkingTree() {
         val file = createDiskFile("src/App.kt", "working tree")
         val path = VcsUtil.getFilePath(file)

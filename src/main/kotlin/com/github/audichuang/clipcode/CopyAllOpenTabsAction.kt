@@ -22,6 +22,6 @@ class CopyAllOpenTabsAction : AnAction() {
         }
 
         // Reuse the existing CopyFileContentAction but bypass its direct usage of CommonDataKeys
-        CopyFileContentAction().performCopyFilesContent(e, openFiles)
+        CopyFileContentAction().performCopyFilesContent(project, openFiles)
     }
 }

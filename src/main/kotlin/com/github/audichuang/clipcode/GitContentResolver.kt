@@ -113,23 +113,33 @@ class GitContentResolver(
             )
         }
 
-        val virtualFile = if (changeType == ChangeTypeLabel.DELETED) {
+        // afterRevision 非本地（歷史 commit 的變更，例如 Vcs.Log 的變更樹因路徑跟本地
+        // 變更重疊而被歸類為 LOCAL 來源）時，必須讀該版本內容，不能拿工作區檔案 —
+        // 否則檔案另有未提交修改時會複製到現在的內容而非該 commit 的版本。
+        val afterRevision = change.afterRevision
+        val isHistoricalAfterRevision = changeType != ChangeTypeLabel.DELETED &&
+            afterRevision != null && !isLocalRevision(afterRevision)
+
+        val virtualFile = if (changeType == ChangeTypeLabel.DELETED || isHistoricalAfterRevision) {
             null
         } else {
-            change.afterRevision?.file?.virtualFile
+            afterRevision?.file?.virtualFile
                 ?: change.beforeRevision?.file?.virtualFile
                 ?: findFile(filePath)
                 ?: findFile(filePath.replace('\\', '/'))
         }
 
-        val contentFromRevision = if (virtualFile == null || changeType == ChangeTypeLabel.DELETED) {
-            readAnyRevisionContent(change) ?: if (changeType == ChangeTypeLabel.DELETED) {
-                resolveDeletedContent(project, filePath)
-            } else {
-                null
-            }
-        } else {
-            null
+        val contentFromRevision = when {
+            // 歷史版本只准讀 afterRevision：讀不到就標記為無內容，
+            // 不 fallback 到 beforeRevision（那是 base 版本，內容是錯的）
+            isHistoricalAfterRevision -> readRevisionContent(afterRevision)
+            virtualFile == null || changeType == ChangeTypeLabel.DELETED ->
+                readAnyRevisionContent(change) ?: if (changeType == ChangeTypeLabel.DELETED) {
+                    resolveDeletedContent(project, filePath)
+                } else {
+                    null
+                }
+            else -> null
         }
 
         return ResolvedGitEntry(

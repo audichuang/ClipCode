@@ -39,49 +39,31 @@ class CopyFileContentAction : AnAction() {
             return
         }
 
-        performCopyFilesContent(e, selectedFiles)
+        performCopyFilesContent(project, selectedFiles)
     }
-    
+
     /**
      * 從多種來源嘗試取得選中的 VirtualFiles。
      * External Libraries 裡的檔案通常透過 PSI_FILE 或 NAVIGATABLE 提供，而非 VIRTUAL_FILE_ARRAY。
-     * 同時支援選取 Package（資料夾）節點，會遞歸取得所有子檔案。
+     * 資料夾不在這裡展開：交給 BGT 上的 processDirectory 遞迴，
+     * 那邊才有 include/exclude 過濾與檔數上限的提前中斷，也不會凍結 EDT。
      */
     @IdeBoundCode
     private fun getSelectedVirtualFiles(e: AnActionEvent): Array<VirtualFile> {
-        val collectedFiles = mutableListOf<VirtualFile>()
-        
         // 1. 首先嘗試標準的 VIRTUAL_FILE_ARRAY
         e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY)?.let {
             if (it.isNotEmpty()) {
                 logger.info("getSelectedVirtualFiles: Found ${it.size} items from VIRTUAL_FILE_ARRAY")
-                for (file in it) {
-                    if (file.isDirectory) {
-                        // 遞歸收集資料夾中的所有檔案
-                        collectFilesFromDirectory(file, collectedFiles)
-                    } else {
-                        collectedFiles.add(file)
-                    }
-                }
-                if (collectedFiles.isNotEmpty()) {
-                    return collectedFiles.distinct().toTypedArray()
-                }
+                return it.distinct().toTypedArray()
             }
         }
-        
+
         // 2. 嘗試單一檔案/資料夾 VIRTUAL_FILE
         e.getData(CommonDataKeys.VIRTUAL_FILE)?.let {
             logger.info("getSelectedVirtualFiles: Found item from VIRTUAL_FILE: ${it.path} (isDirectory=${it.isDirectory})")
-            if (it.isDirectory) {
-                collectFilesFromDirectory(it, collectedFiles)
-            } else {
-                collectedFiles.add(it)
-            }
-            if (collectedFiles.isNotEmpty()) {
-                return collectedFiles.distinct().toTypedArray()
-            }
+            return arrayOf(it)
         }
-        
+
         // 3. 嘗試從 PSI_FILE 取得（External Libraries 的單一檔案常用此方式）
         e.getData(CommonDataKeys.PSI_FILE)?.let { psiFile ->
             psiFile.virtualFile?.let { virtualFile ->
@@ -89,31 +71,20 @@ class CopyFileContentAction : AnAction() {
                 return arrayOf(virtualFile)
             }
         }
-        
+
         // 4. 嘗試從 PSI_ELEMENT 取得（支援 PsiDirectory 和其他 PSI 元素）
         e.getData(CommonDataKeys.PSI_ELEMENT)?.let { psiElement ->
             when (psiElement) {
                 is com.intellij.psi.PsiDirectory -> {
-                    // 選取的是資料夾節點
                     logger.info("getSelectedVirtualFiles: Found PsiDirectory: ${psiElement.virtualFile.path}")
-                    collectFilesFromDirectory(psiElement.virtualFile, collectedFiles)
-                    if (collectedFiles.isNotEmpty()) {
-                        return collectedFiles.distinct().toTypedArray()
-                    }
+                    return arrayOf(psiElement.virtualFile)
                 }
                 is com.intellij.psi.PsiDirectoryContainer -> {
                     // 選取的是 Package 節點（PsiDirectoryContainer 是 PsiPackage 的基類）
                     logger.info("getSelectedVirtualFiles: Found PsiDirectoryContainer: ${psiElement.javaClass.simpleName}")
-                    val project = e.project
-                    if (project != null) {
-                        // 取得 Package 下的所有資料夾
-                        val directories = psiElement.directories
-                        for (dir in directories) {
-                            collectFilesFromDirectory(dir.virtualFile, collectedFiles)
-                        }
-                        if (collectedFiles.isNotEmpty()) {
-                            return collectedFiles.distinct().toTypedArray()
-                        }
+                    val directories = psiElement.directories.map { it.virtualFile }
+                    if (directories.isNotEmpty()) {
+                        return directories.distinct().toTypedArray()
                     }
                 }
                 else -> {
@@ -125,13 +96,14 @@ class CopyFileContentAction : AnAction() {
                 }
             }
         }
-        
+
         // 5. 嘗試從 NAVIGATABLE_ARRAY 取得（支援多選）
         e.getData(CommonDataKeys.NAVIGATABLE_ARRAY)?.let { navigatables ->
+            val collectedFiles = mutableListOf<VirtualFile>()
             for (nav in navigatables) {
                 when (nav) {
                     is com.intellij.psi.PsiDirectory -> {
-                        collectFilesFromDirectory(nav.virtualFile, collectedFiles)
+                        collectedFiles.add(nav.virtualFile)
                     }
                     is com.intellij.psi.PsiElement -> {
                         nav.containingFile?.virtualFile?.let { collectedFiles.add(it) }
@@ -146,33 +118,16 @@ class CopyFileContentAction : AnAction() {
                 return collectedFiles.distinct().toTypedArray()
             }
         }
-        
+
         logger.info("getSelectedVirtualFiles: No files found from any source")
         return emptyArray()
     }
-    
-    /**
-     * 遞歸收集資料夾中的所有檔案（不包含子資料夾本身）
-     */
-    private fun collectFilesFromDirectory(directory: VirtualFile, files: MutableList<VirtualFile>) {
-        for (child in directory.children) {
-            if (child.isDirectory) {
-                collectFilesFromDirectory(child, files)
-            } else {
-                files.add(child)
-            }
-        }
-    }
-
-
-
 
     fun performCopyFilesContent(
-        e: AnActionEvent,
+        project: Project,
         filesToCopy: Array<VirtualFile>,
         customHeaderGenerator: ((VirtualFile, String) -> String)? = null
     ) {
-        val project = e.project ?: return
         val settings = CopyFileContentSettings.getInstance(project) ?: run {
             showNotification("Failed to load settings.", NotificationType.ERROR, project)
             return
@@ -202,53 +157,56 @@ class CopyFileContentAction : AnAction() {
         customHeaderGenerator: ((VirtualFile, String) -> String)?,
         indicator: ProgressIndicator
     ): CopyPayload {
-        // 整段在 BGT 跑，VFS 存取需在 ReadAction 內，否則 2024.3+ strict mode 直接拋 read-lock 錯誤
-        return ReadAction.compute<CopyPayload, RuntimeException> {
-            val session = CopySession(
+        // 在 BGT 跑；VFS 存取需要 read lock（2024.3+ strict mode），但改為「逐檔」取
+        // ReadAction（見 processFile / processDirectory），不用單一長 read action 包住
+        // 整批複製 — 否則 EDT 上排隊的 write action（使用者打字）要等整段複製完。
+        val session = ReadAction.compute<CopySession, RuntimeException> {
+            CopySession(
                 externalLibraryHandler = ExternalLibraryHandler(project),
                 pathResolver = ClipboardPathResolver.fromProject(project)
             )
-            var totalChars = 0
-            var totalLines = 0
-            var totalWords = 0
-            var totalTokens = 0
-
-            val fileContents = mutableListOf<String>().apply {
-                add(ClipboardRestoreParser.escapeContent(settings.state.preText, settings.state.headerFormat))
-            }
-
-            for (file in filesToCopy) {
-                indicator.checkCanceled()
-                if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
-                    session.fileLimitReached = true
-                    break
-                }
-
-                val content = if (file.isDirectory) {
-                    processDirectory(file, fileContents, session, project, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
-                } else {
-                    processFile(file, fileContents, session, project, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
-                }
-
-                totalChars += content.length
-                totalLines += content.count { it == '\n' } + (if (content.isNotEmpty()) 1 else 0)
-                totalWords += content.split("\\s+".toRegex()).filter { it.isNotEmpty() }.size
-                totalTokens += estimateTokens(content)
-            }
-
-            fileContents.add(ClipboardRestoreParser.escapeContent(settings.state.postText, settings.state.headerFormat))
-
-            CopyPayload(
-                text = fileContents.joinToString(separator = "\n"),
-                fileCount = session.fileCount,
-                skippedFileSizeCount = session.skippedFileSizeCount,
-                fileLimitReached = session.fileLimitReached,
-                totalChars = totalChars,
-                totalLines = totalLines,
-                totalWords = totalWords,
-                totalTokens = totalTokens
-            )
         }
+        var totalChars = 0
+        var totalLines = 0
+        var totalWords = 0
+        var totalTokens = 0
+
+        val fileContents = mutableListOf<String>().apply {
+            add(ClipboardRestoreParser.escapeContent(settings.state.preText, settings.state.headerFormat))
+        }
+
+        for (file in filesToCopy) {
+            indicator.checkCanceled()
+            if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
+                session.fileLimitReached = true
+                break
+            }
+
+            val isDirectory = ReadAction.compute<Boolean, RuntimeException> { file.isDirectory }
+            val content = if (isDirectory) {
+                processDirectory(file, fileContents, session, project, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
+            } else {
+                processFile(file, fileContents, session, project, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
+            }
+
+            totalChars += content.length
+            totalLines += content.count { it == '\n' } + (if (content.isNotEmpty()) 1 else 0)
+            totalWords += content.split("\\s+".toRegex()).filter { it.isNotEmpty() }.size
+            totalTokens += estimateTokens(content)
+        }
+
+        fileContents.add(ClipboardRestoreParser.escapeContent(settings.state.postText, settings.state.headerFormat))
+
+        return CopyPayload(
+            text = fileContents.joinToString(separator = "\n"),
+            fileCount = session.fileCount,
+            skippedFileSizeCount = session.skippedFileSizeCount,
+            fileLimitReached = session.fileLimitReached,
+            totalChars = totalChars,
+            totalLines = totalLines,
+            totalWords = totalWords,
+            totalTokens = totalTokens
+        )
     }
 
     @IdeBoundCode
@@ -307,7 +265,19 @@ class CopyFileContentAction : AnAction() {
         return words.size + punctuation
     }
 
+    // 每個檔案各取一次 read lock，讓 EDT 的 write action 可以在檔案之間插隊
     private fun processFile(
+        file: VirtualFile,
+        fileContents: MutableList<String>,
+        session: CopySession,
+        project: Project,
+        addExtraLine: Boolean,
+        customHeaderGenerator: ((VirtualFile, String) -> String)? = null
+    ): String = ReadAction.compute<String, RuntimeException> {
+        processFileUnderReadLock(file, fileContents, session, project, addExtraLine, customHeaderGenerator)
+    }
+
+    private fun processFileUnderReadLock(
         file: VirtualFile,
         fileContents: MutableList<String>,
         session: CopySession,
@@ -482,62 +452,23 @@ class CopyFileContentAction : AnAction() {
     ): String {
         val directoryContent = StringBuilder(1024) // Pre-allocate for better performance
         val settings = CopyFileContentSettings.getInstance(project) ?: return ""
-        
-        // Check if directory should be processed based on filters
-        if (settings.state.useFilters) {
-            val dirRelativePath = CopyPathFormatter.relativeFilterPath(session.pathResolver, directory.path)
-            val dirAbsolutePath = directory.path
-            
-            // Get enabled filter rules
-            val enabledRules = settings.state.filterRules.filter { it.enabled }
-            val includePathRules = enabledRules.filter { 
-                it.action == CopyFileContentSettings.FilterAction.INCLUDE && 
-                it.type == CopyFileContentSettings.FilterType.PATH 
-            }
-            val excludePathRules = enabledRules.filter { 
-                it.action == CopyFileContentSettings.FilterAction.EXCLUDE && 
-                it.type == CopyFileContentSettings.FilterType.PATH 
-            }
-            
-            // Check excludes first
-            if (settings.state.useExcludeFilters && excludePathRules.isNotEmpty()) {
-                val isExcluded = excludePathRules.any { rule ->
-                    if (PathRuleMatcher.isAbsolutePath(rule.value)) {
-                        PathRuleMatcher.matchesPath(dirAbsolutePath, rule.value)
-                    } else {
-                        dirRelativePath != null &&
-                            PathRuleMatcher.matchesPath(dirRelativePath, rule.value)
-                    }
-                }
-                if (isExcluded) {
-                    logger.info("Skipping directory: ${directory.name} - Directory is excluded")
-                    return ""
-                }
-            }
-            
-            // Check includes if specified
-            if (settings.state.useIncludeFilters && includePathRules.isNotEmpty()) {
-                val shouldProcess = includePathRules.any { rule ->
-                    if (PathRuleMatcher.isAbsolutePath(rule.value)) {
-                        PathRuleMatcher.overlapsDirectory(dirAbsolutePath, rule.value)
-                    } else {
-                        dirRelativePath != null &&
-                            PathRuleMatcher.overlapsDirectory(dirRelativePath, rule.value)
-                    }
-                }
-                if (!shouldProcess) {
-                    logger.info("Skipping directory: ${directory.name} - Directory does not match any include path")
-                    return ""
-                }
-            }
-        }
 
-        for (childFile in directory.children) {
+        // 目錄的 filter 判斷（讀 directory.path/name）與 children + isDirectory 快照
+        // 一次取鎖；遞迴的子項各自取各自的短鎖
+        val children = ReadAction.compute<List<Pair<VirtualFile, Boolean>>?, RuntimeException> {
+            if (!directoryPassesFilters(directory, session, settings)) {
+                null
+            } else {
+                directory.children.map { child -> child to child.isDirectory }
+            }
+        } ?: return ""
+
+        for ((childFile, childIsDirectory) in children) {
             if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
                 session.fileLimitReached = true
                 break
             }
-            val content = if (childFile.isDirectory) {
+            val content = if (childIsDirectory) {
                 processDirectory(childFile, fileContents, session, project, addExtraLine, customHeaderGenerator)
             } else {
                 processFile(childFile, fileContents, session, project, addExtraLine, customHeaderGenerator)
@@ -548,6 +479,62 @@ class CopyFileContentAction : AnAction() {
         }
 
         return directoryContent.toString()
+    }
+
+    /** 目錄層級的 include/exclude PATH 過濾。呼叫端需持有 read lock（會讀 directory.path/name）。 */
+    private fun directoryPassesFilters(
+        directory: VirtualFile,
+        session: CopySession,
+        settings: CopyFileContentSettings
+    ): Boolean {
+        if (!settings.state.useFilters) return true
+
+        val dirRelativePath = CopyPathFormatter.relativeFilterPath(session.pathResolver, directory.path)
+        val dirAbsolutePath = directory.path
+
+        val enabledRules = settings.state.filterRules.filter { it.enabled }
+        val includePathRules = enabledRules.filter {
+            it.action == CopyFileContentSettings.FilterAction.INCLUDE &&
+            it.type == CopyFileContentSettings.FilterType.PATH
+        }
+        val excludePathRules = enabledRules.filter {
+            it.action == CopyFileContentSettings.FilterAction.EXCLUDE &&
+            it.type == CopyFileContentSettings.FilterType.PATH
+        }
+
+        // Check excludes first
+        if (settings.state.useExcludeFilters && excludePathRules.isNotEmpty()) {
+            val isExcluded = excludePathRules.any { rule ->
+                if (PathRuleMatcher.isAbsolutePath(rule.value)) {
+                    PathRuleMatcher.matchesPath(dirAbsolutePath, rule.value)
+                } else {
+                    dirRelativePath != null &&
+                        PathRuleMatcher.matchesPath(dirRelativePath, rule.value)
+                }
+            }
+            if (isExcluded) {
+                logger.info("Skipping directory: ${directory.name} - Directory is excluded")
+                return false
+            }
+        }
+
+        // Check includes if specified
+        if (settings.state.useIncludeFilters && includePathRules.isNotEmpty()) {
+            val shouldProcess = includePathRules.any { rule ->
+                if (PathRuleMatcher.isAbsolutePath(rule.value)) {
+                    PathRuleMatcher.overlapsDirectory(dirAbsolutePath, rule.value)
+                } else {
+                    dirRelativePath != null &&
+                        PathRuleMatcher.overlapsDirectory(dirRelativePath, rule.value)
+                }
+            }
+            if (!shouldProcess) {
+                logger.info("Skipping directory: ${directory.name} - Directory does not match any include path")
+                return false
+            }
+        }
+
+        return true
     }
 
     @IdeBoundCode

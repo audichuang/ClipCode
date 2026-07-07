@@ -77,7 +77,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
 
     fun testPerformCopyForSingleFileEmitsContent() {
         val file = myFixture.addFileToProject("src/Single.kt", "single-content").virtualFile
-        CopyFileContentAction().performCopyFilesContent(actionEvent(), arrayOf(file))
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(file))
         val text = clipboardText()
         assertContains(text, "single-content")
         assertContains(text, "Single.kt")
@@ -88,7 +88,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         myFixture.addFileToProject("pkg/sub/B.kt", "BBB")
         myFixture.addFileToProject("pkg/C.kt", "CCC")
         val dir = myFixture.findFileInTempDir("pkg") ?: error("dir not found")
-        CopyFileContentAction().performCopyFilesContent(actionEvent(), arrayOf(dir))
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(dir))
         val text = clipboardText()
         assertContains(text, "AAA")
         assertContains(text, "BBB")
@@ -100,7 +100,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         state.preText = "=== BEFORE ==="
         state.postText = "=== AFTER ==="
         val file = myFixture.addFileToProject("Wrap.kt", "wrapped").virtualFile
-        CopyFileContentAction().performCopyFilesContent(actionEvent(), arrayOf(file))
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(file))
         val text = clipboardText()
         assertTrue(text.startsWith("=== BEFORE ==="), "Expected pre text; got: $text")
         assertTrue(text.trimEnd().endsWith("=== AFTER ==="), "Expected post text; got: $text")
@@ -120,7 +120,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         )
         val kt = myFixture.addFileToProject("Keep.kt", "keep-me").virtualFile
         val txt = myFixture.addFileToProject("Skip.txt", "skip-me").virtualFile
-        CopyFileContentAction().performCopyFilesContent(actionEvent(), arrayOf(kt, txt))
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(kt, txt))
         val text = clipboardText()
         assertContains(text, "keep-me")
         assertFalse(text.contains("skip-me"), "Excluded file content should not appear")
@@ -140,7 +140,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         )
         val kt = myFixture.addFileToProject("Inc.kt", "kt-content").virtualFile
         val java = myFixture.addFileToProject("Out.java", "java-content").virtualFile
-        CopyFileContentAction().performCopyFilesContent(actionEvent(), arrayOf(kt, java))
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(kt, java))
         val text = clipboardText()
         assertContains(text, "kt-content")
         assertFalse(text.contains("java-content"), "Non-matching file should be filtered")
@@ -159,7 +159,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
             )
         )
         val kt = myFixture.addFileToProject("Active.kt", "still-here").virtualFile
-        CopyFileContentAction().performCopyFilesContent(actionEvent(), arrayOf(kt))
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(kt))
         val text = clipboardText()
         assertContains(text, "still-here")
     }
@@ -168,7 +168,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.maxFileSizeKB = 1  // 1 KB
         val big = myFixture.addFileToProject("Big.kt", "x".repeat(2048)).virtualFile
-        CopyFileContentAction().performCopyFilesContent(actionEvent(), arrayOf(big))
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(big))
         val text = clipboardText()
         // 跳過的檔仍會輸出 header + skip marker
         assertContains(text, "Big.kt")
@@ -182,7 +182,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         val files = (1..5).map {
             myFixture.addFileToProject("multi/F$it.kt", "content-$it").virtualFile
         }.toTypedArray()
-        CopyFileContentAction().performCopyFilesContent(actionEvent(), files)
+        CopyFileContentAction().performCopyFilesContent(project, files)
         val text = clipboardText()
         // 至少前兩個檔應該在裡面
         assertContains(text, "content-1")
@@ -196,7 +196,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         state.addExtraLineBetweenFiles = true
         val a = myFixture.addFileToProject("A.kt", "alpha").virtualFile
         val b = myFixture.addFileToProject("B.kt", "beta").virtualFile
-        CopyFileContentAction().performCopyFilesContent(actionEvent(), arrayOf(a, b))
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(a, b))
         val text = clipboardText()
         // 兩個 file 之間應該有空白行
         val alphaIdx = text.indexOf("alpha")
@@ -208,7 +208,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
 
     fun testDeduplicatesSamePath() {
         val file = myFixture.addFileToProject("Dup.kt", "dup-content").virtualFile
-        CopyFileContentAction().performCopyFilesContent(actionEvent(), arrayOf(file, file, file))
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(file, file, file))
         val text = clipboardText()
         // 即使選了 3 次，應該只出現一次
         val occurrences = text.split("dup-content").size - 1
@@ -275,7 +275,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
                 enabled = true
             )
         )
-        CopyFileContentAction().performCopyFilesContent(actionEvent(), arrayOf(keepFile, skipFile))
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(keepFile, skipFile))
         val text = clipboardText()
         assertContains(text, "keep-content")
         assertFalse(text.contains("junk-content"))
@@ -295,7 +295,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
                 enabled = true
             )
         )
-        CopyFileContentAction().performCopyFilesContent(actionEvent(), arrayOf(included, excluded))
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(included, excluded))
         val text = clipboardText()
         assertContains(text, "match-in")
         assertFalse(text.contains("match-out"), "Out-of-path file should not appear")
@@ -315,7 +315,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
                 enabled = true
             )
         )
-        CopyFileContentAction().performCopyFilesContent(actionEvent(), arrayOf(dir))
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(dir))
         val text = clipboardText()
         assertFalse(text.contains("skipped-dir-content"), "Excluded directory content should not appear")
     }
@@ -334,14 +334,14 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
                 enabled = true
             )
         )
-        CopyFileContentAction().performCopyFilesContent(actionEvent(), arrayOf(dir))
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(dir))
         val text = clipboardText()
         assertContains(text, "matched-dir-content")
     }
 
     fun testEmptyFilesProcessedGracefully() {
         val empty = myFixture.addFileToProject("Empty.kt", "").virtualFile
-        CopyFileContentAction().performCopyFilesContent(actionEvent(), arrayOf(empty))
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(empty))
         // 空檔不會丟例外，但可能不會被加進輸出（readFileContents 返回空字串就 skip）
     }
 
@@ -353,7 +353,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         val a = myFixture.addFileToProject("F1.kt", "one").virtualFile
         val b = myFixture.addFileToProject("F2.kt", "two").virtualFile
         // file count limit 觸發 → 應該顯示 limit notification + statistics
-        CopyFileContentAction().performCopyFilesContent(actionEvent(), arrayOf(a, b))
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(a, b))
         val text = clipboardText()
         assertContains(text, "one")
     }
