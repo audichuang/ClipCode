@@ -30,6 +30,17 @@ object GitClipboardPayloadBuilder {
         val fileContents = mutableListOf<String>()
         var skippedSizeCount = 0
 
+        // Metadata line first (before any header) so parsers drop it as pre-header
+        // text. Skip it if the configured header is permissive enough to parse the
+        // marker line as a file, which would make it a phantom entry. Mirrors the
+        // VS Code buildPayloadInternal.
+        pathResolver.singleRootName()?.let { sourceRoot ->
+            val metaLine = ClipboardRestoreParser.SOURCE_ROOT_MARKER + sourceRoot
+            if (!ClipboardRestoreParser.wouldParseAsHeader(metaLine, headerFormat)) {
+                fileContents.add(metaLine)
+            }
+        }
+
         if (!settings?.state?.preText.isNullOrEmpty()) {
             fileContents.add(ClipboardRestoreParser.escapeContent(settings!!.state.preText, headerFormat))
         }
@@ -61,7 +72,9 @@ object GitClipboardPayloadBuilder {
                     changeType = entry.changeType
                 )
             )
-            fileContents.add("// This file has been deleted in this change")
+            // Escape like real content so a permissive headerFormat can't parse the
+            // marker line as a header (VS Code escapes these lines too)
+            fileContents.add(ClipboardRestoreParser.escapeContent("// This file has been deleted in this change", headerFormat))
             if (addExtraLine) {
                 fileContents.add("")
             }
@@ -115,7 +128,9 @@ object GitClipboardPayloadBuilder {
             val contentSizeBytes = revisionContent.toByteArray(Charsets.UTF_8).size.toLong()
             if (contentSizeBytes > maxFileSizeBytes) {
                 logger.info("Skipping oversized Git revision content: ${entry.filePath}")
-                fileContents.add("// File skipped: size exceeds limit ($contentSizeBytes bytes)")
+                fileContents.add(
+                    ClipboardRestoreParser.escapeContent("// File skipped: size exceeds limit ($contentSizeBytes bytes)", headerFormat)
+                )
                 return 1
             }
 
@@ -127,7 +142,9 @@ object GitClipboardPayloadBuilder {
         if (virtualFile != null && entry.hasVirtualFileContent) {
             if (virtualFile.length > maxFileSizeBytes) {
                 logger.info("Skipping oversized Git file: ${entry.filePath}")
-                fileContents.add("// File skipped: size exceeds limit (${virtualFile.length} bytes)")
+                fileContents.add(
+                    ClipboardRestoreParser.escapeContent("// File skipped: size exceeds limit (${virtualFile.length} bytes)", headerFormat)
+                )
                 return 1
             }
 
@@ -137,12 +154,12 @@ object GitClipboardPayloadBuilder {
                 0
             } catch (e: Exception) {
                 logger.warn("Failed to read Git file content: ${entry.filePath}", e)
-                fileContents.add("// Error reading file content")
+                fileContents.add(ClipboardRestoreParser.escapeContent("// Error reading file content", headerFormat))
                 0
             }
         }
 
-        fileContents.add("// Unable to read file content")
+        fileContents.add(ClipboardRestoreParser.escapeContent("// Unable to read file content", headerFormat))
         return 0
     }
 }

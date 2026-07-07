@@ -54,6 +54,31 @@ class RestorePlanBuilderTest {
     }
 
     @Test
+    fun `deleted entry with non-empty old content still yields a delete operation`() {
+        // Cross-tool contract: IntelliJ's git-history copy carries the deleted file's
+        // old content under the [DELETED] header. The plan must ignore the content and
+        // delete — never create a file from it.
+        val root = Files.createTempDirectory("clipcode-plan-del-content")
+        val deleteTarget = root.resolve("src/Old.kt")
+        deleteTarget.parent.createDirectories()
+        deleteTarget.writeText("fun legacy() = Unit")
+
+        val plan = planFor(
+            root,
+            listOf(
+                ClipboardRestoreParser.ParsedClipboardEntry(
+                    path = "src/Old.kt",
+                    content = "fun legacy() = Unit",
+                    changeTypes = setOf(ChangeTypeLabel.DELETED)
+                )
+            )
+        )
+
+        assertEquals(emptyList(), plan.createOperations)
+        assertEquals(listOf("src/Old.kt"), plan.deleteOperations.map { it.relativePath })
+    }
+
+    @Test
     fun `marks ambiguous delete target when multiple roots contain file`() {
         val rootOne = Files.createTempDirectory("clipcode-plan-amb-one")
         val rootTwo = Files.createTempDirectory("clipcode-plan-amb-two")

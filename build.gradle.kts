@@ -76,6 +76,16 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.2.0 - PR panel, folder-level alignment, tighter VS Code interop</h2>
+            <ul>
+              <li><b>New:</b> ClipCode PR tool window — pick a base branch, review the base...HEAD diff, and copy the full changed sources in one click (with an origin behind-check)</li>
+              <li><b>New:</b> Copies now include a leading <code>// clipcode-root: &lt;folder&gt;</code> metadata line (single-root projects), matching the ClipCode VS Code extension (Snipcode)</li>
+              <li><b>New:</b> Paste and Restore detects when the copied paths are off by one folder level (copied from a parent folder, or into one) and offers to adjust all paths before restoring — deterministically via the metadata line, or via an on-disk heuristic for older clipboards</li>
+              <li><b>Fixed:</b> Deleted-file markers, size-skip notices, and read-error notices in Git copies are now escaped like real content, so a custom permissive header format can no longer turn them into phantom files on restore</li>
+              <li><b>Fixed:</b> Five reliability fixes across copy, settings, and Git paths</li>
+              <li>Cross-tool contract with Snipcode locked down by new tests: deleted entries carrying old file content still restore as deletions, and the metadata line can never become a phantom file</li>
+            </ul>
+
             <h2>Version 1.1.10 - Reliable copy/restore round-trip</h2>
             <ul>
               <li><b>Fixed:</b> A file whose own content contains a line like <code>// file: ...</code> now round-trips correctly — such lines are escaped on copy and restored verbatim on paste, instead of being split into a phantom file</li>

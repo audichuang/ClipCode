@@ -172,6 +172,16 @@ class ClipboardPathResolver private constructor(
 
     fun roots(): List<String> = orderedRoots.map { normalizePathString(it.path.toString()) }
 
+    /**
+     * Basename of the only root, or null when zero or multiple roots. Mirrors the
+     * VS Code side's single-root gate for the `// clipcode-root:` metadata line.
+     */
+    fun singleRootName(): String? {
+        val rootPaths = roots()
+        if (rootPaths.size != 1) return null
+        return rootPaths[0].trimEnd('/').substringAfterLast('/').ifEmpty { null }
+    }
+
     fun toClipboardPath(absolutePath: String): String {
         val normalizedAbsolutePath = normalizePathString(absolutePath)
         primaryRoot?.let { root ->

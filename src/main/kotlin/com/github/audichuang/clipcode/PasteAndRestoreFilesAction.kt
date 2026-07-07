@@ -12,6 +12,8 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
+import java.nio.file.Files
+import java.nio.file.Paths
 
 @IdeBoundCode
 class PasteAndRestoreFilesAction : AnAction() {
@@ -54,24 +56,116 @@ class PasteAndRestoreFilesAction : AnAction() {
 
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Preparing Restore Plan", true) {
             private var parsedEntries: List<ClipboardRestoreParser.ParsedClipboardEntry> = emptyList()
+            private var baseSuggestion: RestoreBaseSuggestion? = null
             private var plan: RestorePlan? = null
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
                 parsedEntries = ClipboardRestoreParser().parse(clipboardContent, headerFormat)
                 indicator.checkCanceled()
-                plan = if (parsedEntries.isNotEmpty()) {
-                    RestorePlanBuilder(pathResolver).build(parsedEntries)
-                } else {
-                    null
+                if (parsedEntries.isEmpty()) return
+
+                // Folder-level offset detection needs disk probes — do it here on the
+                // BGT so only the confirmation dialog runs on the EDT. Single-root
+                // only; multi-root relies on its sibling-root label scheme, where a
+                // leading segment can legitimately be a root label, not a wrapper.
+                val roots = pathResolver.roots()
+                if (roots.size == 1) {
+                    baseSuggestion = RestoreBaseDetector.suggestRestoreBase(
+                        primaryRoot = roots[0],
+                        relativePaths = parsedEntries.map { it.path },
+                        probe = nioDirProbe(),
+                        sourceRoot = ClipboardRestoreParser.extractSourceRoot(clipboardContent)
+                    )
                 }
+                indicator.checkCanceled()
+                // With a pending suggestion the plan depends on the user's choice —
+                // it is rebuilt after the confirmation dialog instead.
+                plan = if (baseSuggestion == null) RestorePlanBuilder(pathResolver).build(parsedEntries) else null
             }
 
             override fun onSuccess() {
                 if (project.isDisposed) return
-                continueOnEdt(project, parsedEntries, plan)
+                val suggestion = baseSuggestion
+                if (suggestion == null) {
+                    continueOnEdt(project, parsedEntries, plan)
+                    return
+                }
+
+                val adjustedEntries = confirmRestoreBaseOffset(project, parsedEntries, suggestion) ?: return
+                ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Preparing Restore Plan", true) {
+                    private var adjustedPlan: RestorePlan? = null
+
+                    override fun run(indicator: ProgressIndicator) {
+                        indicator.isIndeterminate = true
+                        adjustedPlan = RestorePlanBuilder(pathResolver).build(adjustedEntries)
+                    }
+
+                    override fun onSuccess() {
+                        if (project.isDisposed) return
+                        continueOnEdt(project, adjustedEntries, adjustedPlan)
+                    }
+                })
             }
         })
+    }
+
+    /**
+     * Ask the user to confirm the detected folder-level offset. Returns the entries
+     * to restore (adjusted or as-is) or null when the user cancels the paste.
+     */
+    @IdeBoundCode
+    private fun confirmRestoreBaseOffset(
+        project: Project,
+        entries: List<ClipboardRestoreParser.ParsedClipboardEntry>,
+        suggestion: RestoreBaseSuggestion
+    ): List<ClipboardRestoreParser.ParsedClipboardEntry>? {
+        // Show a concrete before → after example so the choice is unambiguous.
+        val sample = entries.map { it.path }
+            .firstOrNull { RestoreBaseDetector.isRelativeEntryPath(it) && it.contains('/') }
+        val example = sample
+            ?.let { "\n\nExample: $it → ${RestoreBaseDetector.applyRestoreBase(suggestion.base, it)}" }
+            ?: ""
+
+        return when (
+            Messages.showDialog(
+                project,
+                "These paths look like they belong elsewhere in this project. " +
+                    "I can ${suggestion.label} for all ${suggestion.total} file(s).$example",
+                "Adjust Restore Paths",
+                arrayOf("Adjust Paths", "Use As-Is", "Cancel"),
+                0,
+                Messages.getQuestionIcon()
+            )
+        ) {
+            0 -> entries.map { entry ->
+                if (RestoreBaseDetector.isRelativeEntryPath(entry.path)) {
+                    entry.copy(path = RestoreBaseDetector.applyRestoreBase(suggestion.base, entry.path))
+                } else {
+                    entry
+                }
+            }
+            1 -> entries
+            else -> null
+        }
+    }
+
+    private fun nioDirProbe(): DirProbe = object : DirProbe {
+        override fun isDir(absPath: String): Boolean =
+            try {
+                Files.isDirectory(Paths.get(absPath))
+            } catch (e: Exception) {
+                false
+            }
+
+        override fun childDirs(rootAbsPath: String): List<String> =
+            try {
+                Files.newDirectoryStream(Paths.get(rootAbsPath)).use { dirStream ->
+                    dirStream.filter { Files.isDirectory(it) }.map { it.fileName.toString() }
+                }
+            } catch (e: Exception) {
+                emptyList()
+            }
     }
 
     @IdeBoundCode

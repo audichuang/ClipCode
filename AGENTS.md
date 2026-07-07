@@ -20,6 +20,11 @@ in one tool restore in the other. Both sides must agree on:
   header is escaped with this marker on copy and unescaped on paste, so files that
   contain a literal `// file: …` line round-trip instead of splitting. The marker
   string MUST be byte-identical on both sides.
+- the optional leading `// clipcode-root: <name>` metadata line (source root
+  basename, emitted for single-root projects only): Paste & Restore uses it to
+  align folder levels deterministically (`RestoreBase.kt` / VS Code
+  `restoreBase.ts`); parsers drop it before the first header so it never becomes
+  a file. Also byte-identical on both sides.
 
 Format authority on this side: `ChangeTypeLabel.kt` (label set + regexes),
 `GitClipboardFormatter.kt` (build), `ClipboardRestoreParser.kt` (parse + the
