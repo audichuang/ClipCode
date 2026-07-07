@@ -31,6 +31,8 @@ dependencies {
     testImplementation(kotlin("test"))
     testCompileOnly("junit:junit:4.13.2")
     testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.12.2")
+    // Parses the shared cross-tool contract fixtures (clipboard-contract.json).
+    testImplementation("com.google.code.gson:gson:2.11.0")
 
     // IntelliJ Platform Gradle Plugin Dependencies Extension
     intellijPlatform {

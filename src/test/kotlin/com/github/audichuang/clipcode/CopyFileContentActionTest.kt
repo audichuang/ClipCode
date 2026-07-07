@@ -339,6 +339,34 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertContains(text, "matched-dir-content")
     }
 
+    // Bridge: the real regular-copy path must produce byte-for-byte what the shared
+    // ClipboardPayloadFormatter produces for the same inputs. This pins CopyFileContentAction
+    // to the single cross-tool format surface that the golden fixtures verify against VS Code.
+    fun testRegularPayloadMatchesSharedFormatter() {
+        val a = myFixture.addFileToProject("src/A.kt", "alpha();").virtualFile
+        val b = myFixture.addFileToProject("src/B.kt", "beta();").virtualFile
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(a, b))
+        val actual = clipboardText()
+
+        val resolver = com.intellij.openapi.application.ReadAction.compute<ClipboardPathResolver, RuntimeException> {
+            ClipboardPathResolver.fromProject(project)
+        }
+        val expected = ClipboardPayloadFormatter.buildPayload(
+            ClipboardPayloadFormatter.Options(
+                headerFormat = "// file: \$FILE_PATH",
+                preText = "",
+                postText = "",
+                addExtraLineBetweenFiles = false,
+                files = listOf(
+                    ClipboardPayloadFormatter.PayloadFile(resolver.toClipboardPath(a.path), "alpha();"),
+                    ClipboardPayloadFormatter.PayloadFile(resolver.toClipboardPath(b.path), "beta();")
+                ),
+                sourceRoot = resolver.singleRootName()
+            )
+        )
+        assertEquals(expected, actual)
+    }
+
     fun testEmptyFilesProcessedGracefully() {
         val empty = myFixture.addFileToProject("Empty.kt", "").virtualFile
         CopyFileContentAction().performCopyFilesContent(project, arrayOf(empty))

@@ -110,6 +110,12 @@ class ClipboardRestoreParser {
             return path.contains('/') || path.contains('\\') || path.contains('.')
         }
 
+        // Mirror of the VS Code split(/\r?\n/): line boundaries are \n and \r\n only,
+        // never a lone \r. Kept separate from Kotlin's stdlib lines() on purpose.
+        private val LINE_SEPARATOR = Regex("\\r?\\n")
+
+        private fun splitLines(text: String): List<String> = text.split(LINE_SEPARATOR)
+
         private fun toHeaderPattern(headerFormat: String): Regex? {
             val placeholder = "\$FILE_PATH"
             val placeholderIndex = headerFormat.indexOf(placeholder)
@@ -124,9 +130,13 @@ class ClipboardRestoreParser {
     fun parse(content: String, headerFormat: String): List<ParsedClipboardEntry> {
         val parsedEntries = mutableListOf<ParsedClipboardEntry>()
         val customRegex = toHeaderPattern(headerFormat)
+        // Split on \r?\n only — NOT lone \r — so line boundaries match the VS Code
+        // mirror exactly (clipboardFormat.ts uses split(/\r?\n/)). Kotlin's
+        // String.lines() would additionally split on a bare \r, diverging on content
+        // that carries lone carriage returns.
+        val allLines = splitLines(content)
         // Drop a leading source-root metadata line so a permissive headerFormat can't
         // turn it into a phantom file. extractSourceRoot() reads it separately.
-        val allLines = content.lines()
         val lines = if (allLines.firstOrNull()?.startsWith(SOURCE_ROOT_MARKER) == true) allLines.drop(1) else allLines
 
         var currentFilePath: String? = null
