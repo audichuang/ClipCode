@@ -162,4 +162,61 @@ class ClipboardRestoreParserTest {
             entries.single().content
         )
     }
+
+    @Test
+    fun `drops leading clipcode-root metadata line`() {
+        val clipboard = """
+            // clipcode-root: myrepo
+            // file: src/App.kt
+            fun main() = Unit
+        """.trimIndent()
+
+        val entries = parser.parse(clipboard, "// file: \$FILE_PATH")
+
+        assertEquals(1, entries.size)
+        assertEquals("src/App.kt", entries.single().path)
+        assertEquals("fun main() = Unit", entries.single().content)
+    }
+
+    @Test
+    fun `clipcode-root line cannot become a phantom file under a permissive header format`() {
+        val clipboard = """
+            // clipcode-root: myrepo
+            // src/App.kt
+            fun main() = Unit
+        """.trimIndent()
+
+        val entries = parser.parse(clipboard, "// \$FILE_PATH")
+
+        assertEquals(1, entries.size)
+        assertEquals("src/App.kt", entries.single().path)
+    }
+
+    @Test
+    fun `extractSourceRoot reads the first-line metadata`() {
+        assertEquals(
+            "myrepo",
+            ClipboardRestoreParser.extractSourceRoot("// clipcode-root: myrepo\n// file: a.kt\nx")
+        )
+        assertEquals(null, ClipboardRestoreParser.extractSourceRoot("// file: a.kt\nx"))
+        assertEquals(null, ClipboardRestoreParser.extractSourceRoot("// clipcode-root: \n// file: a.kt"))
+    }
+
+    @Test
+    fun `deleted header with non-empty old content still parses as deleted`() {
+        // IntelliJ's git-history copy places the deleted file's old content under the
+        // [DELETED] header (VS Code places a marker line). Restore must treat the
+        // entry as a deletion either way — content is carried but ignored downstream.
+        val clipboard = """
+            // file: [DELETED] src/Old.kt
+            fun legacy() = Unit
+        """.trimIndent()
+
+        val entries = parser.parse(clipboard, "// file: \$FILE_PATH")
+
+        assertEquals(1, entries.size)
+        assertTrue(entries.single().isDeleted)
+        assertEquals("src/Old.kt", entries.single().path)
+        assertEquals("fun legacy() = Unit", entries.single().content)
+    }
 }

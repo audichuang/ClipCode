@@ -27,6 +27,25 @@ class ClipboardRestoreParser {
          */
         const val ESCAPE_MARKER = "//clipcode-esc: "
 
+        /**
+         * Leading metadata line: records the source root folder name so restore can
+         * align folder levels deterministically. Sits before the first file header,
+         * so parsers that don't know it drop it as pre-header text. MUST be
+         * byte-identical to the VS Code mirror (clipboardFormat.ts SOURCE_ROOT_MARKER).
+         */
+        const val SOURCE_ROOT_MARKER = "// clipcode-root: "
+
+        /** Read the source-root metadata from the first line, if present. */
+        fun extractSourceRoot(clipboardText: String): String? {
+            val firstLine = clipboardText.substringBefore('\n')
+            if (!firstLine.startsWith(SOURCE_ROOT_MARKER)) return null
+            return firstLine.removePrefix(SOURCE_ROOT_MARKER).trim().ifEmpty { null }
+        }
+
+        /** Build side: true when [line] would parse as a file header under [headerFormat]. */
+        fun wouldParseAsHeader(line: String, headerFormat: String): Boolean =
+            findHeaderPath(line, toHeaderPattern(headerFormat)) != null
+
         /** Build side: escape content/pre/post lines that would parse as headers. */
         fun escapeContent(text: String, headerFormat: String): String {
             if (text.isEmpty()) return text
@@ -105,7 +124,10 @@ class ClipboardRestoreParser {
     fun parse(content: String, headerFormat: String): List<ParsedClipboardEntry> {
         val parsedEntries = mutableListOf<ParsedClipboardEntry>()
         val customRegex = toHeaderPattern(headerFormat)
-        val lines = content.lines()
+        // Drop a leading source-root metadata line so a permissive headerFormat can't
+        // turn it into a phantom file. extractSourceRoot() reads it separately.
+        val allLines = content.lines()
+        val lines = if (allLines.firstOrNull()?.startsWith(SOURCE_ROOT_MARKER) == true) allLines.drop(1) else allLines
 
         var currentFilePath: String? = null
         var currentChangeTypes: Set<ChangeTypeLabel> = emptySet()

@@ -172,6 +172,15 @@ class CopyFileContentAction : AnAction() {
         var totalTokens = 0
 
         val fileContents = mutableListOf<String>().apply {
+            // Metadata line first (before any header) so parsers drop it as pre-header
+            // text; restore uses it to align folder levels. Mirrors the VS Code
+            // buildPayloadInternal, including the phantom-header suppression.
+            session.pathResolver.singleRootName()?.let { sourceRoot ->
+                val metaLine = ClipboardRestoreParser.SOURCE_ROOT_MARKER + sourceRoot
+                if (!ClipboardRestoreParser.wouldParseAsHeader(metaLine, settings.state.headerFormat)) {
+                    add(metaLine)
+                }
+            }
             add(ClipboardRestoreParser.escapeContent(settings.state.preText, settings.state.headerFormat))
         }
 
@@ -388,7 +397,11 @@ class CopyFileContentAction : AnAction() {
             val header = customHeaderGenerator?.invoke(file, fileRelativePath)
                 ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
             fileContents.add(header)
-            fileContents.add("// File skipped: size exceeds limit (${file.length} bytes)")
+            // Escape like real content so a permissive headerFormat can't parse the
+            // skip line as a header (VS Code escapes these lines too)
+            fileContents.add(
+                ClipboardRestoreParser.escapeContent("// File skipped: size exceeds limit (${file.length} bytes)", settings.state.headerFormat)
+            )
             if (addExtraLine) {
                 fileContents.add("")
             }
