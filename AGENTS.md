@@ -27,14 +27,35 @@ in one tool restore in the other. Both sides must agree on:
   a file. Also byte-identical on both sides.
 
 Format authority on this side: `ChangeTypeLabel.kt` (label set + regexes),
-`GitClipboardFormatter.kt` (build), `ClipboardRestoreParser.kt` (parse + the
+`ClipboardPayloadFormatter.kt` (build — the single wire-format assembler,
+byte-mirror of `clipboardFormat.ts buildPayloadInternal`; `GitClipboardPayloadBuilder`
+resolves entries then delegates to it), `ClipboardRestoreParser.kt` (parse + the
 `escapeContent`/`unescapeContent`/`joinContent` helpers). The VS Code mirror is
 `ClipCodeVSCode/src/clipboardFormat.ts`. **Change the label set, bracket syntax,
 header rule, or escape marker on one side → update the other, or cross-tool restore
-silently breaks.** Round-trip is covered by `ClipCodeVSCode` unit + e2e tests; the
-Kotlin side has JUnit tests (incl. `GitClipboardPayloadBuilderTest`) but no
-dedicated cross-tool round-trip harness, so verify the format mirror by hand
-against the VS Code tests.
+silently breaks.**
+
+Strict-alignment invariants (both sides must match byte-for-byte):
+- Header regexes use an **ASCII** whitespace class only (`[ \t\n\x0B\f\r]`), not
+  Unicode `\s`. Kotlin regex `\s` is already ASCII; the TS side pins an explicit
+  `ASCII_WS` class so a full-width-space-indented line isn't a header on one side
+  and content on the other.
+- `$FILE_PATH` substitution is **literal** — Kotlin `String.replace`, TS
+  `split('$FILE_PATH').join(...)` (never `replaceAll(str, str)`, which expands `$&`
+  etc.). A path containing `$` must round-trip verbatim.
+- Line splitting on parse is `\r?\n` only (never a lone `\r`): Kotlin uses
+  `splitLines` (a `\r?\n` regex), NOT `String.lines()`.
+- Known accepted residual: `trim()`/`isBlank()` treat U+001C–U+001F and U+FEFF
+  differently across the two stdlibs. Only triggers when a structural line is
+  entirely such control/BOM chars, which real payloads never contain — left as-is.
+
+**Cross-tool contract is pinned by golden fixtures**, not by hand: the same
+`clipboard-contract.json` is committed byte-identically in
+`src/test/resources/` (here) and `ClipCodeVSCode/test/fixtures/`. `ContractFixturesTest`
+(here) and `test/contract.test.ts` (VS Code) both assert their build + parse match
+those frozen bytes, plus a SHA guard so the two copies can't drift. Regenerate via
+`ClipCodeVSCode/scripts/gen-contract-fixtures.cjs` (VS Code is the format authority),
+copy the JSON to both repos, and update `EXPECTED_FIXTURES_SHA` on both sides.
 
 ## Build / run
 
