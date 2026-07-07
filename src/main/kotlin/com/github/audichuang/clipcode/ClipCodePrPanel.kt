@@ -181,16 +181,21 @@ class ClipCodePrPanel(private val project: Project) : JPanel(BorderLayout()) {
                     source = SelectionSource.GIT_LOG_OR_HISTORY
                 )
                 val entries = GitContentResolver(logger).resolve(project, selection)
-                val content = entries.filter { it.hasContent }
-                val deleted = entries.filter { it.changeType == ChangeTypeLabel.DELETED && !it.hasContent }
+                // hasContent 讀 VirtualFile 的 isValid/exists，BGT 上需要 read lock
+                val (content, deleted) = ReadAction.compute<
+                    Pair<List<GitContentResolver.ResolvedGitEntry>, List<GitContentResolver.ResolvedGitEntry>>,
+                    RuntimeException
+                > {
+                    entries.filter { it.hasContent } to
+                        entries.filter { it.changeType == ChangeTypeLabel.DELETED && !it.hasContent }
+                }
                 if (content.isEmpty() && deleted.isEmpty()) {
                     noChangesToCopy = true
                     return
                 }
                 indicator.checkCanceled()
-                payload = ReadAction.compute<GitClipboardPayloadBuilder.Payload, RuntimeException> {
-                    GitClipboardPayloadBuilder.build(content, deleted, pathResolver, settings, indicator)
-                }
+                // GitClipboardPayloadBuilder 內部逐檔取 ReadAction，這裡不再額外包一層
+                payload = GitClipboardPayloadBuilder.build(content, deleted, pathResolver, settings, indicator)
             }
 
             override fun onSuccess() {

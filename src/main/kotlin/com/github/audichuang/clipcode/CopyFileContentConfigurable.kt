@@ -101,6 +101,7 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
         filterTableModel.addColumn("Type")  // Icon
         filterTableModel.addColumn("Action")  // Include/Exclude
         filterTableModel.addColumn("Filter")  // Path or Extension
+        filterTableModel.addColumn("TypeId")  // FilterType，隱藏欄（見 setupFilterTableRenderers）
         
         setupFilterTable()
         setupFilterTableRenderers()
@@ -155,7 +156,7 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
                 CopyFileContentSettings.FilterAction.INCLUDE -> "Include"
                 CopyFileContentSettings.FilterAction.EXCLUDE -> "Exclude"
             }
-            filterTableModel.addRow(arrayOf(rule.enabled, icon, actionText, rule.value))
+            filterTableModel.addRow(arrayOf(rule.enabled, icon, actionText, rule.value, rule.type))
         }
 
         // Setup button listeners
@@ -223,7 +224,7 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
         if (!exists) {
             val icon = if (isDirectory) AllIcons.Nodes.Folder else AllIcons.FileTypes.Any_type
             val actionText = if (action == CopyFileContentSettings.FilterAction.INCLUDE) "Include" else "Exclude"
-            filterTableModel.addRow(arrayOf(true, icon, actionText, value))
+            filterTableModel.addRow(arrayOf(true, icon, actionText, value, CopyFileContentSettings.FilterType.PATH))
         }
     }
     
@@ -246,7 +247,7 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
             if (!exists) {
                 val icon = AllIcons.FileTypes.Any_type
                 val actionText = if (action == CopyFileContentSettings.FilterAction.INCLUDE) "Include" else "Exclude"
-                filterTableModel.addRow(arrayOf(true, icon, actionText, pattern))
+                filterTableModel.addRow(arrayOf(true, icon, actionText, pattern, CopyFileContentSettings.FilterType.PATTERN))
             }
         }
     }
@@ -309,6 +310,11 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
         
         // Filter value column takes remaining space
         filterTable.columnModel.getColumn(3).preferredWidth = 320
+
+        // 隱藏 TypeId 欄：model 保留原始 FilterType，apply()/isModified() 直接讀它，
+        // 不再從字串猜型別（猜法會把 .idea 這種 PATH 改寫成 PATTERN、
+        // 把不含萬用字元的 regex 改寫成 PATH，導致過濾規則悄悄失效）
+        filterTable.removeColumn(filterTable.columnModel.getColumn(4))
     }
 
     override fun createComponent(): JComponent {
@@ -505,29 +511,23 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
         return panel
     }
 
+    /** 從表格 model 讀回規則；型別取自隱藏的 TypeId 欄，不從字串猜。 */
+    private fun tableRules(): List<CopyFileContentSettings.FilterRule> =
+        (0 until filterTableModel.rowCount).map { i ->
+            CopyFileContentSettings.FilterRule(
+                type = filterTableModel.getValueAt(i, 4) as CopyFileContentSettings.FilterType,
+                action = if (filterTableModel.getValueAt(i, 2) == "Include")
+                    CopyFileContentSettings.FilterAction.INCLUDE
+                else
+                    CopyFileContentSettings.FilterAction.EXCLUDE,
+                value = filterTableModel.getValueAt(i, 3) as String,
+                enabled = filterTableModel.getValueAt(i, 0) as Boolean
+            )
+        }
+
     override fun isModified(): Boolean {
         return settings?.let {
-            val currentRules = mutableListOf<CopyFileContentSettings.FilterRule>()
-            
-            for (i in 0 until filterTableModel.rowCount) {
-                val enabled = filterTableModel.getValueAt(i, 0) as Boolean
-                val actionText = filterTableModel.getValueAt(i, 2) as String
-                val value = filterTableModel.getValueAt(i, 3) as String
-                
-                val action = if (actionText == "Include") 
-                    CopyFileContentSettings.FilterAction.INCLUDE 
-                else 
-                    CopyFileContentSettings.FilterAction.EXCLUDE
-                    
-                val type = if (value.contains("*") || value.contains("?") || value.startsWith(".")) 
-                    CopyFileContentSettings.FilterType.PATTERN 
-                else 
-                    CopyFileContentSettings.FilterType.PATH
-                    
-                currentRules.add(CopyFileContentSettings.FilterRule(type, action, value, enabled))
-            }
-            
-            it.state.filterRules != currentRules ||
+            it.state.filterRules != tableRules() ||
                     headerFormatArea.text != it.state.headerFormat ||
                     preTextArea.text != it.state.preText ||
                     postTextArea.text != it.state.postText ||
@@ -543,28 +543,8 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
 
     override fun apply() {
         settings?.let {
-            val rules = mutableListOf<CopyFileContentSettings.FilterRule>()
-            
-            for (i in 0 until filterTableModel.rowCount) {
-                val enabled = filterTableModel.getValueAt(i, 0) as Boolean
-                val actionText = filterTableModel.getValueAt(i, 2) as String
-                val value = filterTableModel.getValueAt(i, 3) as String
-                
-                val action = if (actionText == "Include") 
-                    CopyFileContentSettings.FilterAction.INCLUDE 
-                else 
-                    CopyFileContentSettings.FilterAction.EXCLUDE
-                    
-                val type = if (value.contains("*") || value.contains("?") || value.startsWith(".")) 
-                    CopyFileContentSettings.FilterType.PATTERN 
-                else 
-                    CopyFileContentSettings.FilterType.PATH
-                    
-                rules.add(CopyFileContentSettings.FilterRule(type, action, value, enabled))
-            }
-            
             it.state.filterRules.clear()
-            it.state.filterRules.addAll(rules)
+            it.state.filterRules.addAll(tableRules())
             it.state.headerFormat = headerFormatArea.text
             it.state.preText = preTextArea.text
             it.state.postText = postTextArea.text
@@ -603,7 +583,7 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
                     CopyFileContentSettings.FilterAction.INCLUDE -> "Include"
                     CopyFileContentSettings.FilterAction.EXCLUDE -> "Exclude"
                 }
-                filterTableModel.addRow(arrayOf(rule.enabled, icon, actionText, rule.value))
+                filterTableModel.addRow(arrayOf(rule.enabled, icon, actionText, rule.value, rule.type))
             }
             
             maxFilesField.isVisible = it.state.setMaxFileCount

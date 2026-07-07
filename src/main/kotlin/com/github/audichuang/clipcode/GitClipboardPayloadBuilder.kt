@@ -9,7 +9,8 @@ import com.intellij.openapi.vfs.VfsUtilCore
  * 把 [GitContentResolver.ResolvedGitEntry] 清單組成剪貼簿文字。
  *
  * 從 [CopyGitFilesContentAction] 抽出，供 PR 面板等其他呼叫端複用同一份格式化邏輯。
- * 必須在 ReadAction 內呼叫（會讀 VFS bytes）。
+ * 內部會逐檔取 ReadAction 讀 VFS bytes；呼叫端不需（也不應）再自己包 ReadAction，
+ * 否則又變回單一長 read action，複製期間會擋住 EDT 的 write action。
  */
 object GitClipboardPayloadBuilder {
     private val logger = Logger.getInstance(GitClipboardPayloadBuilder::class.java)
@@ -33,11 +34,11 @@ object GitClipboardPayloadBuilder {
             fileContents.add(ClipboardRestoreParser.escapeContent(settings!!.state.preText, headerFormat))
         }
 
-        // VFS bytes 讀取需在 ReadAction 內 (2024.3+ strict mode)
-        skippedSizeCount = ReadAction.compute<Int, RuntimeException> {
-            var skipped = 0
-            contentEntries.forEach { entry ->
-                indicator.checkCanceled()
+        // VFS bytes 讀取需在 ReadAction 內 (2024.3+ strict mode)；逐檔取 read lock，
+        // 讓 EDT 的 write action（打字）可以在檔案之間插隊
+        contentEntries.forEach { entry ->
+            indicator.checkCanceled()
+            skippedSizeCount += ReadAction.compute<Int, RuntimeException> {
                 fileContents.add(
                     GitClipboardFormatter.buildHeader(
                         headerFormat = headerFormat,
@@ -45,12 +46,11 @@ object GitClipboardPayloadBuilder {
                         changeType = entry.changeType
                     )
                 )
-                skipped += appendContent(fileContents, entry, maxFileSizeBytes, headerFormat)
-                if (addExtraLine) {
-                    fileContents.add("")
-                }
+                appendContent(fileContents, entry, maxFileSizeBytes, headerFormat)
             }
-            skipped
+            if (addExtraLine) {
+                fileContents.add("")
+            }
         }
 
         deletedMarkerEntries.forEach { entry ->
@@ -71,8 +71,12 @@ object GitClipboardPayloadBuilder {
             fileContents.add(ClipboardRestoreParser.escapeContent(settings!!.state.postText, headerFormat))
         }
 
-        val filesFromDisk = contentEntries.count { it.hasVirtualFileContent } - skippedSizeCount.coerceAtMost(contentEntries.count { it.hasVirtualFileContent })
-        val filesFromHistory = contentEntries.count { !it.hasVirtualFileContent && it.contentFromRevision != null }
+        // hasVirtualFileContent 讀 VirtualFile 的 isValid/exists，也要在 read lock 內
+        val (diskBackedCount, filesFromHistory) = ReadAction.compute<Pair<Int, Int>, RuntimeException> {
+            contentEntries.count { it.hasVirtualFileContent } to
+                contentEntries.count { !it.hasVirtualFileContent && it.contentFromRevision != null }
+        }
+        val filesFromDisk = diskBackedCount - skippedSizeCount.coerceAtMost(diskBackedCount)
         val copiedWithContent = contentEntries.size - skippedSizeCount
         val totalCopied = copiedWithContent + deletedMarkerEntries.size
         val skippedSuffix = if (skippedSizeCount > 0) " ($skippedSizeCount skipped: size exceeded)" else ""

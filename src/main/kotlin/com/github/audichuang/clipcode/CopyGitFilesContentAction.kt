@@ -34,7 +34,7 @@ class CopyGitFilesContentAction : AnAction() {
         val pathResolver = ClipboardPathResolver.fromProject(project)
 
         if (!selection.hasGitMetadata) {
-            copySelectedFilesWithoutGitMetadata(e, selection.selectedFiles, pathResolver)
+            copySelectedFilesWithoutGitMetadata(project, selection.selectedFiles, pathResolver)
             return
         }
 
@@ -50,7 +50,9 @@ class CopyGitFilesContentAction : AnAction() {
 
                 override fun onSuccess() {
                     if (project.isDisposed) return
-                    handleResolvedEntries(e, project, pathResolver, resolvedEntries)
+                    // 不把 AnActionEvent 帶出 actionPerformed 生命週期（平台禁止；
+                    // 2024.3+ 的 async DataContext 可能已失效），只傳 Project
+                    handleResolvedEntries(project, pathResolver, resolvedEntries)
                 }
             }
         )
@@ -58,7 +60,6 @@ class CopyGitFilesContentAction : AnAction() {
 
     @IdeBoundCode
     private fun handleResolvedEntries(
-        e: AnActionEvent,
         project: Project,
         pathResolver: ClipboardPathResolver,
         resolvedEntries: List<GitContentResolver.ResolvedGitEntry>
@@ -107,7 +108,7 @@ class CopyGitFilesContentAction : AnAction() {
         ) {
             val indexedEntries = contentEntries.associateBy { it.virtualFile!!.path }
             CopyFileContentAction().performCopyFilesContent(
-                e,
+                project,
                 contentEntries.map { it.virtualFile!! }.toTypedArray()
             ) { file, _ ->
                 val entry = indexedEntries[file.path]
@@ -131,11 +132,10 @@ class CopyGitFilesContentAction : AnAction() {
 
     @IdeBoundCode
     private fun copySelectedFilesWithoutGitMetadata(
-        e: AnActionEvent,
+        project: Project,
         selectedFiles: List<VirtualFile>,
         pathResolver: ClipboardPathResolver
     ) {
-        val project = e.project ?: return
         if (selectedFiles.isEmpty()) {
             CopyFileContentAction.showNotification(
                 "No files selected in Git commit/staging view.",
@@ -148,7 +148,7 @@ class CopyGitFilesContentAction : AnAction() {
         val settings = CopyFileContentSettings.getInstance(project)
         val headerFormat = settings?.state?.headerFormat ?: "// file: \$FILE_PATH"
         CopyFileContentAction().performCopyFilesContent(
-            e,
+            project,
             selectedFiles.toTypedArray()
         ) { file, _ ->
             GitClipboardFormatter.buildHeader(

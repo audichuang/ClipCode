@@ -174,8 +174,7 @@ class CopyRestoreE2ETest : BasePlatformTestCase() {
             ?: error("Failed to refresh UTF-16 file")
 
         val pathResolver = ClipboardPathResolver.fromRootPaths(listOf(repoRootPath), repoRootPath)
-        val event = projectActionEvent()
-        CopyFileContentAction().performCopyFilesContent(event, arrayOf(vFile)) { _, _ ->
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(vFile)) { _, _ ->
             "// file: ${pathResolver.toClipboardPath(vFile.path)}"
         }
         val output = clipboardText()
@@ -246,15 +245,6 @@ class CopyRestoreE2ETest : BasePlatformTestCase() {
         assertTrue(result.errors.isEmpty(), "Restore errors: ${result.errors}")
         // 原檔內容必須保留
         assertEquals(originalContent, targetFile.readText())
-    }
-
-    private fun projectActionEvent(): com.intellij.openapi.actionSystem.AnActionEvent {
-        val dataContext = com.intellij.openapi.actionSystem.impl.SimpleDataContext.getProjectContext(project)
-        return com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
-            "ClipCodeE2E",
-            com.intellij.openapi.actionSystem.Presentation(),
-            dataContext
-        )
     }
 
     fun testScenario5CopyDeletedThenPasteDeletesTargetFile() {
