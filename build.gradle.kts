@@ -78,6 +78,12 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.2.1 - Cross-tool format alignment</h2>
+            <ul>
+              <li><b>Fixed:</b> Paste and Restore no longer treats a lone carriage return inside file content as a line break, matching the ClipCode VS Code extension (Snipcode) parser exactly</li>
+              <li>Clipboard wire-format assembly is now unified behind a single formatter and pinned to the VS Code extension by a shared cross-tool contract test suite, so files copied in one tool keep restoring byte-for-byte in the other</li>
+            </ul>
+
             <h2>Version 1.2.0 - PR panel, folder-level alignment, tighter VS Code interop</h2>
             <ul>
               <li><b>New:</b> ClipCode PR tool window — pick a base branch, review the base...HEAD diff, and copy the full changed sources in one click (with an origin behind-check)</li>
