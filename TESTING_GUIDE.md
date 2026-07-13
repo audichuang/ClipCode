@@ -1,6 +1,12 @@
-# Complete Testing Guide - ClipCode Plugin
+# Manual Testing Guide — ClipCode Plugin
 
-This guide shows how to test **all** plugin functionalities locally.
+Hands-on checks for **core** copy / git-copy / paste-restore / filters / settings
+in a sandbox IDE (`./gradlew runIde`).
+
+**Scope:** this guide does **not** cover the **ClipCode PR** tool window or every
+edge case. Automated coverage lives under `src/test/kotlin/` (`./gradlew test`).
+Plugin zip version in examples may lag `pluginVersion` in `gradle.properties` —
+use whatever is under `build/distributions/` after `./gradlew buildPlugin`.
 
 ---
 
@@ -614,10 +620,11 @@ This is a **major feature** - restores files from clipboard content!
 
 ## Done!
 
-You've tested all plugin features!
+You've walked through the **core** manual paths above (not the full product —
+e.g. PR panel still needs separate exploratory checks via `runIde`).
 
 **To stop the sandbox IDE:**
 - Close the IDE window or press `Ctrl+C` in terminal
 
 **Plugin build location:**
-- `build/distributions/ClipCode-1.0.2.zip`
+- `build/distributions/ClipCode-<pluginVersion>.zip` (see `gradle.properties`)
