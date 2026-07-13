@@ -27,13 +27,17 @@ in one tool restore in the other. Both sides must agree on:
   a file. Also byte-identical on both sides.
 
 Format authority on this side: `ChangeTypeLabel.kt` (label set + regexes),
-`ClipboardPayloadFormatter.kt` (build — the single wire-format assembler,
-byte-mirror of `clipboardFormat.ts buildPayloadInternal`; `GitClipboardPayloadBuilder`
-resolves entries then delegates to it), `ClipboardRestoreParser.kt` (parse + the
-`escapeContent`/`unescapeContent`/`joinContent` helpers). The VS Code mirror is
-`ClipCodeVSCode/src/clipboardFormat.ts`. **Change the label set, bracket syntax,
-header rule, or escape marker on one side → update the other, or cross-tool restore
-silently breaks.**
+`ClipboardPayloadFormatter.kt` (the **canonical / test-pinned** assembler —
+byte-mirror of `clipboardFormat.ts buildPayloadInternal`; used by git/PR paths
+via `GitClipboardPayloadBuilder` and by golden fixtures),
+`ClipboardRestoreParser.kt` (parse + `escapeContent`/`unescapeContent`/`joinContent`).
+**Caveat:** regular explorer/open-tabs copy still assembles the same wire rules
+**inline** in `CopyFileContentAction.buildCopyPayload` — do not assume every
+copy path goes through the formatter. The VS Code mirror is
+`ClipCodeVSCode/src/clipboardFormat.ts` (single assembler on that side).
+**Change the label set, bracket syntax, header rule, or escape marker on one
+side → update the other (and both IntelliJ assembly sites if needed), or
+cross-tool restore silently breaks.**
 
 Strict-alignment invariants (both sides must match byte-for-byte):
 - Header regexes use an **ASCII** whitespace class only (`[ \t\n\x0B\f\r]`), not
@@ -63,19 +67,24 @@ copy the JSON to both repos, and update `EXPECTED_FIXTURES_SHA` on both sides.
     ./gradlew runIde       # launch a sandbox IDE with the plugin installed
     ./gradlew buildPlugin  # → build/distributions/ClipCode-<version>.zip
 
-Targets IntelliJ 2024.3–2025.2. There IS a JUnit test suite under
-`src/test/kotlin/` (~210 tests) run by the `test` task, so `./gradlew build`
-includes it — `BUILD FAILED` on a red test. Judge pass/fail by the
-`BUILD SUCCESSFUL` / `N failed` text, not a piped exit code (`| tail`/`| grep`
+**Platform range:** `pluginSinceBuild = 252` (IntelliJ **2025.2+**); 
+`pluginUntilBuild` is empty (no upper bound). See `gradle.properties` — do not
+assume older 2024.x builds.
+
+There is a JUnit suite under `src/test/kotlin/` run by the `test` task, so
+`./gradlew build` includes it — `BUILD FAILED` on a red test. Judge pass/fail by
+the `BUILD SUCCESSFUL` / `N failed` text, not a piped exit code (`| tail`/`| grep`
 swallow gradle's real exit code). Pure logic should have unit tests; UI /
 git4idea-runtime paths that can't run headless are still verified manually via
-`./gradlew runIde` per `TESTING_GUIDE.md`.
+`./gradlew runIde`. `TESTING_GUIDE.md` covers core copy/git/restore only — not the
+PR panel — and its sample zip version may lag `pluginVersion`.
 
 ## Release (tag-triggered → JetBrains Marketplace)
 
 Releases come off `main` (feature work on `dev`). Pushing a `v<version>` tag runs
-`.github/workflows/release.yml`: build → GitHub Release → publish to JetBrains
-Marketplace (needs the `PUBLISH_TOKEN` secret). Two non-obvious rules:
+`.github/workflows/release.yml`: build → **signPlugin** (certificate secrets) →
+GitHub Release → publish to JetBrains Marketplace (`PUBLISH_TOKEN` plus
+`CERTIFICATE_CHAIN` / `PRIVATE_KEY` / `PRIVATE_KEY_PASSWORD`). Two non-obvious rules:
 
 - **The version is `pluginVersion` in `gradle.properties` only.** `build.gradle.kts`
   injects it (`version = properties("pluginVersion")`) and `patchPluginXml` writes
@@ -89,11 +98,13 @@ Marketplace (needs the `PUBLISH_TOKEN` secret). Two non-obvious rules:
 ## Where to start in the code
 
 Most copy paths route through `CopyFileContentAction.performCopyFilesContent()`
-(`CopyAllOpenTabsAction` / `CopyGitFilesContentAction` delegate to it). Git label
-mapping: `GitContentResolver` / `GitSelectionCollector`. Path & filter logic:
-`ClipboardPathResolver` + `PathRuleMatcher`. Restore: `PasteAndRestoreFilesAction`
-→ `ClipboardRestoreParser` → `RestoreExecutor`. For full structure read
-`src/main/kotlin/com/github/audichuang/clipcode/` — don't trust a hand-written tree.
+(`CopyAllOpenTabsAction` delegates to it). `CopyGitFilesContentAction` is dual:
+all-VFS with no deleted markers → `performCopyFilesContent`; mixed/revision/deleted
+→ `GitClipboardPayloadBuilder`. Git label mapping: `GitContentResolver` /
+`GitSelectionCollector`. Path & filter: `ClipboardPathResolver` + `PathRuleMatcher`.
+Restore: `PasteAndRestoreFilesAction` → `ClipboardRestoreParser` → `RestoreExecutor`.
+For full structure read `src/main/kotlin/com/github/audichuang/clipcode/` — don't
+trust a hand-written tree.
 
 PR panel (Tool Window, base...HEAD three-dot diff + copy + origin behind-check):
 `ClipCodePrToolWindowFactory` / `ClipCodePrPanel` + `BranchDiffProvider` (git4idea diff +

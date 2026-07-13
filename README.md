@@ -7,8 +7,12 @@
 - **Copy Files & Directories**: Copy multiple files with customizable headers and formatting
 - **Git Integration**: Copy from staging area, changes view, and commit history with change type labels
 - **Paste & Restore**: Recreate files from copied content with automatic directory creation
+- **PR panel**: Tool window for base…HEAD three-dot diff, copy, and origin ahead/behind
 - **Advanced Filtering**: Include/exclude paths and file patterns
-- **Smart Statistics**: File count, lines, words, and token estimates
+- **Smart Statistics**: File count, lines, words, and token estimates (including token estimates in notifications)
+
+Compatible with the VS Code port **Snipcode** (`clipcode-vscode`) — same clipboard
+text format both ways.
 
 ## Installation
 
