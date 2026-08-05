@@ -7,3 +7,6 @@ build
 .kotlin
 
 .omc
+
+# codegraph local index (tool-generated, not part of the project)
+.codegraph/

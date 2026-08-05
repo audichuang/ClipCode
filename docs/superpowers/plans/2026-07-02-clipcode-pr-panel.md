@@ -11,7 +11,8 @@
 ## Global Constraints
 
 - 相容 IntelliJ 2024.3–2025.2(見 `build.gradle.kts` / `gradle.properties`)。
-- **無單元測試框架**(AGENTS.md)。每個 task 的驗收 = `./gradlew build` 編譯通過 + `./gradlew runIde` 手動驗證指定情境。不寫 pytest/JUnit 式測試。
+- **修正:repo 其實有 JUnit 測試套件(202 測試),AGENTS.md 的「no unit tests」是錯的。** 驗收 = `./gradlew build -x buildSearchableOptions` 到 `BUILD SUCCESSFUL` 且 `202+ tests completed, 0 failed`。純邏輯(不依賴 IntelliJ runtime 的函式,如 rev-list 輸出解析、ref 排序)**要寫單元測試**;UI/git4idea runtime 整合部分無法單元測試,仍靠 `./gradlew runIde` 手動驗證(此環境 headless,由使用者實測)。
+- 注意 `| tail`/`| grep` 會吞掉 gradle 的 exit code —— 判斷成敗要看輸出裡的 `BUILD SUCCESSFUL/FAILED` 與 `N failed`,不能只看 pipe 的 exit code。
 - **剪貼簿格式是跨工具契約**(ClipCodeVSCode)。PR 面板一律複用既有格式邏輯,不得改動 header 規則、change label、escape marker。
 - 版本號只在 `gradle.properties` 的 `pluginVersion`;本計畫不動版本。
 - git4idea API 簽名以編譯為準:計畫給主方案 + fallback,若主方案簽名對不上,採 fallback(直接跑 git command)。
@@ -120,19 +121,45 @@ git commit -m "refactor: extract GitClipboardPayloadBuilder for reuse"
 - fetch:`git4idea.fetch.GitFetchSupport.fetchSupport(project).fetch(repository)`;包 try/catch,失敗設 `fetched=false` 後仍用本地快取算 ahead/behind。
 - `candidateBaseRefs`:remote 分支名(`repository.branches.remoteBranches.map { it.nameForRemoteOperations }`,即 `origin/main` 這種)排前,current branch 的 upstream 置頂;去重。
 
-- [ ] **Step 1: 建 `BranchDiffProvider.kt`**
+把 `rev-list --count --left-right <upstream>...HEAD` 的輸出解析抽成 companion 純函式,方便單元測試:
+```kotlin
+companion object {
+    // 輸入為 rev-list --count --left-right 的一行 "<behind>\t<ahead>";解析失敗回 null
+    fun parseAheadBehind(revListLine: String): Pair<Int, Int>?  // 回 Pair(ahead, behind)
+}
+```
 
-依上面 Interfaces + 實作指引寫出三個方法與 `RemoteStatus`。所有 git4idea 呼叫包 try/catch,失敗記 `logger.warn` 並回安全預設(空清單 / `RemoteStatus(0,0,null,false)`),不得丟例外到 UI。
+- [ ] **Step 1(TDD): 先寫 `parseAheadBehind` 的失敗測試**
 
-- [ ] **Step 2: 編譯**
+Create `src/test/kotlin/com/github/audichuang/clipcode/BranchDiffProviderTest.kt`,只測純函式(不需 IntelliJ runtime)。比對本 repo 既有測試檔的框架風格(先看 `ChangeTypeLabelTest.kt` 等用的是 JUnit3 `TestCase` 還是 JUnit4/5 annotation,跟隨之):
+```kotlin
+fun testParsesBehindTabAhead() {
+    // left=behind, right=ahead → 函式回 Pair(ahead, behind)
+    assertEquals(5 to 3, BranchDiffProvider.parseAheadBehind("3\t5"))
+}
+fun testZeroZero() = assertEquals(0 to 0, BranchDiffProvider.parseAheadBehind("0\t0"))
+fun testMalformedReturnsNull() = assertNull(BranchDiffProvider.parseAheadBehind("garbage"))
+fun testEmptyReturnsNull() = assertNull(BranchDiffProvider.parseAheadBehind(""))
+```
 
-Run: `./gradlew build`
-Expected: BUILD SUCCESSFUL。若 git4idea API 簽名報錯,依實作指引的 fallback 調整後再編譯至通過。
+- [ ] **Step 2: 跑測試確認 FAIL**
 
-- [ ] **Step 3: Commit**
+Run: `./gradlew test --tests "com.github.audichuang.clipcode.BranchDiffProviderTest"`
+Expected: 編譯失敗或測試失敗(`parseAheadBehind` 未實作)。
+
+- [ ] **Step 3: 建 `BranchDiffProvider.kt`(含 `parseAheadBehind` 實作)**
+
+依上面 Interfaces + 實作指引寫出三個方法、`RemoteStatus`、companion `parseAheadBehind`。所有 git4idea 呼叫包 try/catch,失敗記 `logger.warn` 並回安全預設(空清單 / `RemoteStatus(0,0,null,false)`),不得丟例外到 UI。
+
+- [ ] **Step 4: 跑測試 PASS + 全套件綠**
+
+Run: `./gradlew test --tests "com.github.audichuang.clipcode.BranchDiffProviderTest"` → 4/4 PASS
+Run: `./gradlew build -x buildSearchableOptions` → 輸出含 `BUILD SUCCESSFUL` 且 `0 failed`(勿只看 pipe exit code)。若 git4idea API 簽名報錯,依實作指引的 fallback 調整後再編譯至通過。
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add src/main/kotlin/com/github/audichuang/clipcode/BranchDiffProvider.kt
+git add src/main/kotlin/com/github/audichuang/clipcode/BranchDiffProvider.kt src/test/kotlin/com/github/audichuang/clipcode/BranchDiffProviderTest.kt
 git commit -m "feat: add BranchDiffProvider for base..HEAD diff and remote freshness"
 ```
 
