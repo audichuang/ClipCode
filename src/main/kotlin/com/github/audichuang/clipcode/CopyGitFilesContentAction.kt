@@ -182,9 +182,9 @@ class CopyGitFilesContentAction : AnAction() {
                 val result = payload ?: return
                 copyToClipboard(result.text)
                 if (settings?.state?.showCopyNotification == true) {
-                    CopyFileContentAction.showNotification(
-                        "<html><b>${result.summary}</b></html>",
-                        NotificationType.INFORMATION,
+                    CopyFileContentAction.showPayloadNotification(
+                        "<b>${result.summary}</b><br>",
+                        result.text,
                         project
                     )
                 }

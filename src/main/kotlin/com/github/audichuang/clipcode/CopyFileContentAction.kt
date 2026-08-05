@@ -18,6 +18,7 @@ import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
+import java.util.Locale
 
 class CopyFileContentAction : AnAction() {
     private val logger = Logger.getInstance(CopyFileContentAction::class.java)
@@ -169,7 +170,6 @@ class CopyFileContentAction : AnAction() {
         var totalChars = 0
         var totalLines = 0
         var totalWords = 0
-        var totalTokens = 0
 
         val fileContents = mutableListOf<String>().apply {
             // Metadata line first (before any header) so parsers drop it as pre-header
@@ -201,20 +201,20 @@ class CopyFileContentAction : AnAction() {
             totalChars += content.length
             totalLines += content.count { it == '\n' } + (if (content.isNotEmpty()) 1 else 0)
             totalWords += content.split("\\s+".toRegex()).filter { it.isNotEmpty() }.size
-            totalTokens += estimateTokens(content)
         }
 
         fileContents.add(ClipboardRestoreParser.escapeContent(settings.state.postText, settings.state.headerFormat))
 
+        val text = fileContents.joinToString(separator = "\n")
+
         return CopyPayload(
-            text = fileContents.joinToString(separator = "\n"),
+            text = text,
             fileCount = session.fileCount,
             skippedFileSizeCount = session.skippedFileSizeCount,
             fileLimitReached = session.fileLimitReached,
             totalChars = totalChars,
             totalLines = totalLines,
-            totalWords = totalWords,
-            totalTokens = totalTokens
+            totalWords = totalWords
         )
     }
 
@@ -244,19 +244,20 @@ class CopyFileContentAction : AnAction() {
             else -> "${result.fileCount} files copied."
         }
 
-        val statisticsMessage = """
-            <html>
+        val statisticsBody = """
             Total characters: ${result.totalChars}<br>
             Total lines: ${result.totalLines}<br>
             Total words: ${result.totalWords}<br>
-            Estimated tokens: ${result.totalTokens}
-            </html>
         """.trimIndent()
 
-        showNotification(statisticsMessage, NotificationType.INFORMATION, project)
+        showPayloadNotification(statisticsBody, result.text, project)
         showNotification("<html><b>$fileCountMessage</b></html>", NotificationType.INFORMATION, project)
     }
 
+    // No totalTokens field on purpose: the token count is a function of [text] alone
+    // (headers, pre/post text and the clipcode-root line included — that is what gets
+    // pasted, and what VS Code counts). Carrying it as a separate field is what let it
+    // drift into a per-file sum the two tools never agreed on.
     private data class CopyPayload(
         val text: String,
         val fileCount: Int,
@@ -264,15 +265,8 @@ class CopyFileContentAction : AnAction() {
         val fileLimitReached: Boolean,
         val totalChars: Int,
         val totalLines: Int,
-        val totalWords: Int,
-        val totalTokens: Int
+        val totalWords: Int
     )
-
-    private fun estimateTokens(content: String): Int {
-        val words = content.split("\\s+".toRegex()).filter { it.isNotEmpty() }
-        val punctuation = Regex("[;{}()\\[\\],]").findAll(content).count()
-        return words.size + punctuation
-    }
 
     // 每個檔案各取一次 read lock，讓 EDT 的 write action 可以在檔案之間插隊
     private fun processFile(
@@ -589,6 +583,36 @@ class CopyFileContentAction : AnAction() {
     }
 
     companion object {
+        /**
+         * Copy notification carrying the payload's token estimate, coloured by size.
+         * IntelliJ has no notification colour API, so the type IS the colour
+         * (grey / yellow / red). Thresholds and wording mirror
+         * `ClipCodeVSCode/src/notify.ts` — same payload, same number, same colour in
+         * both tools. EVERY copy path that puts a payload on the clipboard should go
+         * through here, otherwise an oversized copy is red in one tool and silent in
+         * the other.
+         *
+         * [bodyHtml] is the path-specific part; the token line is appended to it.
+         */
+        @IdeBoundCode
+        fun showPayloadNotification(bodyHtml: String, payloadText: String, project: Project?) {
+            val tokens = TokenEstimator.estimate(payloadText)
+            val (type, warning) = when {
+                tokens >= TokenEstimator.DANGER_THRESHOLD ->
+                    NotificationType.ERROR to "<br><b>Over ${grouped(TokenEstimator.DANGER_THRESHOLD)} tokens.</b>"
+                tokens >= TokenEstimator.WARN_THRESHOLD ->
+                    NotificationType.WARNING to "<br><b>Over ${grouped(TokenEstimator.WARN_THRESHOLD)} tokens.</b>"
+                else -> NotificationType.INFORMATION to ""
+            }
+            showNotification("<html>${bodyHtml}Estimated tokens: ${grouped(tokens)}$warning</html>", type, project)
+        }
+
+        /**
+         * Thousands separators pinned to [Locale.ROOT], not the IDE locale: the VS Code
+         * mirror renders the same count and the two must not disagree on `1,234` vs `1.234`.
+         */
+        private fun grouped(value: Int): String = String.format(Locale.ROOT, "%,d", value)
+
         @IdeBoundCode
         fun showNotification(
             message: String,

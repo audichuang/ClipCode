@@ -10,28 +10,28 @@ class CopyFileContentInternalTest {
 
     @Test
     fun `estimateTokens for empty content`() {
-        assertEquals(0, action.estimateTokens(""))
+        assertEquals(0, TokenEstimator.estimate(""))
     }
 
     @Test
     fun `estimateTokens counts single word`() {
-        assertEquals(1, action.estimateTokens("hello"))
+        assertEquals(1, TokenEstimator.estimate("hello"))
     }
 
     @Test
     fun `estimateTokens counts words and punctuation`() {
         // "a b" → 2 words, 0 punctuation
-        assertEquals(2, action.estimateTokens("a b"))
+        assertEquals(2, TokenEstimator.estimate("a b"))
         // "a; b;" → split → ["a;", "b;"] → 2 words; punctuation `;` ×2 → 4
-        assertEquals(4, action.estimateTokens("a; b;"))
+        assertEquals(4, TokenEstimator.estimate("a; b;"))
         // "a {} b" → split → ["a", "{}", "b"] → 3 words; punctuation `{`, `}` → 2 → 5
-        assertEquals(5, action.estimateTokens("a {} b"))
+        assertEquals(5, TokenEstimator.estimate("a {} b"))
     }
 
     @Test
     fun `estimateTokens counts each punctuation char`() {
         // "(){}[],;" 全部單字 → 1 word; 8 punctuation → 9
-        val n = action.estimateTokens("(){}[],;")
+        val n = TokenEstimator.estimate("(){}[],;")
         assertTrue(n >= 8, "Expected at least 8 punctuation hits, got $n")
     }
 
@@ -71,12 +71,6 @@ class CopyFileContentInternalTest {
     }
 
     // === reflection helpers ===
-
-    private fun CopyFileContentAction.estimateTokens(content: String): Int {
-        val m = CopyFileContentAction::class.java.getDeclaredMethod("estimateTokens", String::class.java)
-        m.isAccessible = true
-        return m.invoke(this, content) as Int
-    }
 
     private fun CopyFileContentAction.matchesPattern(fileName: String, pattern: String): Boolean {
         val m = CopyFileContentAction::class.java.getDeclaredMethod(

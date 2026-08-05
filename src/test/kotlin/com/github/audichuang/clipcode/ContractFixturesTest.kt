@@ -20,11 +20,15 @@ import kotlin.test.assertEquals
  */
 class ContractFixturesTest {
     private companion object {
-        const val EXPECTED_FIXTURES_SHA = "aa5010128ab8eb2507c7f32aefb878c6cc786aa411ef9e8898e06ddaeee5179b"
+        const val EXPECTED_FIXTURES_SHA = "397f13931fdcdef10c14e525051b80216b192bf2403216240a68eaf82f48526d"
         const val RESOURCE = "/clipboard-contract.json"
     }
 
-    private data class Fixtures(val buildCases: List<BuildCase>, val parseCases: List<ParseCase>)
+    private data class Fixtures(
+        val buildCases: List<BuildCase>,
+        val parseCases: List<ParseCase>,
+        val tokenCases: List<TokenCase>
+    )
     private data class BuildCase(val name: String, val kind: String, val options: FxOptions, val wire: String)
     private data class FxOptions(
         val headerFormat: String,
@@ -37,6 +41,7 @@ class ContractFixturesTest {
     private data class FxFile(val path: String, val content: String?, val changeType: String?, val skippedReason: String?)
     private data class ParseCase(val name: String, val headerFormat: String, val input: String, val expected: List<FxEntry>)
     private data class FxEntry(val path: String, val content: String, val changeTypes: List<String>)
+    private data class TokenCase(val name: String, val text: String, val tokens: Int)
 
     private val rawFixtures: ByteArray =
         javaClass.getResourceAsStream(RESOURCE)?.readBytes()
@@ -77,6 +82,19 @@ class ContractFixturesTest {
                 else -> ClipboardPayloadFormatter.buildPayload(options)
             }
             assertEquals(case.wire, built, "build mismatch: ${case.name}")
+        }
+    }
+
+    /**
+     * The "~N tokens" in the copy notification must be the SAME number in both tools
+     * for the same clipboard text. The VS Code mirror (test/contract.test.ts) asserts
+     * these exact values against the same frozen file, so a whitespace-class or
+     * punctuation-set drift on either side fails here.
+     */
+    @Test
+    fun `token estimates match the golden counts for every case`() {
+        fixtures.tokenCases.forEach { case ->
+            assertEquals(case.tokens, TokenEstimator.estimate(case.text), "token mismatch: ${case.name}")
         }
     }
 
