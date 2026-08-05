@@ -78,6 +78,13 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.2.2 - Accurate token estimate, size warnings</h2>
+            <ul>
+              <li><b>Fixed:</b> The estimated token count in the copy notification now measures the whole clipboard payload — headers, pre/post text and the root metadata line included — instead of only the raw file contents. It previously disagreed with the number the ClipCode VS Code extension (Snipcode) reported for the very same copy; both tools now always report the identical figure, pinned by a shared cross-tool test fixture</li>
+              <li><b>New:</b> Oversized copies are now colour-coded — the notification turns into a warning past 1,000,000 estimated tokens and an error past 2,000,000, so a payload too large for an AI assistant gets noticed before it is pasted</li>
+              <li><b>Fixed:</b> Git and PR panel copies report their token count too; previously the same files reported statistics from the explorer but none at all when copied as changes</li>
+            </ul>
+
             <h2>Version 1.2.1 - Cross-tool format alignment</h2>
             <ul>
               <li><b>Fixed:</b> Paste and Restore no longer treats a lone carriage return inside file content as a line break, matching the ClipCode VS Code extension (Snipcode) parser exactly</li>
