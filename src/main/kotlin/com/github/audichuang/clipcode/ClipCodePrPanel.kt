@@ -210,9 +210,9 @@ class ClipCodePrPanel(private val project: Project) : JPanel(BorderLayout()) {
                 val result = payload ?: return
                 Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(result.text), null)
                 if (settings?.state?.showCopyNotification == true) {
-                    CopyFileContentAction.showNotification(
-                        "<html><b>${result.summary}</b></html>",
-                        NotificationType.INFORMATION,
+                    CopyFileContentAction.showPayloadNotification(
+                        "<b>${result.summary}</b><br>",
+                        result.text,
                         project
                     )
                 }

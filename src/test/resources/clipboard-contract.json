@@ -440,5 +440,87 @@
         }
       ]
     }
+  ],
+  "tokenCases": [
+    {
+      "name": "empty string",
+      "text": "",
+      "tokens": 0
+    },
+    {
+      "name": "ascii whitespace only",
+      "text": " \t\n\u000b\f\r",
+      "tokens": 0
+    },
+    {
+      "name": "plain words",
+      "text": "hello world",
+      "tokens": 2
+    },
+    {
+      "name": "structural punctuation attaches to its word",
+      "text": "foo(bar);",
+      "tokens": 4
+    },
+    {
+      "name": "every punctuation char counts",
+      "text": "(){}[],;",
+      "tokens": 9
+    },
+    {
+      "name": "U+3000 ideographic space does NOT split",
+      "text": "中　文",
+      "tokens": 1
+    },
+    {
+      "name": "U+00A0 no-break space does NOT split",
+      "text": "a b",
+      "tokens": 1
+    },
+    {
+      "name": "U+FEFF BOM does NOT split",
+      "text": "a﻿b",
+      "tokens": 1
+    },
+    {
+      "name": "U+2028 / U+2029 line+paragraph separators do NOT split",
+      "text": "a b c",
+      "tokens": 1
+    },
+    {
+      "name": "U+2002 / U+200A en+hair spaces do NOT split",
+      "text": "a b c",
+      "tokens": 1
+    },
+    {
+      "name": "U+1680 / U+202F / U+205F do NOT split",
+      "text": "a b c d",
+      "tokens": 1
+    },
+    {
+      "name": "vertical tab and form feed DO split",
+      "text": "a\u000bb\fc",
+      "tokens": 3
+    },
+    {
+      "name": "CRLF splits once, not twice",
+      "text": "a\r\nb",
+      "tokens": 2
+    },
+    {
+      "name": "lone CR splits",
+      "text": "a\rb",
+      "tokens": 2
+    },
+    {
+      "name": "U+001C-U+001F file/group/record/unit separators do NOT split",
+      "text": "a\u001cb\u001db\u001eb\u001fb",
+      "tokens": 1
+    },
+    {
+      "name": "realistic payload: root line, header, CJK comment, code",
+      "text": "// clipcode-root: myrepo\n\n// file: src/a.ts\n// 這是　中文註解\nconst x = foo(bar, baz);\n",
+      "tokens": 17
+    }
   ]
 }
