@@ -78,6 +78,14 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.2.3 - Faster, leaner copying</h2>
+            <ul>
+              <li><b>Fixed:</b> Copying a folder no longer keeps several copies of its contents in memory. Every directory level was concatenating its whole subtree's text — so memory grew with the content size multiplied by the folder depth — purely to produce three numbers for the copy notification. Those are now counted per file as it is read</li>
+              <li><b>Fixed:</b> A large copy no longer freezes the IDE while its token count is estimated. The estimate used to split the entire payload into one string per word on the UI thread, precisely when the payload was big enough to deserve the size warning; it is now a single linear scan. The number itself is unchanged and still matches the Snipcode VS Code extension byte for byte</li>
+              <li>Path handling no longer recompiles the same regular expressions for every file — one of them was recompiled for every path segment of every file. Filter rules and wildcard patterns are now prepared once per copy instead of once per file</li>
+              <li><b>Changed:</b> For a folder copy the notification's "Total lines" and "Total words" now match what copying those same files individually reports; the previous figures lost one line at every file boundary. The clipboard content and the estimated token count are unaffected</li>
+            </ul>
+
             <h2>Version 1.2.2 - Accurate token estimate, size warnings</h2>
             <ul>
               <li><b>Fixed:</b> The estimated token count in the copy notification now measures the whole clipboard payload — headers, pre/post text and the root metadata line included — instead of only the raw file contents. It previously disagreed with the number the ClipCode VS Code extension (Snipcode) reported for the very same copy; both tools now always report the identical figure, pinned by a shared cross-tool test fixture</li>
