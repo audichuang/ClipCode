@@ -1,6 +1,9 @@
 package com.github.audichuang.clipcode
 
 object PathRuleMatcher {
+    private val DUPLICATE_SEPARATORS = Regex("/+")
+    private val WINDOWS_ABSOLUTE_PATH = Regex("^[A-Za-z]:/.*")
+
     fun matchesPath(path: String, rulePath: String): Boolean =
         isSameOrChild(normalizePath(path), normalizePath(rulePath))
 
@@ -16,12 +19,12 @@ object PathRuleMatcher {
 
     fun isAbsolutePath(path: String): Boolean {
         val normalizedPath = path.replace('\\', '/')
-            .replace(Regex("/+"), "/")
+            .replace(DUPLICATE_SEPARATORS, "/")
             .trim()
             .trimEnd('/')
         return path.trim() == "/" ||
             normalizedPath.startsWith("/") ||
-            normalizedPath.matches(Regex("^[A-Za-z]:/.*"))
+            normalizedPath.matches(WINDOWS_ABSOLUTE_PATH)
     }
 
     private fun isSameOrChild(path: String, parentPath: String): Boolean {
@@ -36,7 +39,7 @@ object PathRuleMatcher {
 
     private fun normalizePath(path: String): String =
         path.replace('\\', '/')
-            .replace(Regex("/+"), "/")
+            .replace(DUPLICATE_SEPARATORS, "/")
             .trim()
             .trimEnd('/')
             .trimStart('/')

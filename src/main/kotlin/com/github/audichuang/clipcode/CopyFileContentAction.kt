@@ -161,15 +161,20 @@ class CopyFileContentAction : AnAction() {
         // 在 BGT 跑；VFS 存取需要 read lock（2024.3+ strict mode），但改為「逐檔」取
         // ReadAction（見 processFile / processDirectory），不用單一長 read action 包住
         // 整批複製 — 否則 EDT 上排隊的 write action（使用者打字）要等整段複製完。
+
+        // Filter config is snapshotted once per copy instead of re-read per file/directory
+        val enabledRules = settings.state.filterRules.filter { it.enabled }
         val session = ReadAction.compute<CopySession, RuntimeException> {
             CopySession(
                 externalLibraryHandler = ExternalLibraryHandler(project),
-                pathResolver = ClipboardPathResolver.fromProject(project)
+                pathResolver = ClipboardPathResolver.fromProject(project),
+                useFilters = settings.state.useFilters,
+                useIncludeFilters = settings.state.useIncludeFilters,
+                useExcludeFilters = settings.state.useExcludeFilters,
+                includeRules = enabledRules.filter { it.action == CopyFileContentSettings.FilterAction.INCLUDE },
+                excludeRules = enabledRules.filter { it.action == CopyFileContentSettings.FilterAction.EXCLUDE }
             )
         }
-        var totalChars = 0
-        var totalLines = 0
-        var totalWords = 0
 
         val fileContents = mutableListOf<String>().apply {
             // Metadata line first (before any header) so parsers drop it as pre-header
@@ -192,15 +197,11 @@ class CopyFileContentAction : AnAction() {
             }
 
             val isDirectory = ReadAction.compute<Boolean, RuntimeException> { file.isDirectory }
-            val content = if (isDirectory) {
-                processDirectory(file, fileContents, session, project, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
+            if (isDirectory) {
+                processDirectory(file, fileContents, session, settings, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
             } else {
-                processFile(file, fileContents, session, project, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
+                processFile(file, fileContents, session, settings, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
             }
-
-            totalChars += content.length
-            totalLines += content.count { it == '\n' } + (if (content.isNotEmpty()) 1 else 0)
-            totalWords += content.split("\\s+".toRegex()).filter { it.isNotEmpty() }.size
         }
 
         fileContents.add(ClipboardRestoreParser.escapeContent(settings.state.postText, settings.state.headerFormat))
@@ -212,9 +213,9 @@ class CopyFileContentAction : AnAction() {
             fileCount = session.fileCount,
             skippedFileSizeCount = session.skippedFileSizeCount,
             fileLimitReached = session.fileLimitReached,
-            totalChars = totalChars,
-            totalLines = totalLines,
-            totalWords = totalWords
+            totalChars = session.totalChars,
+            totalLines = session.totalLines,
+            totalWords = session.totalWords
         )
     }
 
@@ -273,22 +274,34 @@ class CopyFileContentAction : AnAction() {
         file: VirtualFile,
         fileContents: MutableList<String>,
         session: CopySession,
-        project: Project,
+        settings: CopyFileContentSettings,
         addExtraLine: Boolean,
         customHeaderGenerator: ((VirtualFile, String) -> String)? = null
-    ): String = ReadAction.compute<String, RuntimeException> {
-        processFileUnderReadLock(file, fileContents, session, project, addExtraLine, customHeaderGenerator)
+    ) {
+        val content = ReadAction.compute<String, RuntimeException> {
+            processFileUnderReadLock(file, fileContents, session, settings, addExtraLine, customHeaderGenerator)
+        }
+        // Counted OUTSIDE the read lock: these are two more full scans of the file's
+        // text, and holding the lock across them would make an EDT write action (the
+        // user typing) wait on this file's statistics — the very thing the per-file
+        // lock granularity above exists to avoid.
+        //
+        // Accumulated per file rather than over the concatenated subtree text, so a
+        // folder copy now reports the same totals as copying those files one by one
+        // (the old concatenated count lost one line per file boundary).
+        session.totalChars += content.length
+        session.totalLines += content.count { it == '\n' } + (if (content.isNotEmpty()) 1 else 0)
+        session.totalWords += countWords(content)
     }
 
     private fun processFileUnderReadLock(
         file: VirtualFile,
         fileContents: MutableList<String>,
         session: CopySession,
-        project: Project,
+        settings: CopyFileContentSettings,
         addExtraLine: Boolean,
         customHeaderGenerator: ((VirtualFile, String) -> String)? = null
     ): String {
-        val settings = CopyFileContentSettings.getInstance(project) ?: return ""
         val handler = session.externalLibraryHandler
         val isExternalLibrary = handler.isFromExternalLibrary(file)
         
@@ -324,21 +337,20 @@ class CopyFileContentAction : AnAction() {
         var content = ""
         
         // Check filters if enabled
-        if (settings.state.useFilters) {
+        if (session.useFilters) {
             val fileRelativePathFromRoot = CopyPathFormatter.relativeFilterPath(session.pathResolver, file.path)
             val fileAbsolutePath = file.path
-            
-            // Get enabled filter rules
-            val enabledRules = settings.state.filterRules.filter { it.enabled }
-            val includeRules = enabledRules.filter { it.action == CopyFileContentSettings.FilterAction.INCLUDE }
-            val excludeRules = enabledRules.filter { it.action == CopyFileContentSettings.FilterAction.EXCLUDE }
-            
+
+            // Enabled filter rules are partitioned once per copy on the session
+            val includeRules = session.includeRules
+            val excludeRules = session.excludeRules
+
             // Check excludes first (if exclude filters are enabled)
-            if (settings.state.useExcludeFilters && excludeRules.isNotEmpty()) {
+            if (session.useExcludeFilters && excludeRules.isNotEmpty()) {
                 val isExcluded = excludeRules.any { rule ->
                     when (rule.type) {
                         CopyFileContentSettings.FilterType.PATTERN -> {
-                            matchesPattern(file.name, rule.value)
+                            matchesPattern(file.name, rule.value, session.patternCache)
                         }
                         CopyFileContentSettings.FilterType.PATH -> {
                             if (PathRuleMatcher.isAbsolutePath(rule.value)) {
@@ -357,11 +369,11 @@ class CopyFileContentAction : AnAction() {
             }
             
             // Check includes if specified (if include filters are enabled)
-            if (settings.state.useIncludeFilters && includeRules.isNotEmpty()) {
+            if (session.useIncludeFilters && includeRules.isNotEmpty()) {
                 val matchesInclude = includeRules.any { rule ->
                     when (rule.type) {
                         CopyFileContentSettings.FilterType.PATTERN -> {
-                            matchesPattern(file.name, rule.value)
+                            matchesPattern(file.name, rule.value, session.patternCache)
                         }
                         CopyFileContentSettings.FilterType.PATH -> {
                             if (PathRuleMatcher.isAbsolutePath(rule.value)) {
@@ -401,7 +413,7 @@ class CopyFileContentAction : AnAction() {
             }
             return ""
         }
-        
+
         // Handle external library files differently
         if (isExternalLibrary) {
             // Check if file should be processed
@@ -446,6 +458,7 @@ class CopyFileContentAction : AnAction() {
                 logger.info("Skipping file: ${file.name} - Binary file")
             }
         }
+        // Returned only so processFile can count it once the read lock is released.
         return content
     }
 
@@ -453,64 +466,48 @@ class CopyFileContentAction : AnAction() {
         directory: VirtualFile,
         fileContents: MutableList<String>,
         session: CopySession,
-        project: Project,
+        settings: CopyFileContentSettings,
         addExtraLine: Boolean,
         customHeaderGenerator: ((VirtualFile, String) -> String)? = null
-    ): String {
-        val directoryContent = StringBuilder(1024) // Pre-allocate for better performance
-        val settings = CopyFileContentSettings.getInstance(project) ?: return ""
-
+    ) {
         // 目錄的 filter 判斷（讀 directory.path/name）與 children + isDirectory 快照
         // 一次取鎖；遞迴的子項各自取各自的短鎖
         val children = ReadAction.compute<List<Pair<VirtualFile, Boolean>>?, RuntimeException> {
-            if (!directoryPassesFilters(directory, session, settings)) {
+            if (!directoryPassesFilters(directory, session)) {
                 null
             } else {
                 directory.children.map { child -> child to child.isDirectory }
             }
-        } ?: return ""
+        } ?: return
 
         for ((childFile, childIsDirectory) in children) {
             if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
                 session.fileLimitReached = true
                 break
             }
-            val content = if (childIsDirectory) {
-                processDirectory(childFile, fileContents, session, project, addExtraLine, customHeaderGenerator)
+            if (childIsDirectory) {
+                processDirectory(childFile, fileContents, session, settings, addExtraLine, customHeaderGenerator)
             } else {
-                processFile(childFile, fileContents, session, project, addExtraLine, customHeaderGenerator)
-            }
-            if (content.isNotEmpty()) {
-                directoryContent.append(content)
+                processFile(childFile, fileContents, session, settings, addExtraLine, customHeaderGenerator)
             }
         }
-
-        return directoryContent.toString()
     }
 
     /** 目錄層級的 include/exclude PATH 過濾。呼叫端需持有 read lock（會讀 directory.path/name）。 */
     private fun directoryPassesFilters(
         directory: VirtualFile,
-        session: CopySession,
-        settings: CopyFileContentSettings
+        session: CopySession
     ): Boolean {
-        if (!settings.state.useFilters) return true
+        if (!session.useFilters) return true
 
         val dirRelativePath = CopyPathFormatter.relativeFilterPath(session.pathResolver, directory.path)
         val dirAbsolutePath = directory.path
 
-        val enabledRules = settings.state.filterRules.filter { it.enabled }
-        val includePathRules = enabledRules.filter {
-            it.action == CopyFileContentSettings.FilterAction.INCLUDE &&
-            it.type == CopyFileContentSettings.FilterType.PATH
-        }
-        val excludePathRules = enabledRules.filter {
-            it.action == CopyFileContentSettings.FilterAction.EXCLUDE &&
-            it.type == CopyFileContentSettings.FilterType.PATH
-        }
+        val includePathRules = session.includePathRules
+        val excludePathRules = session.excludePathRules
 
         // Check excludes first
-        if (settings.state.useExcludeFilters && excludePathRules.isNotEmpty()) {
+        if (session.useExcludeFilters && excludePathRules.isNotEmpty()) {
             val isExcluded = excludePathRules.any { rule ->
                 if (PathRuleMatcher.isAbsolutePath(rule.value)) {
                     PathRuleMatcher.matchesPath(dirAbsolutePath, rule.value)
@@ -526,7 +523,7 @@ class CopyFileContentAction : AnAction() {
         }
 
         // Check includes if specified
-        if (settings.state.useIncludeFilters && includePathRules.isNotEmpty()) {
+        if (session.useIncludeFilters && includePathRules.isNotEmpty()) {
             val shouldProcess = includePathRules.any { rule ->
                 if (PathRuleMatcher.isAbsolutePath(rule.value)) {
                     PathRuleMatcher.overlapsDirectory(dirAbsolutePath, rule.value)
@@ -565,7 +562,17 @@ class CopyFileContentAction : AnAction() {
     @IdeBoundCode
     private fun isBinaryFile(file: VirtualFile): Boolean = file.fileType.isBinary
     
-    private fun matchesPattern(fileName: String, pattern: String): Boolean {
+    /** Uncached entry point; kept because `CopyFileContentInternalTest` calls it by reflection. */
+    private fun matchesPattern(fileName: String, pattern: String): Boolean =
+        matchesPattern(fileName, pattern, null)
+
+    /**
+     * [cache] memoises the compiled pattern per copy, keyed by the raw pattern string.
+     * Only successful compiles are cached — an invalid pattern still falls back to
+     * contains on every call, exactly as before.
+     */
+    private fun matchesPattern(fileName: String, pattern: String, cache: MutableMap<String, Regex>?): Boolean {
+        cache?.get(pattern)?.let { return fileName.matches(it) }
         return try {
             // Convert wildcard pattern to regex if needed
             val regexPattern = if (pattern.contains("*") || pattern.contains("?")) {
@@ -575,11 +582,33 @@ class CopyFileContentAction : AnAction() {
             } else {
                 pattern
             }
-            fileName.matches(Regex(regexPattern))
+            val regex = Regex(regexPattern)
+            cache?.put(pattern, regex)
+            fileName.matches(regex)
         } catch (e: Exception) {
             // If pattern is invalid, try simple contains match
             fileName.contains(pattern)
         }
+    }
+
+    /**
+     * Number of maximal non-whitespace runs — numerically identical to the old
+     * `split("\\s+".toRegex()).filter { it.isNotEmpty() }.size` but allocation-free.
+     * The separator set is Kotlin/JVM `\s`, i.e. ASCII only; do NOT swap in
+     * [Char.isWhitespace], which is Unicode and would count differently.
+     */
+    private fun countWords(text: String): Int {
+        var words = 0
+        var inWord = false
+        for (c in text) {
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\u000B' || c == '\u000C' || c == '\r') {
+                inWord = false
+            } else if (!inWord) {
+                inWord = true
+                words++
+            }
+        }
+        return words
     }
 
     companion object {
@@ -630,9 +659,28 @@ class CopyFileContentAction : AnAction() {
         val copiedFilePaths: MutableSet<String> = mutableSetOf(),
         val externalLibraryHandler: ExternalLibraryHandler,
         val pathResolver: ClipboardPathResolver,
+        // The whole filter configuration is snapshotted at copy start — both the
+        // toggles and the rules. Reading the toggles live while the rules were frozen
+        // would be incoherent: applying "enable filters + exclude *.pem" mid-copy would
+        // turn filtering on against an empty rule set and copy the very files it excludes.
+        val useFilters: Boolean = false,
+        val useIncludeFilters: Boolean = false,
+        val useExcludeFilters: Boolean = false,
+        // Enabled rules, partitioned once per copy; the PATH-only subsets are what the
+        // directory filter needs. Compiled patterns are memoised by raw pattern string.
+        val includeRules: List<CopyFileContentSettings.FilterRule> = emptyList(),
+        val excludeRules: List<CopyFileContentSettings.FilterRule> = emptyList(),
+        val includePathRules: List<CopyFileContentSettings.FilterRule> =
+            includeRules.filter { it.type == CopyFileContentSettings.FilterType.PATH },
+        val excludePathRules: List<CopyFileContentSettings.FilterRule> =
+            excludeRules.filter { it.type == CopyFileContentSettings.FilterType.PATH },
+        val patternCache: MutableMap<String, Regex> = mutableMapOf(),
         var fileCount: Int = 0,
         var skippedFileSizeCount: Int = 0,
-        var fileLimitReached: Boolean = false
+        var fileLimitReached: Boolean = false,
+        var totalChars: Int = 0,
+        var totalLines: Int = 0,
+        var totalWords: Int = 0
     )
 
     @IdeBoundCode

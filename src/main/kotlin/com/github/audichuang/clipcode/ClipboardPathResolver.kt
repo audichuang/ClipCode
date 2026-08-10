@@ -46,6 +46,10 @@ class ClipboardPathResolver private constructor(
 
     companion object {
         private val DETACHED_ABSOLUTE_PATH_ANCHORS = setOf("node_modules")
+        private val DUPLICATE_SEPARATORS = Regex("/+")
+        private val WINDOWS_DRIVE_ROOT = Regex("^[A-Za-z]:/$")
+        private val WINDOWS_STYLE_PATH = Regex("^[A-Za-z]:($|/.*)")
+        private val WINDOWS_ABSOLUTE_PATH = Regex("^[A-Za-z]:/.*")
 
         fun fromProject(project: Project): ClipboardPathResolver {
             val projectBasePath = ProjectPathRoots.primaryRootPath(project)
@@ -129,12 +133,12 @@ class ClipboardPathResolver private constructor(
         }
 
         private fun normalizeSystemPath(path: String): String =
-            trimTrailingSeparator(path.replace('\\', '/').replace(Regex("/+"), "/").trim())
+            trimTrailingSeparator(path.replace('\\', '/').replace(DUPLICATE_SEPARATORS, "/").trim())
 
         private fun trimTrailingSeparator(path: String): String =
             when {
                 path == "/" -> path
-                path.matches(Regex("^[A-Za-z]:/$")) -> path
+                path.matches(WINDOWS_DRIVE_ROOT) -> path
                 else -> path.trimEnd('/')
             }
 
@@ -167,7 +171,7 @@ class ClipboardPathResolver private constructor(
         }
 
         private fun isWindowsStylePath(path: String): Boolean =
-            path.matches(Regex("^[A-Za-z]:($|/.*)"))
+            path.matches(WINDOWS_STYLE_PATH)
     }
 
     fun roots(): List<String> = orderedRoots.map { normalizePathString(it.path.toString()) }
@@ -489,7 +493,7 @@ class ClipboardPathResolver private constructor(
     }
 
     private fun normalizePathString(path: String): String =
-        trimTrailingSeparator(path.replace('\\', '/').replace(Regex("/+"), "/").trim())
+        trimTrailingSeparator(path.replace('\\', '/').replace(DUPLICATE_SEPARATORS, "/").trim())
 
     private fun pathLookupKey(path: String): String {
         val normalizedPath = normalizePathString(path)
@@ -497,23 +501,23 @@ class ClipboardPathResolver private constructor(
     }
 
     private fun sanitizeRelativePath(path: String): String? {
-        val normalizedPath = path.trim().replace('\\', '/').replace(Regex("/+"), "/").trimStart('/')
+        val normalizedPath = path.trim().replace('\\', '/').replace(DUPLICATE_SEPARATORS, "/").trimStart('/')
         val segments = normalizedPath.split('/')
             .filter { segment -> segment.isNotEmpty() && segment != "." }
         if (segments.isEmpty()) {
             return ""
         }
-        if (segments.any { segment -> segment == ".." || segment.contains(Regex("[<>:\"|?*]")) }) {
+        if (segments.any { segment -> segment == ".." || segment.any { it in "<>:\"|?*" } }) {
             return null
         }
         return segments.joinToString("/")
     }
 
     private fun isAbsolutePath(path: String): Boolean =
-        path.startsWith("/") || path.matches(Regex("^[A-Za-z]:/.*"))
+        path.startsWith("/") || path.matches(WINDOWS_ABSOLUTE_PATH)
 
     private fun isWindowsStylePath(path: String): Boolean =
-        path.matches(Regex("^[A-Za-z]:($|/.*)"))
+        path.matches(WINDOWS_STYLE_PATH)
 
     private fun segmentsMatch(left: String, right: String, windowsStylePath: Boolean): Boolean =
         left.equals(right, ignoreCase = windowsStylePath)
