@@ -57,16 +57,28 @@ Kotlin-side pins for the shared invariants:
 assume older 2024.x builds.
 
 `./gradlew build` runs the suite under `src/test/kotlin/`, so a red test is a
-`BUILD FAILED`. Judge pass/fail by the `BUILD SUCCESSFUL` / `N failed` text. Pure
-logic should have unit tests; UI and git4idea-runtime paths that can't run headless
-are verified manually via `./gradlew runIde`, scripted in `TESTING_GUIDE.md` (which
-states its own scope).
+`BUILD FAILED`. Judge pass/fail by the `BUILD SUCCESSFUL` / `N failed` text.
+**Running it locally is the only thing that ever runs these tests** — `release.yml`
+is this repo's only workflow and it runs `buildPlugin signPlugin`, never `build`,
+so a tag push says nothing about the suite. Pure logic should have unit tests; UI
+and git4idea-runtime paths that can't run headless are verified manually via
+`./gradlew runIde`, scripted in `TESTING_GUIDE.md` (which states its own scope).
 
-## Release (tag-triggered → JetBrains Marketplace)
+## Release (tag-triggered → GitHub Release zip)
 
-Releases come off `main` (feature work on `dev`). Pushing a `v<version>` tag runs
-`.github/workflows/release.yml`: build → **signPlugin** (certificate secrets) →
-GitHub Release → publish to JetBrains Marketplace. Two non-obvious rules:
+Releases come off `main` (feature work on `dev`). **Users install the
+`ClipCode-<version>.zip` attached to the GitHub Release by hand — this plugin is
+not delivered through the JetBrains Marketplace.** A release is therefore finished
+when `gh release view v<version> --json assets` shows the zip, **not** when the
+workflow goes green.
+
+Pushing a `v<version>` tag runs `.github/workflows/release.yml`: build → signPlugin
+→ GitHub Release → publish to JetBrains Marketplace. The repo has no Actions secrets
+at all, so `signPlugin` is SKIPPED and the final publish fails on every release so
+far (`'token' property must be specified`) — expected, not a regression. **Don't
+propose adding the secrets or deleting that step unless the owner raises it first.**
+
+Two non-obvious rules:
 
 - **The version is `pluginVersion` in `gradle.properties` only.** `build.gradle.kts`
   injects it (`version = properties("pluginVersion")`) and `patchPluginXml` writes
