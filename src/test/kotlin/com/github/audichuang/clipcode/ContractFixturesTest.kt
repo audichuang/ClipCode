@@ -20,7 +20,7 @@ import kotlin.test.assertEquals
  */
 class ContractFixturesTest {
     private companion object {
-        const val EXPECTED_FIXTURES_SHA = "397f13931fdcdef10c14e525051b80216b192bf2403216240a68eaf82f48526d"
+        const val EXPECTED_FIXTURES_SHA = "fb6749cbfae24975a4eb3a8e59d180ef53239dc70dfe3afe00423530c1bb51d0"
         const val RESOURCE = "/clipboard-contract.json"
     }
 
@@ -41,7 +41,14 @@ class ContractFixturesTest {
     private data class FxFile(val path: String, val content: String?, val changeType: String?, val skippedReason: String?)
     private data class ParseCase(val name: String, val headerFormat: String, val input: String, val expected: List<FxEntry>)
     private data class FxEntry(val path: String, val content: String, val changeTypes: List<String>)
-    private data class TokenCase(val name: String, val text: String, val tokens: Int)
+    private data class TokenCase(
+        val name: String,
+        val text: String,
+        val chars: Int,
+        val lines: Int,
+        val words: Int,
+        val tokens: Int
+    )
 
     private val rawFixtures: ByteArray =
         javaClass.getResourceAsStream(RESOURCE)?.readBytes()
@@ -86,14 +93,20 @@ class ContractFixturesTest {
     }
 
     /**
-     * The "~N tokens" in the copy notification must be the SAME number in both tools
-     * for the same clipboard text. The VS Code mirror (test/contract.test.ts) asserts
-     * these exact values against the same frozen file, so a whitespace-class or
-     * punctuation-set drift on either side fails here.
+     * Every number in the copy notification — characters, lines, words and the token
+     * estimate — must be the SAME in both tools for the same clipboard text. The VS
+     * Code mirror (test/contract.test.ts) asserts these exact values against the same
+     * frozen file, so a whitespace-class, punctuation-set, line-counting or
+     * UTF-16-length drift on either side fails here.
      */
     @Test
-    fun `token estimates match the golden counts for every case`() {
+    fun `payload statistics match the golden counts for every case`() {
         fixtures.tokenCases.forEach { case ->
+            assertEquals(
+                TokenEstimator.Stats(case.chars, case.lines, case.words, case.tokens),
+                TokenEstimator.stats(case.text),
+                "stats mismatch: ${case.name}"
+            )
             assertEquals(case.tokens, TokenEstimator.estimate(case.text), "token mismatch: ${case.name}")
         }
     }

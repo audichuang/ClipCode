@@ -34,14 +34,17 @@ Kotlin-side pins for the shared invariants:
 
 - Kotlin regex `\s` is already ASCII, so the parser/formatter need no explicit class
   (the TS side pins an `ASCII_WS` class to match this behaviour). `TokenEstimator.kt`
-  spells the ASCII set out anyway — same semantics, but it keeps the two token
-  regexes visibly identical to the eye.
+  spells the ASCII set out anyway — same semantics, but it keeps the two scans
+  visibly identical to the eye.
 - `$FILE_PATH` substitution uses `String.replace` (literal, not regex).
 - Parsing splits on `splitLines` — a `\r?\n` regex, **never** `String.lines()`.
-- The copy notification's token count is a cross-tool contract too — see the
-  work-root `AGENTS.md`. Every path that puts a payload on the clipboard must report
-  it via `CopyFileContentAction.showPayloadNotification`, so size colouring is
-  identical in both tools.
+- The copy notification's four statistics (characters / lines / words / tokens) are
+  a cross-tool contract too — see the work-root `AGENTS.md`. They are derived from
+  the payload string by `TokenEstimator.stats` and **nowhere else**: never re-add
+  per-file counters to `CopySession`, which is how `Total characters` came to exclude
+  headers and blank separator lines. Every path that puts a payload on the clipboard
+  must report it via `CopyFileContentAction.showPayloadNotification`, so both the
+  numbers and the size colouring are identical in both tools.
 
 ## Build / run
 

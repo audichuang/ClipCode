@@ -445,82 +445,154 @@
     {
       "name": "empty string",
       "text": "",
+      "chars": 0,
+      "lines": 0,
+      "words": 0,
       "tokens": 0
     },
     {
       "name": "ascii whitespace only",
       "text": " \t\n\u000b\f\r",
+      "chars": 6,
+      "lines": 2,
+      "words": 0,
       "tokens": 0
     },
     {
       "name": "plain words",
       "text": "hello world",
+      "chars": 11,
+      "lines": 1,
+      "words": 2,
       "tokens": 2
     },
     {
       "name": "structural punctuation attaches to its word",
       "text": "foo(bar);",
+      "chars": 9,
+      "lines": 1,
+      "words": 1,
       "tokens": 4
     },
     {
       "name": "every punctuation char counts",
       "text": "(){}[],;",
+      "chars": 8,
+      "lines": 1,
+      "words": 1,
       "tokens": 9
     },
     {
       "name": "U+3000 ideographic space does NOT split",
       "text": "中　文",
+      "chars": 3,
+      "lines": 1,
+      "words": 1,
       "tokens": 1
     },
     {
       "name": "U+00A0 no-break space does NOT split",
       "text": "a b",
+      "chars": 3,
+      "lines": 1,
+      "words": 1,
       "tokens": 1
     },
     {
       "name": "U+FEFF BOM does NOT split",
       "text": "a﻿b",
+      "chars": 3,
+      "lines": 1,
+      "words": 1,
       "tokens": 1
     },
     {
       "name": "U+2028 / U+2029 line+paragraph separators do NOT split",
       "text": "a b c",
+      "chars": 5,
+      "lines": 1,
+      "words": 1,
       "tokens": 1
     },
     {
       "name": "U+2002 / U+200A en+hair spaces do NOT split",
       "text": "a b c",
+      "chars": 5,
+      "lines": 1,
+      "words": 1,
       "tokens": 1
     },
     {
       "name": "U+1680 / U+202F / U+205F do NOT split",
       "text": "a b c d",
+      "chars": 7,
+      "lines": 1,
+      "words": 1,
       "tokens": 1
     },
     {
       "name": "vertical tab and form feed DO split",
       "text": "a\u000bb\fc",
+      "chars": 5,
+      "lines": 1,
+      "words": 3,
       "tokens": 3
     },
     {
       "name": "CRLF splits once, not twice",
       "text": "a\r\nb",
+      "chars": 4,
+      "lines": 2,
+      "words": 2,
       "tokens": 2
     },
     {
       "name": "lone CR splits",
       "text": "a\rb",
+      "chars": 3,
+      "lines": 1,
+      "words": 2,
       "tokens": 2
     },
     {
       "name": "U+001C-U+001F file/group/record/unit separators do NOT split",
       "text": "a\u001cb\u001db\u001eb\u001fb",
+      "chars": 9,
+      "lines": 1,
+      "words": 1,
       "tokens": 1
     },
     {
       "name": "realistic payload: root line, header, CJK comment, code",
       "text": "// clipcode-root: myrepo\n\n// file: src/a.ts\n// 這是　中文註解\nconst x = foo(bar, baz);\n",
+      "chars": 80,
+      "lines": 6,
+      "words": 13,
       "tokens": 17
+    },
+    {
+      "name": "astral char counts as two UTF-16 code units",
+      "text": "👍",
+      "chars": 2,
+      "lines": 1,
+      "words": 1,
+      "tokens": 1
+    },
+    {
+      "name": "trailing newline still counts the final empty line",
+      "text": "a\nb\n",
+      "chars": 4,
+      "lines": 3,
+      "words": 2,
+      "tokens": 2
+    },
+    {
+      "name": "CRLF counts one line break, lone CR counts none",
+      "text": "a\r\nb\rc",
+      "chars": 6,
+      "lines": 2,
+      "words": 3,
+      "tokens": 3
     }
   ]
 }
