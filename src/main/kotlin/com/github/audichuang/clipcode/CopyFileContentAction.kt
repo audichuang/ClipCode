@@ -212,10 +212,7 @@ class CopyFileContentAction : AnAction() {
             text = text,
             fileCount = session.fileCount,
             skippedFileSizeCount = session.skippedFileSizeCount,
-            fileLimitReached = session.fileLimitReached,
-            totalChars = session.totalChars,
-            totalLines = session.totalLines,
-            totalWords = session.totalWords
+            fileLimitReached = session.fileLimitReached
         )
     }
 
@@ -245,28 +242,20 @@ class CopyFileContentAction : AnAction() {
             else -> "${result.fileCount} files copied."
         }
 
-        val statisticsBody = """
-            Total characters: ${result.totalChars}<br>
-            Total lines: ${result.totalLines}<br>
-            Total words: ${result.totalWords}<br>
-        """.trimIndent()
-
-        showPayloadNotification(statisticsBody, result.text, project)
+        showPayloadNotification("", result.text, project)
         showNotification("<html><b>$fileCountMessage</b></html>", NotificationType.INFORMATION, project)
     }
 
-    // No totalTokens field on purpose: the token count is a function of [text] alone
-    // (headers, pre/post text and the clipcode-root line included — that is what gets
-    // pasted, and what VS Code counts). Carrying it as a separate field is what let it
-    // drift into a per-file sum the two tools never agreed on.
+    // No statistics fields on purpose: chars/lines/words/tokens are all a function of
+    // [text] alone (headers, pre/post text and the clipcode-root line included — that is
+    // what gets pasted, and what VS Code counts), so they are derived once in
+    // [showPayloadNotification]. Carrying them here is what let them drift into per-file
+    // sums the two tools never agreed on.
     private data class CopyPayload(
         val text: String,
         val fileCount: Int,
         val skippedFileSizeCount: Int,
-        val fileLimitReached: Boolean,
-        val totalChars: Int,
-        val totalLines: Int,
-        val totalWords: Int
+        val fileLimitReached: Boolean
     )
 
     // 每個檔案各取一次 read lock，讓 EDT 的 write action 可以在檔案之間插隊
@@ -278,20 +267,9 @@ class CopyFileContentAction : AnAction() {
         addExtraLine: Boolean,
         customHeaderGenerator: ((VirtualFile, String) -> String)? = null
     ) {
-        val content = ReadAction.compute<String, RuntimeException> {
+        ReadAction.compute<String, RuntimeException> {
             processFileUnderReadLock(file, fileContents, session, settings, addExtraLine, customHeaderGenerator)
         }
-        // Counted OUTSIDE the read lock: these are two more full scans of the file's
-        // text, and holding the lock across them would make an EDT write action (the
-        // user typing) wait on this file's statistics — the very thing the per-file
-        // lock granularity above exists to avoid.
-        //
-        // Accumulated per file rather than over the concatenated subtree text, so a
-        // folder copy now reports the same totals as copying those files one by one
-        // (the old concatenated count lost one line per file boundary).
-        session.totalChars += content.length
-        session.totalLines += content.count { it == '\n' } + (if (content.isNotEmpty()) 1 else 0)
-        session.totalWords += countWords(content)
     }
 
     private fun processFileUnderReadLock(
@@ -591,26 +569,6 @@ class CopyFileContentAction : AnAction() {
         }
     }
 
-    /**
-     * Number of maximal non-whitespace runs — numerically identical to the old
-     * `split("\\s+".toRegex()).filter { it.isNotEmpty() }.size` but allocation-free.
-     * The separator set is Kotlin/JVM `\s`, i.e. ASCII only; do NOT swap in
-     * [Char.isWhitespace], which is Unicode and would count differently.
-     */
-    private fun countWords(text: String): Int {
-        var words = 0
-        var inWord = false
-        for (c in text) {
-            if (c == ' ' || c == '\t' || c == '\n' || c == '\u000B' || c == '\u000C' || c == '\r') {
-                inWord = false
-            } else if (!inWord) {
-                inWord = true
-                words++
-            }
-        }
-        return words
-    }
-
     companion object {
         /**
          * Copy notification carrying the payload's token estimate, coloured by size.
@@ -621,19 +579,25 @@ class CopyFileContentAction : AnAction() {
          * through here, otherwise an oversized copy is red in one tool and silent in
          * the other.
          *
-         * [bodyHtml] is the path-specific part; the token line is appended to it.
+         * [bodyHtml] is the path-specific part; the four statistics lines are appended to it.
          */
         @IdeBoundCode
         fun showPayloadNotification(bodyHtml: String, payloadText: String, project: Project?) {
-            val tokens = TokenEstimator.estimate(payloadText)
+            val stats = TokenEstimator.stats(payloadText)
             val (type, warning) = when {
-                tokens >= TokenEstimator.DANGER_THRESHOLD ->
+                stats.tokens >= TokenEstimator.DANGER_THRESHOLD ->
                     NotificationType.ERROR to "<br><b>Over ${grouped(TokenEstimator.DANGER_THRESHOLD)} tokens.</b>"
-                tokens >= TokenEstimator.WARN_THRESHOLD ->
+                stats.tokens >= TokenEstimator.WARN_THRESHOLD ->
                     NotificationType.WARNING to "<br><b>Over ${grouped(TokenEstimator.WARN_THRESHOLD)} tokens.</b>"
                 else -> NotificationType.INFORMATION to ""
             }
-            showNotification("<html>${bodyHtml}Estimated tokens: ${grouped(tokens)}$warning</html>", type, project)
+            // All four derived from [payloadText] here, so EVERY copy path reports the
+            // same four numbers — Git and PR copies used to show the token line alone.
+            val statistics = "Total characters: ${grouped(stats.chars)}<br>" +
+                "Total lines: ${grouped(stats.lines)}<br>" +
+                "Total words: ${grouped(stats.words)}<br>" +
+                "Estimated tokens: ${grouped(stats.tokens)}"
+            showNotification("<html>$bodyHtml$statistics$warning</html>", type, project)
         }
 
         /**
@@ -677,10 +641,7 @@ class CopyFileContentAction : AnAction() {
         val patternCache: MutableMap<String, Regex> = mutableMapOf(),
         var fileCount: Int = 0,
         var skippedFileSizeCount: Int = 0,
-        var fileLimitReached: Boolean = false,
-        var totalChars: Int = 0,
-        var totalLines: Int = 0,
-        var totalWords: Int = 0
+        var fileLimitReached: Boolean = false
     )
 
     @IdeBoundCode
