@@ -78,6 +78,14 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.2.4 - Copy statistics that describe the clipboard</h2>
+            <ul>
+              <li><b>Fixed:</b> "Total characters", "Total lines" and "Total words" now measure the whole clipboard payload instead of only the raw file contents. They previously summed each file on its own, silently leaving out every <code>// file:</code> header, the blank line between files, the pre/post text and the root metadata line &mdash; everything that gets pasted but was never counted (about 2.8% of a five-file copy, roughly 1,500 characters at the 30-file limit). The estimated token count already measured the payload, so a single notification was reporting two different things</li>
+              <li><b>Fixed:</b> Git and PR panel copies now report all four statistics; they previously showed the estimated token count alone</li>
+              <li><b>Changed:</b> All four numbers are now shared with the Snipcode VS Code extension, which gained the three it was missing. The two tools report identical characters, lines, words and tokens for the same copy, pinned by the shared cross-tool test fixture and verified against 300,000 randomised inputs</li>
+              <li>The four statistics come from one linear scan of the payload, so the notification costs one pass instead of several per-file ones</li>
+            </ul>
+
             <h2>Version 1.2.3 - Faster, leaner copying</h2>
             <ul>
               <li><b>Fixed:</b> Copying a folder no longer keeps several copies of its contents in memory. Every directory level was concatenating its whole subtree's text — so memory grew with the content size multiplied by the folder depth — purely to produce three numbers for the copy notification. Those are now counted per file as it is read</li>
