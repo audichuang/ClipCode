@@ -278,6 +278,63 @@ class GitSelectionCollectorTest : BasePlatformTestCase() {
         return untracked.toSet() to gitStatusNodes.toSet()
     }
 
+    fun testHistoricalChangeWithSamePathAsLocalChangeStaysHistorical() {
+        val historical = modificationChange("${project.basePath}/same.kt")
+        val local = modificationChange("${project.basePath}/same.kt")
+        val tree = changesTreeWithSelectedChange(project, historical)
+        val event = actionEvent(SimpleDataContext.builder()
+            .add(CommonDataKeys.PROJECT, project)
+            .add(PlatformDataKeys.CONTEXT_COMPONENT, tree)
+            .build())
+        val selection = GitSelectionCollector(logger) { listOf(local) }.collect(event)
+        assertEquals(SelectionSource.GIT_LOG_OR_HISTORY, selection.source)
+    }
+
+    fun testLargeHistorySelectionReadsLocalSnapshotOnce() {
+        val changes = List(500) { modificationChange("${project.basePath}/history/$it.kt") }
+        val local = List(2000) { modificationChange("${project.basePath}/local/$it.kt") }
+        var snapshots = 0
+        val collector = GitSelectionCollector(logger) { snapshots++; local }
+        val tree = changesTreeWithSelectedChange(project, changes.first())
+        val event = actionEvent(SimpleDataContext.builder()
+            .add(CommonDataKeys.PROJECT, project)
+            .add(PlatformDataKeys.CONTEXT_COMPONENT, tree)
+            .add(VcsDataKeys.SELECTED_CHANGES, changes.toTypedArray())
+            .build())
+        val start = System.nanoTime()
+        val selection = collector.collect(event)
+        println("GIT_SELECTION_BENCH selected=500 local=2000 snapshots=$snapshots ms=${(System.nanoTime() - start) / 1_000_000.0}")
+        assertEquals(500, selection.changes.size)
+        assertEquals(SelectionSource.GIT_LOG_OR_HISTORY, selection.source)
+        assertTrue(snapshots <= 1, "Local change snapshot must not be rebuilt per selected file: $snapshots")
+    }
+
+    fun testDeletedHistorySelectionDoesNotIncludeFocusedEditorFile() {
+        val path = VcsUtil.getFilePath("${project.basePath}/deleted.kt", false)
+        val deleted = Change(TestRevision("old", path, "old-sha"), null)
+        val focusedFile = myFixture.addFileToProject("unrelated.kt", "do not copy").virtualFile
+        val tree = changesTreeWithSelectedChange(project, deleted)
+        val event = actionEvent(SimpleDataContext.builder()
+            .add(CommonDataKeys.PROJECT, project)
+            .add(PlatformDataKeys.CONTEXT_COMPONENT, tree)
+            .add(CommonDataKeys.VIRTUAL_FILE, focusedFile)
+            .build())
+        val selection = GitSelectionCollector(logger).collect(event)
+        assertEquals(listOf(deleted), selection.changes)
+        assertTrue(selection.untrackedPaths.isEmpty(), "A focused editor file is not part of the selected Git change")
+    }
+
+    fun testCurrentRevisionWithoutCommitHintIsLocal() {
+        val path = VcsUtil.getFilePath("${project.basePath}/local.kt", false)
+        val change = Change(TestRevision("before", path, "head-sha"),
+            com.intellij.openapi.vcs.changes.CurrentContentRevision(path))
+        val event = actionEvent(SimpleDataContext.builder()
+            .add(CommonDataKeys.PROJECT, project)
+            .add(VcsDataKeys.SELECTED_CHANGES, arrayOf(change))
+            .build())
+        assertEquals(SelectionSource.LOCAL_CHANGES_OR_COMMIT_UI, GitSelectionCollector(logger).collect(event).source)
+    }
+
     // === helpers ===
 
     private fun actionEvent(dataContext: DataContext): AnActionEvent =

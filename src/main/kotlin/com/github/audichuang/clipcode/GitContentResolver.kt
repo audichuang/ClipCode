@@ -1,6 +1,10 @@
 package com.github.audichuang.clipcode
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.fileTypes.UnknownFileType
+import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vcs.LocalFilePath
 import com.intellij.openapi.vcs.changes.Change
@@ -8,11 +12,13 @@ import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vcs.changes.ContentRevision
 import com.intellij.openapi.vcs.changes.CurrentContentRevision
 import com.intellij.openapi.vcs.history.VcsRevisionNumber
+import com.intellij.openapi.vcs.impl.ContentRevisionCache
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import git4idea.GitContentRevision
 import git4idea.GitRevisionNumber
 import git4idea.GitUtil
+import git4idea.index.GitIndexUtil
 import java.io.File
 import com.intellij.openapi.vcs.VcsException
 
@@ -37,18 +43,19 @@ class GitContentResolver(
         selection: GitSelectionCollector.Selection
     ): List<ResolvedGitEntry> {
         val entriesByPath = linkedMapOf<String, ResolvedGitEntry>()
+        val statusPaths = selection.gitStatusNodes.mapTo(hashSetOf()) { it.path }
 
         selection.changes.forEach { change ->
+            ProgressManager.checkCanceled()
             val filePath = change.afterRevision?.file?.path ?: change.beforeRevision?.file?.path ?: return@forEach
+            if (filePath in entriesByPath || filePath in statusPaths) return@forEach
             val changeType = ChangeTypeLabel.fromChangeType(change.type) ?: ChangeTypeLabel.MODIFIED
-            entriesByPath.putIfAbsent(
-                filePath,
-                resolveChange(project, change, filePath, changeType, selection.source)
-            )
+            entriesByPath[filePath] = resolveChange(project, change, filePath, changeType, selection.source)
         }
 
         selection.untrackedPaths.forEach { untrackedPath ->
-            if (entriesByPath.containsKey(untrackedPath)) {
+            ProgressManager.checkCanceled()
+            if (entriesByPath.containsKey(untrackedPath) || untrackedPath in statusPaths) {
                 return@forEach
             }
 
@@ -63,6 +70,7 @@ class GitContentResolver(
         }
 
         selection.gitStatusNodes.forEach { statusInfo ->
+            ProgressManager.checkCanceled()
             if (entriesByPath.containsKey(statusInfo.path)) {
                 return@forEach
             }
@@ -75,12 +83,16 @@ class GitContentResolver(
                 else -> ChangeTypeLabel.MODIFIED
             }
 
-            if (changeType == ChangeTypeLabel.DELETED) {
+            if (statusInfo.isStaged || changeType == ChangeTypeLabel.DELETED) {
                 entriesByPath[statusInfo.path] = ResolvedGitEntry(
                     changeType = changeType,
                     filePath = statusInfo.path,
                     virtualFile = null,
-                    contentFromRevision = resolveDeletedContent(project, statusInfo.path)
+                    // Staged: index after-content, or HEAD before-content for deletions.
+                    // Unstaged deletion: its before-content is the index, not HEAD.
+                    contentFromRevision = getFileContentFromGit(
+                        project, statusInfo.path, fromIndex = changeType != ChangeTypeLabel.DELETED || !statusInfo.isStaged
+                    )
                 )
             } else {
                 val virtualFile = findFile(statusInfo.path)
@@ -174,6 +186,8 @@ class GitContentResolver(
     private fun readRevisionContent(revision: ContentRevision?): String? =
         try {
             revision?.content
+        } catch (e: ProcessCanceledException) {
+            throw e
         } catch (e: Exception) {
             logger.warn("Failed to read Git content revision", e)
             null
@@ -207,11 +221,10 @@ class GitContentResolver(
     }
 
     @IdeBoundCode
-    private fun getFileContentFromGit(project: Project, absolutePath: String): String? {
+    private fun getFileContentFromGit(project: Project, absolutePath: String, fromIndex: Boolean = false): String? {
         return try {
-            val parentPath = File(absolutePath).parent ?: return null
-            val parentDir = findFile(parentPath) ?: return null
-            val repository = GitUtil.getRepositoryManager(project).getRepositoryForFile(parentDir) ?: return null
+            val filePath = LocalFilePath(File(absolutePath).toPath(), false)
+            val repository = GitUtil.getRepositoryManager(project).getRepositoryForFile(filePath) ?: return null
             val normalizedAbsolutePath = absolutePath.replace('\\', '/')
             val normalizedRepositoryRoot = repository.root.path.replace('\\', '/')
             if (normalizedAbsolutePath != normalizedRepositoryRoot &&
@@ -220,14 +233,25 @@ class GitContentResolver(
                 return null
             }
 
-            val filePath = LocalFilePath(File(absolutePath).toPath(), false)
-            val contentRevision = GitContentRevision.createRevision(filePath, GitRevisionNumber.HEAD, project)
-            contentRevision.content
+            if (fromIndex) {
+                val isBinary = ApplicationManager.getApplication().runReadAction<Boolean> {
+                    val fileType = filePath.fileType
+                    // A deleted source file can have UnknownFileType without a VFS file.
+                    fileType.isBinary && (fileType != UnknownFileType.INSTANCE || filePath.virtualFile != null)
+                }
+                if (isBinary) return null
+                val relativePath = normalizedAbsolutePath.removePrefix("$normalizedRepositoryRoot/")
+                ContentRevisionCache.getAsString(GitIndexUtil.read(repository, ":$relativePath"), filePath, null)
+            } else {
+                GitContentRevision.createRevision(filePath, GitRevisionNumber.HEAD, project).content
+            }
         } catch (e: VcsException) {
-            logger.warn("Failed to read deleted file content via Git API", e)
+            logger.warn("Failed to read Git content via Git API", e)
             null
+        } catch (e: ProcessCanceledException) {
+            throw e
         } catch (e: Exception) {
-            logger.warn("Unexpected error reading Git HEAD content", e)
+            logger.warn("Unexpected error reading Git content", e)
             null
         }
     }

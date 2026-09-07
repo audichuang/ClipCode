@@ -25,6 +25,8 @@ import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import com.intellij.openapi.vcs.VcsException
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -269,6 +271,216 @@ class CopyRestoreE2ETest : BasePlatformTestCase() {
         assertTrue(result.errors.isEmpty(), "Restore errors: ${result.errors}")
         assertFalse(targetFile.exists())
     }
+
+    fun testStagedSelectionReadsIndexAndUnstagedReadsWorkingTree() {
+        initGitRepo()
+        writeRepoFile("src/Stage.kt", "head")
+        commit("initial")
+        writeRepoFile("src/Stage.kt", "index")
+        runGit("add", "src/Stage.kt")
+        writeRepoFile("src/Stage.kt", "working tree")
+        val local = localChange("src/Stage.kt")
+        val path = File(repoRoot, "src/Stage.kt").absolutePath
+        val staged = localSelection(local).copy(gitStatusNodes = setOf(
+            GitSelectionCollector.GitStatusInfo(path, "MODIFIED", isStaged = true)))
+        val entries = resolver.resolve(project, staged)
+        assertEquals("index", entries.single().contentFromRevision)
+        assertNull(entries.single().virtualFile)
+        assertContains(copyResolvedEntries(entries), "index")
+        val unstaged = staged.copy(gitStatusNodes = setOf(
+            GitSelectionCollector.GitStatusInfo(path, "MODIFIED", isStaged = false)))
+        assertEquals("working tree", com.intellij.openapi.vfs.VfsUtilCore.loadText(
+            resolver.resolve(project, unstaged).single().virtualFile!!))
+    }
+
+    fun testUnstagedDeletionReadsIndexBeforeContent() {
+        initGitRepo()
+        writeRepoFile("src/Deleted.kt", "head")
+        commit("initial")
+        writeRepoFile("src/Deleted.kt", "index before deletion")
+        runGit("add", "src/Deleted.kt")
+        deleteRepoFile("src/Deleted.kt")
+        val selection = GitSelectionCollector.Selection(emptyList(), emptyList(), emptySet(), setOf(
+            GitSelectionCollector.GitStatusInfo(File(repoRoot, "src/Deleted.kt").absolutePath, "DELETED", false)
+        ), SelectionSource.LOCAL_CHANGES_OR_COMMIT_UI)
+        assertEquals("index before deletion", resolver.resolve(project, selection).single().contentFromRevision)
+    }
+
+    fun testGitHistoryBulkReadBenchmark() {
+        initGitRepo()
+        writeRepoFile("README.md", "base")
+        val base = commit("base")
+        val content = "x".repeat(4096)
+        repeat(200) { index ->
+            val file = File(repoRoot, "bulk/$index.txt")
+            file.parentFile.mkdirs()
+            file.writeText("$index:$content")
+        }
+        val head = commit("bulk")
+        val changes = GitChangeUtils.getDiff(project, repoRootVf(), base, head, null).toList()
+        for (count in listOf(50, 200)) {
+            ProjectLevelVcsManager.getInstance(project).contentRevisionCache.clearAll()
+            val selection = GitSelectionCollector.Selection(changes.take(count), emptyList(), emptySet(), emptySet(), SelectionSource.GIT_LOG_OR_HISTORY)
+            repeat(3) { pass ->
+                val start = System.nanoTime()
+                val entries = inBackground { resolver.resolve(project, selection) }
+                val elapsedMs = (System.nanoTime() - start) / 1_000_000.0
+                assertEquals(count, entries.size)
+                entries.forEach { entry ->
+                    val index = File(entry.filePath).nameWithoutExtension
+                    assertEquals("$index:$content", entry.contentFromRevision)
+                    assertNull(entry.virtualFile)
+                }
+                println("GIT_HISTORY_BENCH files=$count bytesPerFile=4096 pass=$pass ms=$elapsedMs")
+            }
+        }
+    }
+
+    fun testPrDiffUsesMergeBaseAndPinsHeadContent() {
+        initGitRepo()
+        writeRepoFile("README.md", "base")
+        commit("base")
+        runGit("branch", "base-branch")
+        writeRepoFile("src/Feature.kt", "feature at selection")
+        commit("feature")
+        val featureBranch = runGit("branch", "--show-current").trim()
+        runGit("checkout", "base-branch")
+        writeRepoFile("base-only.txt", "not part of feature")
+        commit("base advances")
+        runGit("checkout", featureBranch)
+        inBackground { git4idea.GitUtil.getRepositoryManager(project).updateRepository(repoRootVf()) }
+        val changes = inBackground { BranchDiffProvider(logger).diffChanges(project, "base-branch") }
+        assertEquals(listOf("Feature.kt"), changes.map { File(it.afterRevision!!.file.path).name })
+        writeRepoFile("src/Feature.kt", "later HEAD")
+        commit("HEAD advances after selection")
+        val entries = resolver.resolve(project, gitLogSelection(changes.single()))
+        assertEquals("feature at selection", entries.single().contentFromRevision)
+    }
+
+    fun testPrInvalidBaseDoesNotLookLikeEmptyDiff() {
+        initGitRepo()
+        writeRepoFile("README.md", "base")
+        commit("base")
+        inBackground {
+            val manager = git4idea.GitUtil.getRepositoryManager(project)
+            manager.updateRepository(repoRootVf())
+            kotlin.test.assertNotNull(manager.getRepositoryForRoot(repoRootVf()))
+            assertFailsWith<VcsException> {
+                BranchDiffProvider(logger).diffChanges(project, "missing-base-ref")
+            }
+        }
+    }
+
+    fun testPrRemoteFetchUpdatesAheadBehindAgainstLocalRemote() {
+        initGitRepo()
+        writeRepoFile("README.md", "base")
+        commit("base")
+        val branch = runGit("branch", "--show-current").trim()
+        val remote = createTargetRoot("clipcode-test-remote-")
+        val peer = createTargetRoot("clipcode-test-peer-")
+        runGit("init", "--bare", remote.toString())
+        runGit("remote", "add", "origin", remote.toString())
+        runGit("push", "-u", "origin", branch)
+        runGit("clone", "-b", branch, remote.toString(), peer.toString())
+        writeRepoFile("local-only.txt", "local")
+        commit("local ahead")
+        peer.resolve("remote-only.txt").writeText("remote")
+        runGit("-C", peer.toString(), "add", "remote-only.txt")
+        runGit("-C", peer.toString(), "-c", "user.name=ClipCode Test", "-c", "user.email=clipcode-test@example.com",
+            "-c", "commit.gpgsign=false", "commit", "-m", "remote ahead")
+        runGit("-C", peer.toString(), "push", "origin", branch)
+        inBackground { git4idea.GitUtil.getRepositoryManager(project).updateRepository(repoRootVf()) }
+        val provider = BranchDiffProvider(logger)
+        val cached = inBackground { provider.remoteStatus(project, false) }
+        assertEquals(1 to 0, cached.ahead to cached.behind)
+        val start = System.nanoTime()
+        val fetched = inBackground { provider.remoteStatus(project, true) }
+        println("GIT_FETCH_BENCH localRemote=true ms=${(System.nanoTime() - start) / 1_000_000.0}")
+        assertEquals("origin/$branch", fetched.upstream)
+        assertTrue(fetched.fetched)
+        assertEquals(1 to 1, fetched.ahead to fetched.behind)
+        runGit("update-ref", "-d", "refs/remotes/origin/$branch")
+        inBackground {
+            assertFailsWith<VcsException> { provider.remoteStatus(project, false) }
+        }
+    }
+
+    fun testPrFetchWithoutUpstreamStillRefreshesRemotes() {
+        initGitRepo()
+        writeRepoFile("README.md", "base")
+        commit("base")
+        val remote = createTargetRoot("clipcode-test-untracked-remote-")
+        runGit("init", "--bare", remote.toString())
+        runGit("remote", "add", "origin", remote.toString())
+        runGit("push", "origin", "HEAD:main")
+        inBackground { git4idea.GitUtil.getRepositoryManager(project).updateRepository(repoRootVf()) }
+        val status = inBackground { BranchDiffProvider(logger).remoteStatus(project, true) }
+        assertNull(status.upstream)
+        assertTrue(status.fetched, "Refresh must fetch even when the current branch has no upstream")
+    }
+
+    fun testStagedUtf16ContentAndIndexRefresh() {
+        initGitRepo()
+        writeRepoFile("README.md", "base")
+        commit("base")
+        val file = File(repoRoot, "src/編碼 file.txt")
+        file.parentFile.mkdirs()
+        fun stage(text: String) {
+            file.writeBytes(byteArrayOf(0xFF.toByte(), 0xFE.toByte()) + text.toByteArray(Charsets.UTF_16LE))
+            runGit("add", "src/編碼 file.txt")
+            refreshRepoRoot()
+        }
+        stage("你好，暫存內容")
+        val selection = GitSelectionCollector.Selection(emptyList(), emptyList(), emptySet(), setOf(
+            GitSelectionCollector.GitStatusInfo(file.absolutePath, "ADDED", true)
+        ), SelectionSource.LOCAL_CHANGES_OR_COMMIT_UI)
+        assertEquals("你好，暫存內容", inBackground { resolver.resolve(project, selection) }.single().contentFromRevision)
+        stage("新的暫存內容")
+        assertEquals("新的暫存內容", inBackground { resolver.resolve(project, selection) }.single().contentFromRevision)
+    }
+
+    fun testStagedRenameAndDeletionUseCorrectRevision() {
+        initGitRepo()
+        writeRepoFile("src/Old.kt", "original")
+        commit("base")
+        runGit("mv", "src/Old.kt", "src/New.kt")
+        writeRepoFile("src/New.kt", "working tree after rename")
+        val moved = GitSelectionCollector.Selection(emptyList(), emptyList(), emptySet(), setOf(
+            GitSelectionCollector.GitStatusInfo(File(repoRoot, "src/New.kt").absolutePath, "MOVED", true)
+        ), SelectionSource.LOCAL_CHANGES_OR_COMMIT_UI)
+        val entry = inBackground { resolver.resolve(project, moved) }.single()
+        assertEquals(ChangeTypeLabel.MOVED, entry.changeType)
+        assertEquals("original", entry.contentFromRevision)
+        commit("rename")
+        runGit("rm", "src/New.kt")
+        File(repoRoot, "src").deleteRecursively()
+        refreshRepoRoot()
+        val deleted = moved.copy(gitStatusNodes = setOf(
+            GitSelectionCollector.GitStatusInfo(File(repoRoot, "src/New.kt").absolutePath, "DELETED", true)))
+        val deletedEntry = inBackground { resolver.resolve(project, deleted) }.single()
+        assertEquals(ChangeTypeLabel.DELETED, deletedEntry.changeType)
+        assertEquals("working tree after rename", deletedEntry.contentFromRevision)
+    }
+
+    fun testStagedBinaryFileIsNotDecodedAsText() {
+        initGitRepo()
+        writeRepoFile("README.md", "base")
+        commit("base")
+        val file = File(repoRoot, "image.png")
+        file.writeBytes(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
+        runGit("add", "image.png")
+        refreshRepoRoot()
+        val selection = GitSelectionCollector.Selection(emptyList(), emptyList(), emptySet(), setOf(
+            GitSelectionCollector.GitStatusInfo(file.absolutePath, "ADDED", true)
+        ), SelectionSource.LOCAL_CHANGES_OR_COMMIT_UI)
+        assertFalse(inBackground { resolver.resolve(project, selection) }.single().hasContent)
+    }
+
+    private fun <T> inBackground(action: () -> T): T =
+        com.intellij.testFramework.PlatformTestUtil.waitForFuture(
+            com.intellij.openapi.application.ApplicationManager.getApplication()
+                .executeOnPooledThread(java.util.concurrent.Callable { action() }), 30_000
+        )
 
     private fun initGitRepo() {
         repoRoot.mkdirs()

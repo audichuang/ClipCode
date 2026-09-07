@@ -58,6 +58,7 @@ java {
 
 kotlin {
     jvmToolchain(21)
+    compilerOptions.jvmDefault.set(org.jetbrains.kotlin.gradle.dsl.JvmDefaultMode.NO_COMPATIBILITY)
 }
 
 val localIdeSmokePath = providers.gradleProperty("localIdeSmokePath")
@@ -78,6 +79,16 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.2.5 - Reliable Git copying and faster selection</h2>
+            <ul>
+              <li><b>Fixed:</b> Staged files now copy index content instead of working-tree edits. Unstaged deletions use the index before-content; staged deletions use HEAD</li>
+              <li><b>Fixed:</b> Git history selections no longer pick up unrelated editor files or become local changes merely because their paths match</li>
+              <li><b>Improved:</b> Large Git selections read the local-change snapshot once, and duplicate paths no longer trigger repeated revision reads</li>
+              <li><b>Fixed:</b> Cancelled copies stop cleanly. Git content decoding preserves UTF-16 text without adding a BOM and handles renamed files and deleted parent directories</li>
+              <li><b>Fixed:</b> PR comparison failures are reported instead of appearing as empty diffs or a synchronized remote. Refresh also fetches for branches without an upstream</li>
+              <li><b>Compatibility:</b> Removed deprecated API calls and unnecessary Kotlin interface bridges; verified with IntelliJ IDEA 2025.2.6.1 and 2026.2.2</li>
+            </ul>
+
             <h2>Version 1.2.4 - Copy statistics that describe the clipboard</h2>
             <ul>
               <li><b>Fixed:</b> "Total characters", "Total lines" and "Total words" now measure the whole clipboard payload instead of only the raw file contents. They previously summed each file on its own, silently leaving out every <code>// file:</code> header, the blank line between files, the pre/post text and the root metadata line &mdash; everything that gets pasted but was never counted (about 2.8% of a five-file copy, roughly 1,500 characters at the 30-file limit). The estimated token count already measured the payload, so a single notification was reporting two different things</li>

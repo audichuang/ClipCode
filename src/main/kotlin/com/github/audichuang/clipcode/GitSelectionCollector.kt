@@ -4,9 +4,11 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.PlatformDataKeys
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.vcs.VcsDataKeys
 import com.intellij.openapi.vcs.changes.Change
 import com.intellij.openapi.vcs.changes.ChangeListManager
+import com.intellij.openapi.vcs.changes.CurrentContentRevision
 import com.intellij.openapi.vcs.changes.ui.ChangesBrowserNode
 import com.intellij.openapi.vcs.changes.ui.ChangesTree
 import com.intellij.openapi.vfs.VirtualFile
@@ -15,6 +17,8 @@ import com.intellij.vcs.commit.CommitWorkflowUi
 import com.intellij.vcsUtil.VcsUtil
 import git4idea.index.ui.GitFileStatusNode
 import git4idea.index.ui.NodeKind
+import java.util.Collections
+import java.util.IdentityHashMap
 import javax.swing.JTree
 import javax.swing.tree.TreePath
 
@@ -85,7 +89,7 @@ class GitSelectionCollector(
         e.getData(VcsDataKeys.CHANGES)?.forEach(::addChange)
 
         val selectedFiles = getSelectedFiles(e).toList()
-        if (project != null && selectedFiles.isNotEmpty()) {
+        if (project != null && selectedFiles.isNotEmpty() && allChangesMap.isEmpty() && gitStatusNodes.isEmpty()) {
             val changeListManager = ChangeListManager.getInstance(project)
             selectedFiles.forEach { file ->
                 val change = changeListManager.getChange(file)
@@ -138,32 +142,26 @@ class GitSelectionCollector(
         if (changes.isEmpty()) {
             return SelectionSource.UNKNOWN
         }
-
-        if (project != null && component is ChangesTree && changes.any { matchesLocalChange(project, it) }) {
+        if (changes.any { it.afterRevision is CurrentContentRevision }) {
             return SelectionSource.LOCAL_CHANGES_OR_COMMIT_UI
+        }
+
+        if (project != null && component is ChangesTree) {
+            try {
+                // Change.equals compares paths only: a historical revision can have the
+                // same path as a local edit. Snapshot once and compare actual selections.
+                val localChanges = Collections.newSetFromMap(IdentityHashMap<Change, Boolean>())
+                localChanges.addAll(localChangesProvider(project))
+                if (changes.any { it in localChanges }) return SelectionSource.LOCAL_CHANGES_OR_COMMIT_UI
+            } catch (e: ProcessCanceledException) {
+                throw e
+            } catch (e: Exception) {
+                logger.warn("Failed to compare selected Git change with local changes", e)
+            }
         }
 
         return SelectionSource.GIT_LOG_OR_HISTORY
     }
-
-    private fun matchesLocalChange(
-        project: com.intellij.openapi.project.Project,
-        selectedChange: Change
-    ): Boolean =
-        try {
-            val selectedPaths = selectedChange.normalizedPaths()
-            localChangesProvider(project).any { localChange ->
-                localChange == selectedChange || localChange.normalizedPaths().any { it in selectedPaths }
-            }
-        } catch (e: Exception) {
-            logger.warn("Failed to compare selected Git change with local changes", e)
-            false
-        }
-
-    private fun Change.normalizedPaths(): Set<String> =
-        listOfNotNull(afterRevision?.file?.path, beforeRevision?.file?.path)
-            .map { it.replace('\\', '/') }
-            .toSet()
 
     private fun collectGitStatusNode(
         userObject: Any?,
