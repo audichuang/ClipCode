@@ -1,6 +1,8 @@
 package com.github.audichuang.clipcode
 
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.vcs.VcsException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vcs.changes.Change
 import git4idea.GitUtil
@@ -28,6 +30,8 @@ class BranchDiffProvider(private val logger: Logger) {
     private fun firstRepository(project: Project): GitRepository? =
         try {
             GitUtil.getRepositoryManager(project).repositories.firstOrNull()
+        } catch (e: ProcessCanceledException) {
+            throw e
         } catch (e: Exception) {
             logger.warn("Failed to resolve Git repository", e)
             null
@@ -48,28 +52,21 @@ class BranchDiffProvider(private val logger: Logger) {
             upstream?.let { ordered.add(it) }
             ordered.addAll(remoteBranchNames)
             ordered.toList()
+        } catch (e: ProcessCanceledException) {
+            throw e
         } catch (e: Exception) {
             logger.warn("Failed to list candidate base refs", e)
             emptyList()
         }
     }
 
-    // merge-base(baseRef, HEAD)..HEAD 的變更(three-dot semantics):只顯示本分支自己引入的變更,
-    // 不受 baseRef 之後領先的 commit 影響。merge-base 解不出來時退回 baseRef..HEAD(two-dot)。
+    // Three-dot diff must have a common ancestor; failures must not look like an empty diff.
     fun diffChanges(project: Project, baseRef: String): List<Change> {
         val repository = firstRepository(project) ?: return emptyList()
-        return try {
-            val mergeBaseSha = try {
-                GitHistoryUtils.getMergeBase(project, repository.root, baseRef, "HEAD")?.asString()
-            } catch (e: Exception) {
-                logger.warn("Failed to resolve merge base for $baseRef..HEAD, falling back to two-dot diff", e)
-                null
-            }
-            GitChangeUtils.getDiff(repository, mergeBaseSha ?: baseRef, "HEAD", true)?.toList() ?: emptyList()
-        } catch (e: Exception) {
-            logger.warn("Failed to compute diff for $baseRef..HEAD", e)
-            emptyList()
-        }
+        val mergeBaseSha = GitHistoryUtils.getMergeBase(project, repository.root, baseRef, "HEAD")?.asString()
+            ?: throw VcsException("No common ancestor for $baseRef and HEAD")
+        return GitChangeUtils.getDiff(repository, mergeBaseSha, "HEAD", true)?.toList()
+            ?: throw VcsException("Unable to compare $baseRef with HEAD")
     }
 
     // 相對 origin 的新鮮度;doFetch = true 時先背景 fetch
@@ -78,13 +75,11 @@ class BranchDiffProvider(private val logger: Logger) {
 
         val upstream = try {
             repository.currentBranch?.findTrackedBranch(repository)?.name
+        } catch (e: ProcessCanceledException) {
+            throw e
         } catch (e: Exception) {
             logger.warn("Failed to resolve tracked branch", e)
             null
-        }
-
-        if (upstream == null) {
-            return RemoteStatus(0, 0, null, false, doFetch)
         }
 
         var fetched = false
@@ -96,24 +91,30 @@ class BranchDiffProvider(private val logger: Logger) {
                     .fetchAllRemotes(listOf(repository))
                     .throwExceptionIfFailed()
                 true
+            } catch (e: ProcessCanceledException) {
+                throw e
             } catch (e: Exception) {
                 logger.warn("Failed to fetch remote", e)
                 false
             }
         }
 
+        if (upstream == null) {
+            return RemoteStatus(0, 0, null, fetched, doFetch)
+        }
+
         val (ahead, behind) = try {
             val handler = GitLineHandler(project, repository.root, GitCommand.REV_LIST)
             handler.addParameters("--count", "--left-right", "$upstream...HEAD")
             val result = Git.getInstance().runCommand(handler)
-            if (result.success()) {
-                parseAheadBehind(result.output.firstOrNull().orEmpty()) ?: (0 to 0)
-            } else {
-                0 to 0
-            }
+            result.throwOnError()
+            parseAheadBehind(result.output.firstOrNull().orEmpty())
+                ?: throw VcsException("Invalid ahead/behind result for $upstream")
+        } catch (e: ProcessCanceledException) {
+            throw e
         } catch (e: Exception) {
             logger.warn("Failed to compute ahead/behind vs $upstream", e)
-            0 to 0
+            throw e
         }
 
         return RemoteStatus(ahead = ahead, behind = behind, upstream = upstream, fetched = fetched, fetchAttempted = doFetch)
