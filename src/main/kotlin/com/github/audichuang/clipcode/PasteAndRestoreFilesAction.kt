@@ -230,12 +230,18 @@ class PasteAndRestoreFilesAction : AnAction() {
             private var executionResult: RestoreExecutor.ExecutionResult? = null
 
             override fun run(indicator: ProgressIndicator) {
-                indicator.isIndeterminate = true
+                indicator.isIndeterminate = false
                 indicator.checkCanceled()
-                executionResult = executor.execute(plan, overwriteAll, skipExisting)
+                executionResult = executor.execute(plan, overwriteAll, skipExisting, indicator)
             }
 
             override fun onSuccess() {
+                if (project.isDisposed) return
+                val result = executionResult ?: return
+                showExecutionNotifications(project, result, plan.skippedOperations)
+            }
+
+            override fun onCancel() {
                 if (project.isDisposed) return
                 val result = executionResult ?: return
                 showExecutionNotifications(project, result, plan.skippedOperations)
@@ -372,6 +378,12 @@ class PasteAndRestoreFilesAction : AnAction() {
         executionResult: RestoreExecutor.ExecutionResult,
         skippedOperations: List<RestorePlan.SkippedOperation>
     ) {
+        if (executionResult.cancelled) {
+            CopyFileContentAction.showNotification(
+                "Restore cancelled. Completed changes remain; use Undo to revert them.",
+                NotificationType.WARNING, project
+            )
+        }
         val resultParts = mutableListOf<String>()
         if (executionResult.createdCount > 0) {
             resultParts.add("Created ${executionResult.createdCount} file(s)")

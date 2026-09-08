@@ -23,6 +23,7 @@
     </description>
 
     <extensions defaultExtensionNs="com.intellij">
+        <vcs.fileListenerIgnoredFilesProvider implementation="com.github.audichuang.clipcode.RestoreVcsIgnoreProvider"/>
         <notificationGroup id="ClipCode" displayType="BALLOON" isLogByDefault="true" />
 
         <projectConfigurable
