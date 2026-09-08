@@ -455,24 +455,26 @@ class CopyFileContentAction : AnAction() {
         session.indicator.checkCanceled()
         // 目錄的 filter 判斷（讀 directory.path/name）與 children + isDirectory 快照
         // 一次取鎖；遞迴的子項各自取各自的短鎖
-        val children = ApplicationManager.getApplication().runReadAction<List<Pair<VirtualFile, Boolean>>?> {
-            if (!directoryPassesFilters(directory, session)) {
-                null
-            } else {
-                directory.children.map { child -> child to child.isDirectory }
-            }
+        val snapshot = ApplicationManager.getApplication().runReadAction<Pair<String, List<Pair<VirtualFile, Boolean>>>?> {
+            if (!directoryPassesFilters(directory, session)) null
+            else (directory.canonicalPath ?: directory.path) to directory.children.map { it to it.isDirectory }
         } ?: return
-
-        for ((childFile, childIsDirectory) in children) {
-            if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
-                session.fileLimitReached = true
-                break
+        // Track only current ancestors: normal package aliases keep their selected paths.
+        if (!session.directoryAncestors.add(snapshot.first)) return
+        try {
+            for ((childFile, childIsDirectory) in snapshot.second) {
+                if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
+                    session.fileLimitReached = true
+                    break
+                }
+                if (childIsDirectory) {
+                    processDirectory(childFile, fileContents, session, settings, addExtraLine, customHeaderGenerator)
+                } else {
+                    processFile(childFile, fileContents, session, settings, addExtraLine, customHeaderGenerator)
+                }
             }
-            if (childIsDirectory) {
-                processDirectory(childFile, fileContents, session, settings, addExtraLine, customHeaderGenerator)
-            } else {
-                processFile(childFile, fileContents, session, settings, addExtraLine, customHeaderGenerator)
-            }
+        } finally {
+            session.directoryAncestors.remove(snapshot.first)
         }
     }
 
@@ -635,6 +637,7 @@ class CopyFileContentAction : AnAction() {
     private data class CopySession(
         val indicator: ProgressIndicator,
         val copiedFilePaths: MutableSet<String> = mutableSetOf(),
+        val directoryAncestors: MutableSet<String> = mutableSetOf(),
         val externalLibraryHandler: ExternalLibraryHandler,
         val pathResolver: ClipboardPathResolver,
         // The whole filter configuration is snapshotted at copy start — both the

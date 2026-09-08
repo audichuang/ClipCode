@@ -191,22 +191,18 @@ class ExternalLibraryHandler(private val project: Project) {
         // 對外部 library 採白名單策略：未知副檔名一律視為二進位避免噴亂碼
         // (FileTypeManager 對 jar 內未註冊副檔名常常回 UnknownFileType 而非 binary)
         val textExtensions = setOf(
-            "java", "kt", "kts", "groovy", "scala", "py", "js", "ts", "tsx", "jsx",
+            "java", "kt", "kts", "groovy", "scala", "py", "js", "mjs", "cjs", "ts", "mts", "cts", "tsx", "jsx", "map",
             "xml", "json", "yaml", "yml", "properties", "txt", "md", "html", "css",
             "scss", "sass", "less", "sql", "sh", "bat", "gradle", "pro", "cfg", "conf"
         )
-        return file.extension?.lowercase() !in textExtensions
+        val textNames = setOf("license", "licence", "notice", "readme", "authors", "changelog")
+        return file.extension?.lowercase() !in textExtensions && file.name.lowercase() !in textNames
     }
     
     fun shouldProcessFile(file: VirtualFile): Boolean {
         if (file.isDirectory) return false
         
-        // Skip very large files (over 10MB)
-        if (file.length > 10 * 1024 * 1024) {
-            logger.info("Skipping large external library file: ${file.name} (${file.length} bytes)")
-            return false
-        }
-        
+        // The shared copy path already enforces the user's size limit and reports skipped files.
         val skipExtensions = setOf("so", "dll", "dylib", "exe", "bin", "dat", "db")
         if (file.extension?.lowercase() in skipExtensions) {
             return false
