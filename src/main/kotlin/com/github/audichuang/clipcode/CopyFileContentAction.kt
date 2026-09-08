@@ -167,6 +167,7 @@ class CopyFileContentAction : AnAction() {
         val enabledRules = settings.state.filterRules.filter { it.enabled }
         val session = ApplicationManager.getApplication().runReadAction<CopySession> {
             CopySession(
+                indicator = indicator,
                 externalLibraryHandler = ExternalLibraryHandler(project),
                 pathResolver = ClipboardPathResolver.fromProject(project),
                 useFilters = settings.state.useFilters,
@@ -205,6 +206,7 @@ class CopyFileContentAction : AnAction() {
             }
         }
 
+        indicator.checkCanceled()
         fileContents.add(ClipboardRestoreParser.escapeContent(settings.state.postText, settings.state.headerFormat))
 
         val text = fileContents.joinToString(separator = "\n")
@@ -268,6 +270,7 @@ class CopyFileContentAction : AnAction() {
         addExtraLine: Boolean,
         customHeaderGenerator: ((VirtualFile, String) -> String)? = null
     ) {
+        session.indicator.checkCanceled()
         ApplicationManager.getApplication().runReadAction<String> {
             processFileUnderReadLock(file, fileContents, session, settings, addExtraLine, customHeaderGenerator)
         }
@@ -402,9 +405,9 @@ class CopyFileContentAction : AnAction() {
             }
             
             // Try to read content from external library (size already checked above)
-            content = handler.readContent(file) ?: ""
+            content = handler.readContent(file) ?: return ""
             
-            if (content.isNotEmpty()) {
+            if (content.isNotEmpty() || file.length == 0L) {
                 val header = customHeaderGenerator?.invoke(file, fileRelativePath)
                     ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
                 fileContents.add(header)
@@ -419,9 +422,9 @@ class CopyFileContentAction : AnAction() {
         } else {
             // Handle regular project files (size already checked above)
             if (!isBinaryFile(file)) {
-                content = readFileContents(file)
+                content = readFileContents(file) ?: return ""
 
-                if (content.isNotEmpty()) {
+                if (content.isNotEmpty() || file.length == 0L) {
                     val header = customHeaderGenerator?.invoke(file, fileRelativePath)
                         ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
                     fileContents.add(header)
@@ -449,6 +452,7 @@ class CopyFileContentAction : AnAction() {
         addExtraLine: Boolean,
         customHeaderGenerator: ((VirtualFile, String) -> String)? = null
     ) {
+        session.indicator.checkCanceled()
         // 目錄的 filter 判斷（讀 directory.path/name）與 children + isDirectory 快照
         // 一次取鎖；遞迴的子項各自取各自的短鎖
         val children = ApplicationManager.getApplication().runReadAction<List<Pair<VirtualFile, Boolean>>?> {
@@ -528,7 +532,7 @@ class CopyFileContentAction : AnAction() {
     }
 
     @IdeBoundCode
-    private fun readFileContents(file: VirtualFile): String {
+    private fun readFileContents(file: VirtualFile): String? {
         return try {
             // VfsUtilCore.loadText 會依檔案編碼解碼，避免強制 UTF-8 造成中文/big5/sjis 亂碼
             VfsUtilCore.loadText(file)
@@ -536,7 +540,7 @@ class CopyFileContentAction : AnAction() {
             throw e
         } catch (e: Exception) {
             logger.error("Failed to read file contents: ${e.message}")
-            ""
+            null
         }
     }
 
@@ -586,6 +590,12 @@ class CopyFileContentAction : AnAction() {
          */
         @IdeBoundCode
         fun showPayloadNotification(bodyHtml: String, payloadText: String, project: Project?) {
+            val app = ApplicationManager.getApplication()
+            if (project?.isDisposed == true || app.isDisposed) return
+            if (app.isDispatchThread) {
+                app.executeOnPooledThread { showPayloadNotification(bodyHtml, payloadText, project) }
+                return
+            }
             val stats = TokenEstimator.stats(payloadText)
             val (type, warning) = when {
                 stats.tokens >= TokenEstimator.DANGER_THRESHOLD ->
@@ -623,6 +633,7 @@ class CopyFileContentAction : AnAction() {
     }
 
     private data class CopySession(
+        val indicator: ProgressIndicator,
         val copiedFilePaths: MutableSet<String> = mutableSetOf(),
         val externalLibraryHandler: ExternalLibraryHandler,
         val pathResolver: ClipboardPathResolver,

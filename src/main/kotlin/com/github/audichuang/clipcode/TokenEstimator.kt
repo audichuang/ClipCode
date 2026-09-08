@@ -25,9 +25,8 @@ package com.github.audichuang.clipcode
  * these six characters, but JS `\s` is Unicode-wide, so the TS mirror must pin the
  * ASCII set explicitly — writing it out here keeps the two scans visibly identical.
  *
- * One linear pass, O(1) extra memory: this runs on the EDT for the whole payload, and
- * splitting a multi-megabyte copy into one String per word froze the IDE precisely when
- * the numbers matter most (the 1M/2M-token warning).
+ * One linear pass, O(1) extra memory. The notification entry point runs this on a
+ * background thread: even a linear scan can stall the EDT for a large payload.
  */
 object TokenEstimator {
     /** Mirrors ClipCodeVSCode/src/notify.ts. Copy toasts turn yellow at WARN, red at DANGER. */
