@@ -497,6 +497,8 @@ class CopyRestoreE2ETest : BasePlatformTestCase() {
         ProjectLevelVcsManager.getInstance(project)
             .setDirectoryMappings(listOf(VcsDirectoryMapping(repoRoot.absolutePath, GitVcs.NAME)))
         refreshRepoRoot()
+        // Repository discovery can acquire VFS locks; initialize it off the EDT, as the actions do.
+        inBackground { git4idea.GitUtil.getRepositoryManager(project).getRepositoryForRoot(repoRootVf()) }
     }
 
     private fun writeRepoFile(relativePath: String, content: String) {

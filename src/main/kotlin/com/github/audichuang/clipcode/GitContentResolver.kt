@@ -45,12 +45,17 @@ class GitContentResolver(
         val entriesByPath = linkedMapOf<String, ResolvedGitEntry>()
         val statusPaths = selection.gitStatusNodes.mapTo(hashSetOf()) { it.path }
 
+        val batchContents = GitBatchContentReader.read(project, selection.changes
+            .filter { (it.afterRevision?.file?.path ?: it.beforeRevision?.file?.path) !in statusPaths }
+            .distinctBy { it.afterRevision?.file?.path ?: it.beforeRevision?.file?.path }
+            .mapNotNull { if (it.type == Change.Type.DELETED) it.beforeRevision else it.afterRevision })
+
         selection.changes.forEach { change ->
             ProgressManager.checkCanceled()
             val filePath = change.afterRevision?.file?.path ?: change.beforeRevision?.file?.path ?: return@forEach
             if (filePath in entriesByPath || filePath in statusPaths) return@forEach
             val changeType = ChangeTypeLabel.fromChangeType(change.type) ?: ChangeTypeLabel.MODIFIED
-            entriesByPath[filePath] = resolveChange(project, change, filePath, changeType, selection.source)
+            entriesByPath[filePath] = resolveChange(project, change, filePath, changeType, selection.source, batchContents)
         }
 
         selection.untrackedPaths.forEach { untrackedPath ->
@@ -114,14 +119,15 @@ class GitContentResolver(
         change: Change,
         filePath: String,
         changeType: ChangeTypeLabel,
-        source: SelectionSource
+        source: SelectionSource,
+        batchContents: Map<ContentRevision, String>
     ): ResolvedGitEntry {
         if (source != SelectionSource.LOCAL_CHANGES_OR_COMMIT_UI) {
             return ResolvedGitEntry(
                 changeType = changeType,
                 filePath = filePath,
                 virtualFile = null,
-                contentFromRevision = readSelectedRevisionContent(change, changeType)
+                contentFromRevision = readSelectedRevisionContent(change, changeType, batchContents)
             )
         }
 
@@ -144,9 +150,9 @@ class GitContentResolver(
         val contentFromRevision = when {
             // 歷史版本只准讀 afterRevision：讀不到就標記為無內容，
             // 不 fallback 到 beforeRevision（那是 base 版本，內容是錯的）
-            isHistoricalAfterRevision -> readRevisionContent(afterRevision)
+            isHistoricalAfterRevision -> batchContents[afterRevision] ?: readRevisionContent(afterRevision)
             virtualFile == null || changeType == ChangeTypeLabel.DELETED ->
-                readAnyRevisionContent(change) ?: if (changeType == ChangeTypeLabel.DELETED) {
+                (batchContents[change.afterRevision] ?: batchContents[change.beforeRevision] ?: readAnyRevisionContent(change)) ?: if (changeType == ChangeTypeLabel.DELETED) {
                     resolveDeletedContent(project, filePath)
                 } else {
                     null
@@ -164,7 +170,8 @@ class GitContentResolver(
 
     private fun readSelectedRevisionContent(
         change: Change,
-        changeType: ChangeTypeLabel
+        changeType: ChangeTypeLabel,
+        batchContents: Map<ContentRevision, String>
     ): String? {
         val revision = if (changeType == ChangeTypeLabel.DELETED) {
             change.beforeRevision
@@ -177,7 +184,7 @@ class GitContentResolver(
             return null
         }
 
-        return readRevisionContent(revision)
+        return batchContents[revision] ?: readRevisionContent(revision)
     }
 
     private fun readAnyRevisionContent(change: Change): String? =

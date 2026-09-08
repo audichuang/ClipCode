@@ -79,6 +79,14 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.2.7 - Batch history reads and responsive restore</h2>
+            <ul>
+                <li>Batch eligible historical Git content reads while retaining native caching, encoding, and conversion behavior.</li>
+                <li>Restore large clipboard payloads in short, cancellable write commands so the IDE can process UI events between batches.</li>
+                <li>Preserve overwrite and deletion Undo/Redo, including mixed line endings and binary files. Consecutive batches share Undo; intervening IDE commands can split the group.</li>
+                <li>Avoid repeated Git add/remove prompts during restore without changing Git settings or staging files.</li>
+            </ul>
+
             <h2>Version 1.2.6 - Responsive copying and empty-file preservation</h2>
             <ul>
               <li><b>Fixed:</b> Empty text files are preserved when copying files or folders and can be restored from the clipboard</li>
