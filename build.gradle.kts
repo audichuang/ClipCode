@@ -79,6 +79,15 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.2.6 - Responsive copying and empty-file preservation</h2>
+            <ul>
+              <li><b>Fixed:</b> Empty text files are preserved when copying files or folders and can be restored from the clipboard</li>
+              <li><b>Fixed:</b> Cancelling a folder copy stops before the next file, including cancellation during the final file</li>
+              <li><b>Improved:</b> Whole-payload notification statistics run off the UI thread to keep large copies responsive</li>
+              <li><b>Compatibility:</b> Verification matrix includes IntelliJ IDEA 2025.2.6.1, 2025.3.4, 2026.1 and 2026.2.2</li>
+              <li>This release does not claim to fix IntelliJ Git graph or macOS Metal rendering freezes</li>
+            </ul>
+
             <h2>Version 1.2.5 - Reliable Git copying and faster selection</h2>
             <ul>
               <li><b>Fixed:</b> Staged files now copy index content instead of working-tree edits. Unstaged deletions use the index before-content; staged deletions use HEAD</li>
@@ -256,6 +265,7 @@ intellijPlatform {
             create(IntelliJPlatformType.IntellijIdeaCommunity, "2025.2.6.1")
             create(IntelliJPlatformType.IntellijIdea, "2025.3.4")
             create(IntelliJPlatformType.IntellijIdea, "2026.1")
+            create(IntelliJPlatformType.IntellijIdea, "2026.2.2")
         }
     }
 }
