@@ -79,6 +79,13 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.2.8 - Complete node_modules text copying</h2>
+            <ul>
+                <li>Include modern JavaScript/TypeScript modules, source maps, and standard extensionless documentation when copying library roots.</li>
+                <li>Honor the configured file-size limit for external libraries instead of silently applying an additional 10 MB cap.</li>
+                <li>Stop recursive directory symlink cycles while preserving normal linked-package paths.</li>
+            </ul>
+
             <h2>Version 1.2.7 - Batch history reads and responsive restore</h2>
             <ul>
                 <li>Batch eligible historical Git content reads while retaining native caching, encoding, and conversion behavior.</li>
