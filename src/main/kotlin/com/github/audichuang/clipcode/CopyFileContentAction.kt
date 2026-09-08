@@ -7,9 +7,10 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
-import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.options.ShowSettingsUtil
@@ -164,7 +165,7 @@ class CopyFileContentAction : AnAction() {
 
         // Filter config is snapshotted once per copy instead of re-read per file/directory
         val enabledRules = settings.state.filterRules.filter { it.enabled }
-        val session = ReadAction.compute<CopySession, RuntimeException> {
+        val session = ApplicationManager.getApplication().runReadAction<CopySession> {
             CopySession(
                 externalLibraryHandler = ExternalLibraryHandler(project),
                 pathResolver = ClipboardPathResolver.fromProject(project),
@@ -196,7 +197,7 @@ class CopyFileContentAction : AnAction() {
                 break
             }
 
-            val isDirectory = ReadAction.compute<Boolean, RuntimeException> { file.isDirectory }
+            val isDirectory = ApplicationManager.getApplication().runReadAction<Boolean> { file.isDirectory }
             if (isDirectory) {
                 processDirectory(file, fileContents, session, settings, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
             } else {
@@ -267,7 +268,7 @@ class CopyFileContentAction : AnAction() {
         addExtraLine: Boolean,
         customHeaderGenerator: ((VirtualFile, String) -> String)? = null
     ) {
-        ReadAction.compute<String, RuntimeException> {
+        ApplicationManager.getApplication().runReadAction<String> {
             processFileUnderReadLock(file, fileContents, session, settings, addExtraLine, customHeaderGenerator)
         }
     }
@@ -450,7 +451,7 @@ class CopyFileContentAction : AnAction() {
     ) {
         // 目錄的 filter 判斷（讀 directory.path/name）與 children + isDirectory 快照
         // 一次取鎖；遞迴的子項各自取各自的短鎖
-        val children = ReadAction.compute<List<Pair<VirtualFile, Boolean>>?, RuntimeException> {
+        val children = ApplicationManager.getApplication().runReadAction<List<Pair<VirtualFile, Boolean>>?> {
             if (!directoryPassesFilters(directory, session)) {
                 null
             } else {
@@ -531,6 +532,8 @@ class CopyFileContentAction : AnAction() {
         return try {
             // VfsUtilCore.loadText 會依檔案編碼解碼，避免強制 UTF-8 造成中文/big5/sjis 亂碼
             VfsUtilCore.loadText(file)
+        } catch (e: ProcessCanceledException) {
+            throw e
         } catch (e: Exception) {
             logger.error("Failed to read file contents: ${e.message}")
             ""

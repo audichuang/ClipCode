@@ -16,6 +16,8 @@ import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.vcsUtil.VcsUtil
 import git4idea.GitVcs
 import java.io.File
+import kotlin.test.assertFailsWith
+import com.intellij.openapi.progress.ProcessCanceledException
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -265,6 +267,33 @@ class GitContentResolverTest : BasePlatformTestCase() {
         assertEquals(1, entries.size)
         // change 路徑會優先，所以 changeType 不會是 NEW（untracked path 的 default）
         assertFalse(entries.single().changeType == ChangeTypeLabel.NEW)
+    }
+
+    fun testDuplicatePathsReadRevisionOnlyOnce() {
+        val path = VcsUtil.getFilePath("${project.basePath}/duplicate.kt", false)
+        var reads = 0
+        val revision = object : ContentRevision {
+            override fun getFile() = path
+            override fun getRevisionNumber() = git4idea.GitRevisionNumber("commit-sha")
+            override fun getContent(): String { reads++; return "revision" }
+        }
+        val change = Change(null, revision)
+        val entries = resolver.resolve(project, selection(change, SelectionSource.GIT_LOG_OR_HISTORY)
+            .copy(changes = List(100) { change }))
+        assertEquals(1, entries.size)
+        assertEquals(1, reads)
+    }
+
+    fun testCancellationIsNotTreatedAsMissingRevision() {
+        val path = VcsUtil.getFilePath("${project.basePath}/cancel.kt", false)
+        val revision = object : ContentRevision {
+            override fun getFile() = path
+            override fun getRevisionNumber() = git4idea.GitRevisionNumber("commit-sha")
+            override fun getContent(): String = throw ProcessCanceledException()
+        }
+        assertFailsWith<ProcessCanceledException> {
+            resolver.resolve(project, selection(Change(null, revision), SelectionSource.GIT_LOG_OR_HISTORY))
+        }
     }
 
     // === helpers ===

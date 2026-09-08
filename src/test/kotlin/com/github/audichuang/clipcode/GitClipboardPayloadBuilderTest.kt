@@ -2,6 +2,9 @@ package com.github.audichuang.clipcode
 
 import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import kotlin.test.assertFailsWith
+import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.testFramework.LightVirtualFile
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -120,6 +123,33 @@ class GitClipboardPayloadBuilderTest : BasePlatformTestCase() {
 
     fun testDeletedMarkerSummaryForSingleEntry() {
         assertEquals("1 deleted file marker copied.", buildDeletedMarker(rootPaths = listOf("/work/myrepo")).summary)
+    }
+
+    fun testCanceledFileReadDoesNotProduceErrorPlaceholder() {
+        var reads = 0
+        val file = object : LightVirtualFile("cancel.txt", "content") {
+            override fun getLength(): Long = 7
+            override fun getContent(): CharSequence { reads++; throw ProcessCanceledException() }
+        }
+        val entry = GitContentResolver.ResolvedGitEntry(ChangeTypeLabel.MODIFIED, file.path, file)
+        assertFailsWith<ProcessCanceledException> { buildText(listOf(entry)) }
+        assertTrue(reads > 0, "Cancellation must happen during the content read")
+    }
+
+    fun testCancellationAlsoPropagatesThroughSharedCopyReaders() {
+        val file = object : LightVirtualFile("cancel.txt", "content") {
+            override fun getLength(): Long = 7
+            override fun getContent(): CharSequence = throw ProcessCanceledException()
+            override fun contentsToByteArray(): ByteArray = throw ProcessCanceledException()
+        }
+        val method = CopyFileContentAction::class.java.getDeclaredMethod(
+            "readFileContents", com.intellij.openapi.vfs.VirtualFile::class.java)
+        method.isAccessible = true
+        val failure = assertFailsWith<java.lang.reflect.InvocationTargetException> {
+            method.invoke(CopyFileContentAction(), file)
+        }
+        assertTrue(failure.cause is ProcessCanceledException)
+        assertFailsWith<ProcessCanceledException> { ExternalLibraryHandler(project).readContent(file) }
     }
 
     // === helpers ===
