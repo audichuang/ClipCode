@@ -1,7 +1,7 @@
 package com.github.audichuang.clipcode
 
 import com.intellij.notification.NotificationType
-import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
@@ -116,7 +116,8 @@ class ClipCodePrPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private fun reload(baseRef: String, doFetch: Boolean) {
         val generation = ++reloadGeneration
-        copyButton.isEnabled = false
+        changesList.clear()
+        updateCopyEnabled()
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Loading ClipCode PR diff…", true) {
             private var changes: List<Change> = emptyList()
             private var remoteStatus: BranchDiffProvider.RemoteStatus? = null
@@ -133,6 +134,13 @@ class ClipCodePrPanel(private val project: Project) : JPanel(BorderLayout()) {
                 if (project.isDisposed || generation != reloadGeneration || selectedBaseRef() != baseRef) return
                 populateChangesList(changes)
                 remoteStatus?.let(::applyRemoteBanner)
+            }
+
+            override fun onThrowable(error: Throwable) {
+                if (project.isDisposed || generation != reloadGeneration || selectedBaseRef() != baseRef) return
+                logger.warn("Failed to load PR diff or remote status", error)
+                remoteBanner.text = "無法取得 Git 比較結果，請確認 base 分支與遠端後重試。"
+                fetchButton.isVisible = true
             }
         })
     }
@@ -182,10 +190,7 @@ class ClipCodePrPanel(private val project: Project) : JPanel(BorderLayout()) {
                 )
                 val entries = GitContentResolver(logger).resolve(project, selection)
                 // hasContent 讀 VirtualFile 的 isValid/exists，BGT 上需要 read lock
-                val (content, deleted) = ReadAction.compute<
-                    Pair<List<GitContentResolver.ResolvedGitEntry>, List<GitContentResolver.ResolvedGitEntry>>,
-                    RuntimeException
-                > {
+                val (content, deleted) = ApplicationManager.getApplication().runReadAction<Pair<List<GitContentResolver.ResolvedGitEntry>, List<GitContentResolver.ResolvedGitEntry>>> {
                     entries.filter { it.hasContent } to
                         entries.filter { it.changeType == ChangeTypeLabel.DELETED && !it.hasContent }
                 }
@@ -196,6 +201,16 @@ class ClipCodePrPanel(private val project: Project) : JPanel(BorderLayout()) {
                 indicator.checkCanceled()
                 // GitClipboardPayloadBuilder 內部逐檔取 ReadAction，這裡不再額外包一層
                 payload = GitClipboardPayloadBuilder.build(content, deleted, pathResolver, settings, indicator)
+            }
+
+            override fun onCancel() {
+                if (!project.isDisposed) updateCopyEnabled()
+            }
+
+            override fun onThrowable(error: Throwable) {
+                if (project.isDisposed) return
+                updateCopyEnabled()
+                super.onThrowable(error)
             }
 
             override fun onSuccess() {

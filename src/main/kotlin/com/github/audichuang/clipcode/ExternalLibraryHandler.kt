@@ -1,8 +1,9 @@
 // file: src/main/kotlin/com/github/audichuang/clipcode/ExternalLibraryHandler.kt
 package com.github.audichuang.clipcode
 
-import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.fileEditor.impl.LoadTextUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -27,7 +28,7 @@ class ExternalLibraryHandler(private val project: Project) {
     fun isFromExternalLibrary(file: VirtualFile): Boolean {
         // 1. 使用 IntelliJ 官方 API 檢查是否屬於 Library (最準確)
         // ProjectFileIndex.isInLibrary 標註 @RequiresReadLock，必須包在 ReadAction 內
-        val isInLibrary = ReadAction.compute<Boolean, RuntimeException> {
+        val isInLibrary = ApplicationManager.getApplication().runReadAction<Boolean> {
             ProjectFileIndex.getInstance(project).isInLibrary(file)
         }
         if (isInLibrary) {
@@ -113,6 +114,8 @@ class ExternalLibraryHandler(private val project: Project) {
                     null
                 }
             }
+        } catch (e: ProcessCanceledException) {
+            throw e
         } catch (e: Exception) {
             logger.error("Failed to read external library file ${file.presentableUrl}: ${e.message}")
             null
@@ -127,19 +130,21 @@ class ExternalLibraryHandler(private val project: Project) {
         return try {
             // PsiManager.findFile / PsiCompiledElement.mirror 標 @RequiresReadLock，
             // 必須在 ReadAction 內存取，否則 2024.3+ strict mode 會拋錯
-            ReadAction.compute<String, RuntimeException> {
+            ApplicationManager.getApplication().runReadAction<String> {
                 val psiFile = PsiManager.getInstance(project).findFile(file)
                 if (psiFile is PsiCompiledElement) {
-                    return@compute psiFile.mirror.text
+                    return@runReadAction psiFile.mirror.text
                 }
 
                 val text = LoadTextUtil.loadText(file)
                 if (text.isNotEmpty()) {
-                    return@compute text.toString()
+                    return@runReadAction text.toString()
                 }
 
                 psiFile?.viewProvider?.document?.text ?: ""
             }
+        } catch (e: ProcessCanceledException) {
+            throw e
         } catch (e: Exception) {
             logger.warn("Could not decompile ${file.name}: ${e.message}")
             "// Error: Could not retrieve source code for ${file.name}"
@@ -154,6 +159,8 @@ class ExternalLibraryHandler(private val project: Project) {
                 file.inputStream?.use { inputStream ->
                     inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
                 } ?: ""
+            } catch (e2: ProcessCanceledException) {
+                throw e2
             } catch (e2: Exception) {
                 logger.warn("Could not read source file ${file.name}: ${e2.message}")
                 ""
@@ -164,11 +171,15 @@ class ExternalLibraryHandler(private val project: Project) {
     private fun getTextContent(file: VirtualFile): String {
         return try {
             LoadTextUtil.loadText(file).toString()
+        } catch (e: ProcessCanceledException) {
+            throw e
         } catch (e: Exception) {
             try {
                 file.inputStream?.use { inputStream ->
                     inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
                 } ?: ""
+            } catch (e2: ProcessCanceledException) {
+                throw e2
             } catch (e2: Exception) {
                 logger.warn("Could not read text file ${file.name}: ${e2.message}")
                 ""

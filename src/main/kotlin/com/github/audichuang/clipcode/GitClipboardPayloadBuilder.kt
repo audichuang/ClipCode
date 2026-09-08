@@ -1,8 +1,9 @@
 package com.github.audichuang.clipcode
 
-import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.vfs.VfsUtilCore
 
 /**
@@ -37,7 +38,7 @@ object GitClipboardPayloadBuilder {
         // 不需 read lock，統一交給 ClipboardPayloadFormatter。
         contentEntries.forEach { entry ->
             indicator.checkCanceled()
-            val resolved = ReadAction.compute<ClipboardPayloadFormatter.PayloadFile, RuntimeException> {
+            val resolved = ApplicationManager.getApplication().runReadAction<ClipboardPayloadFormatter.PayloadFile> {
                 resolveContentEntry(entry, pathResolver, maxFileSizeBytes)
             }
             if (resolved.skippedReason != null) skippedSizeCount++
@@ -100,6 +101,8 @@ object GitClipboardPayloadBuilder {
             return try {
                 // 用 VfsUtilCore.loadText 走檔案編碼，而非強制 UTF-8
                 ClipboardPayloadFormatter.PayloadFile(path, content = VfsUtilCore.loadText(virtualFile), changeType = changeType)
+            } catch (e: ProcessCanceledException) {
+                throw e
             } catch (e: Exception) {
                 logger.warn("Failed to read Git file content: ${entry.filePath}", e)
                 ClipboardPayloadFormatter.PayloadFile(path, content = "// Error reading file content", changeType = changeType)
@@ -118,7 +121,7 @@ object GitClipboardPayloadBuilder {
         skippedSizeCount: Int
     ): String {
         // hasVirtualFileContent 讀 VirtualFile 的 isValid/exists，也要在 read lock 內
-        val (diskBackedCount, filesFromHistory) = ReadAction.compute<Pair<Int, Int>, RuntimeException> {
+        val (diskBackedCount, filesFromHistory) = ApplicationManager.getApplication().runReadAction<Pair<Int, Int>> {
             contentEntries.count { it.hasVirtualFileContent } to
                 contentEntries.count { !it.hasVirtualFileContent && it.contentFromRevision != null }
         }
