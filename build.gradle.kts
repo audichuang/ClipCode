@@ -79,6 +79,13 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.2.9 - Ignore selected paths from the context menu</h2>
+            <ul>
+                <li>Right-click files or folders in the Project view or editor tabs and choose ClipCode: Ignore When Copying.</li>
+                <li>Add project-level exclude rules immediately, including multiple selections, without opening Settings.</li>
+                <li>Reuse existing rules without duplicates and preserve active include filters.</li>
+            </ul>
+
             <h2>Version 1.2.8 - Complete node_modules text copying</h2>
             <ul>
                 <li>Include modern JavaScript/TypeScript modules, source maps, and standard extensionless documentation when copying library roots.</li>
