@@ -73,10 +73,14 @@ when `gh release view v<version> --json assets` shows the zip, **not** when the
 workflow goes green.
 
 Pushing a `v<version>` tag runs `.github/workflows/release.yml`: build → signPlugin
-→ GitHub Release → publish to JetBrains Marketplace. The repo has no Actions secrets
-at all, so `signPlugin` is SKIPPED and the final publish fails on every release so
-far (`'token' property must be specified`) — expected, not a regression. **Don't
-propose adding the secrets or deleting that step unless the owner raises it first.**
+→ GitHub Release. The repo has no Actions secrets at all, so `signPlugin` is SKIPPED
+and the unsigned zip is what ships — expected, not a regression.
+
+**The JetBrains Marketplace publish step is commented out** (owner decision,
+2026-09-15): there is no `PUBLISH_TOKEN`, so it failed on every release v1.0.2…v1.2.8
+and made a red run meaningless. From v1.2.9 on **a red Release run is a real failure**
+— don't wave it through. Don't re-enable that step or add the secrets unless the owner
+raises it first.
 
 Two non-obvious rules:
 
@@ -88,6 +92,12 @@ Two non-obvious rules:
   `build.gradle.kts` (there is no `CHANGELOG.md`). `patchPluginXml` bakes it into
   the built plugin.xml and the workflow extracts it into the GitHub Release body,
   so add a new `<h2>Version X</h2>` block there before tagging. Tag must be `v<version>`.
+  The block is **cumulative** — every past version stays in the file — but the workflow
+  now slices out only the `<h2>Version <pluginVersion></h2>` section for the Release body
+  (before 2026-09-15 it pasted all 20 of them onto every Release page, which is why they
+  all looked identical). So the new heading's version must match `pluginVersion`
+  **exactly**, or the workflow logs `WARNING: no '<h2>Version X' block found` and falls
+  back to dumping the whole history again.
 
 ## Where to start in the code
 
