@@ -38,6 +38,13 @@
                     factoryClass="com.github.audichuang.clipcode.ClipCodePrToolWindowFactory"/>
     </extensions>
     <actions>
+        <action id="ClipCodeIgnorePathsAction"
+                class="com.github.audichuang.clipcode.IgnoreCopyPathsAction"
+                text="ClipCode: Ignore When Copying"
+                description="Exclude the selected files or folders from ClipCode copying in this project.">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorTabPopupMenu" anchor="last"/>
+        </action>
         <!-- For general IntelliJ IDEs -->
         <action id="ClipCodeCopyAction"
                 class="com.github.audichuang.clipcode.CopyFileContentAction"
