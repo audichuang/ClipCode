@@ -83,6 +83,15 @@ jobs:
           if match:
               html = match.group(1).strip()
 
+              # changeNotes is cumulative, so keep only this version's section --
+              # dumping the whole block made every Release page look identical.
+              version = os.environ['VERSION']
+              section = re.search(r'(<h2>Version\s+' + re.escape(version) + r'\b.*?)(?=<h2>|\Z)', html, re.DOTALL)
+              if section:
+                  html = section.group(1).strip()
+              else:
+                  print(f"WARNING: no '<h2>Version {version}' block found; falling back to full change notes")
+
               # Convert HTML to Markdown for GitHub Release
               md = html
               md = re.sub(r'<h2>(.*?)</h2>', r'## \1', md)
@@ -116,10 +125,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish to JetBrains Marketplace
-        run: ./gradlew publishPlugin --rerun-tasks
-        env:
-          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
-          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
-          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+      # Disabled by the owner: ClipCode ships as the GitHub Release zip, not through
+      # the JetBrains Marketplace. There is no PUBLISH_TOKEN secret, so this step
+      # failed on every release and made green runs indistinguishable from real
+      # breakage. Re-enable only if Marketplace distribution is ever wanted.
+      # - name: Publish to JetBrains Marketplace
+      #   run: ./gradlew publishPlugin --rerun-tasks
+      #   env:
+      #     CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+      #     PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+      #     PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+      #     PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
