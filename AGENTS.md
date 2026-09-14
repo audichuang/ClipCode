@@ -69,8 +69,14 @@ and git4idea-runtime paths that can't run headless are verified manually via
 Releases come off `main` (feature work on `dev`). **Users install the
 `ClipCode-<version>.zip` attached to the GitHub Release by hand — this plugin is
 not delivered through the JetBrains Marketplace.** A release is therefore finished
-when `gh release view v<version> --json assets` shows the zip, **not** when the
-workflow goes green.
+when that zip is attached to the Release, **not** when the workflow goes green.
+
+**Run `scripts/release.sh <version>`.** It preflights (on `main`, clean tree, in
+sync with origin, `pluginVersion` matches, a `<h2>Version X</h2>` changeNotes block
+exists, tag unused), tags, pushes, waits for the workflow, then checks the zip is
+really attached. It prints one line — `OK v1.2.9 live: <url>` or `FAIL: <reason>` —
+and exits 0 only when live, so nobody has to remember the verification step or read
+a log. Run `./gradlew build` yourself first: CI never runs the test suite.
 
 Pushing a `v<version>` tag runs `.github/workflows/release.yml`: build → signPlugin
 → GitHub Release. The repo has no Actions secrets at all, so `signPlugin` is SKIPPED
