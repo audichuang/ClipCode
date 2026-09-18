@@ -79,6 +79,15 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.2.10 - Copy a whole merge from the Git Log</h2>
+            <ul>
+                <li>Right-clicking a merge commit in the Git Log now copies every file the merge actually brought into the receiving branch, compared against the merge's first parent.</li>
+                <li>Previously the copy followed the IDE's combined view, which lists only conflicted files and is empty for a clean merge, so incoming files were silently missing.</li>
+                <li>File contents come from the merge commit itself, so conflict resolutions are included and later commits or uncommitted edits are never picked up.</li>
+                <li>Selecting individual files in the changed-files browser still copies only those files.</li>
+                <li>A commit with no net change keeps the clipboard unchanged and says so; a revision that cannot be read reports an error instead of quietly copying nothing.</li>
+            </ul>
+
             <h2>Version 1.2.9 - Ignore selected paths from the context menu</h2>
             <ul>
                 <li>Right-click files or folders in the Project view or editor tabs and choose ClipCode: Ignore When Copying.</li>

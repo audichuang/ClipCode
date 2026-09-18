@@ -91,6 +91,55 @@ class CopyRestoreE2ETest : BasePlatformTestCase() {
         assertFalse(output.contains("v3"), "Git Log deleted copy must not read HEAD fallback content")
     }
 
+    fun testOtherBranchSingleAndMultipleCommitsKeepHistoricalContent() {
+        initGitRepo()
+        writeRepoFile("src/Shared.kt", "base")
+        writeRepoFile("src/Gone.kt", "before deletion")
+        commit("base")
+        runGit("branch", "audit-current")
+        writeRepoFile("src/Shared.kt", "selected first")
+        writeRepoFile("src/OnlyFirst.kt", "only first commit")
+        val first = commit("first selected")
+        writeRepoFile("src/Shared.kt", "selected second")
+        deleteRepoFile("src/Gone.kt")
+        val second = commit("second selected")
+        runGit("checkout", "audit-current")
+        writeRepoFile("src/Shared.kt", "current branch")
+        commit("current branch advances")
+        writeRepoFile("src/Shared.kt", "uncommitted working tree")
+
+        val details = inBackground {
+            val commits = mutableListOf<git4idea.GitCommit>()
+            git4idea.history.GitLogUtil.readFullDetails(project, repoRootVf(), { commits.add(it) }, first, second, "--no-walk")
+            commits.associateBy { it.id.asString() }
+        }
+        val firstChanges = details.getValue(first).changes
+        // Use the same commit details and aggregation as the Git Log changes browser.
+        val combined = com.intellij.vcs.log.util.VcsLogUtil.collectChanges(listOf(details.getValue(second), details.getValue(first)))
+        for ((changes, expectedShared) in listOf(firstChanges to "selected first", combined to "selected second")) {
+            val context = com.intellij.openapi.actionSystem.impl.SimpleDataContext.builder()
+                .add(com.intellij.openapi.actionSystem.CommonDataKeys.PROJECT, project)
+                .add(com.intellij.openapi.vcs.VcsDataKeys.SELECTED_CHANGES, changes.toTypedArray())
+                .build()
+            val event = com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext("Vcs.Log", null, context)
+            val selection = GitSelectionCollector(logger).collect(event)
+            assertEquals(SelectionSource.GIT_LOG_OR_HISTORY, selection.source)
+            val entries = inBackground { resolver.resolve(project, selection) }
+            assertTrue(entries.all { it.virtualFile == null })
+            assertEquals(expectedShared, entries.single { it.filePath.endsWith("/Shared.kt") }.contentFromRevision)
+            assertEquals("only first commit", entries.single { it.filePath.endsWith("/OnlyFirst.kt") }.contentFromRevision)
+            val output = copyResolvedEntries(entries)
+            assertContains(output, expectedShared)
+            assertFalse(output.contains("current branch"))
+            assertFalse(output.contains("uncommitted working tree"))
+            if (changes === combined) {
+                val deleted = entries.single { it.filePath.endsWith("/Gone.kt") }
+                assertEquals(ChangeTypeLabel.DELETED, deleted.changeType)
+                assertEquals("before deletion", deleted.contentFromRevision)
+            }
+        }
+    }
+
     fun testScenario3LocalChangesCopyUsesWorkingTreeContent() {
         initGitRepo()
         writeRepoFile("src/Local.kt", "val version = \"v1\"")
