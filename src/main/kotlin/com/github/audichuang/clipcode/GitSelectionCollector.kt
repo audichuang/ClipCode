@@ -14,6 +14,8 @@ import com.intellij.openapi.vcs.changes.ui.ChangesTree
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.vcs.commit.AbstractCommitWorkflowHandler
 import com.intellij.vcs.commit.CommitWorkflowUi
+import com.intellij.vcs.log.CommitId
+import com.intellij.vcs.log.VcsLogDataKeys
 import com.intellij.vcsUtil.VcsUtil
 import git4idea.index.ui.GitFileStatusNode
 import git4idea.index.ui.NodeKind
@@ -45,13 +47,24 @@ class GitSelectionCollector(
         val selectedFiles: List<VirtualFile>,
         val untrackedPaths: Set<String>,
         val gitStatusNodes: Set<GitStatusInfo>,
-        val source: SelectionSource
+        val source: SelectionSource,
+        val commit: CommitId? = null
     ) {
         val hasGitMetadata: Boolean
-            get() = changes.isNotEmpty() || untrackedPaths.isNotEmpty() || gitStatusNodes.isNotEmpty()
+            get() = commit != null || changes.isNotEmpty() || untrackedPaths.isNotEmpty() || gitStatusNodes.isNotEmpty()
     }
 
     fun collect(e: AnActionEvent): Selection {
+        // The log row means the whole commit; the changes browser means selected files.
+        // Snapshot the ID now: AnActionEvent must not escape into background work.
+        if (e.place == "Vcs.Log.ContextMenu") {
+            val commits = e.getData(VcsLogDataKeys.VCS_LOG_COMMIT_SELECTION)?.commits
+                ?: e.getData(VcsLogDataKeys.VCS_LOG)?.selectedCommits
+            commits?.singleOrNull()?.let { commit ->
+                return Selection(emptyList(), emptyList(), emptySet(), emptySet(),
+                    SelectionSource.GIT_LOG_OR_HISTORY, commit)
+            }
+        }
         val project = e.project
         val allChangesMap = linkedMapOf<String, Change>()
         val untrackedFilePaths = linkedSetOf<String>()

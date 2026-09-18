@@ -17,6 +17,10 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import git4idea.GitContentRevision
 import git4idea.GitRevisionNumber
+import git4idea.changes.GitChangeUtils
+import git4idea.commands.Git
+import git4idea.commands.GitCommand
+import git4idea.commands.GitLineHandler
 import git4idea.GitUtil
 import git4idea.index.GitIndexUtil
 import java.io.File
@@ -40,8 +44,26 @@ class GitContentResolver(
 
     fun resolve(
         project: Project,
-        selection: GitSelectionCollector.Selection
+        selected: GitSelectionCollector.Selection
     ): List<ResolvedGitEntry> {
+        val selection = selected.commit?.let { commit ->
+            val sha = commit.hash.asString()
+            val handler = GitLineHandler(project, commit.root, GitCommand.REV_LIST)
+            handler.addParameters("--parents", "-n", "1", sha, "--")
+            val result = Git.getInstance().runCommand(handler)
+            result.throwOnError()
+            val revisions = result.output.singleOrNull()?.trim()?.split(" ")
+                ?: throw VcsException("Unable to read parents of $sha")
+            if (revisions.firstOrNull() != sha) throw VcsException("Unable to read commit $sha")
+            // First parent is the receiving branch before merge. Compare even when
+            // the IDE supplies a nonempty combined diff: it can omit incoming files.
+            val changes = if (revisions.size > 1) {
+                GitChangeUtils.getDiff(project, commit.root, revisions[1], sha, null).toList()
+            } else {
+                GitChangeUtils.getRevisionChanges(project, commit.root, sha, false, true, false).changes.toList()
+            }
+            selected.copy(changes = changes, commit = null)
+        } ?: selected
         val entriesByPath = linkedMapOf<String, ResolvedGitEntry>()
         val statusPaths = selection.gitStatusNodes.mapTo(hashSetOf()) { it.path }
 

@@ -52,7 +52,22 @@ class CopyGitFilesContentAction : AnAction() {
                     if (project.isDisposed) return
                     // 不把 AnActionEvent 帶出 actionPerformed 生命週期（平台禁止；
                     // 2024.3+ 的 async DataContext 可能已失效），只傳 Project
+                    if (selection.commit != null && resolvedEntries.isEmpty()) {
+                        CopyFileContentAction.showNotification(
+                            "Selected commit introduces no net file changes. Clipboard unchanged.",
+                            NotificationType.INFORMATION, project
+                        )
+                        return
+                    }
                     handleResolvedEntries(project, pathResolver, resolvedEntries)
+                }
+
+                override fun onThrowable(error: Throwable) {
+                    logger.warn("Failed to copy Git selection", error)
+                    if (!project.isDisposed) CopyFileContentAction.showNotification(
+                        "Unable to read selected Git revision. Clipboard unchanged. See IDE log for details.",
+                        NotificationType.ERROR, project
+                    )
                 }
             }
         )
