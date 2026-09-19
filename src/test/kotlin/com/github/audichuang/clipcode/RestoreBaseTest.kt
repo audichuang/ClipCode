@@ -150,4 +150,22 @@ class RestoreBaseTest {
         assertEquals(false, RestoreBaseDetector.isRelativeEntryPath("\\\\server/share.kt"))
         assertEquals(true, RestoreBaseDetector.isRelativeEntryPath("src/a.kt"))
     }
+
+    @Test
+    fun `metadata does not nest when the paths already land here (flat-layout repo)`() {
+        // requests/requests, proj/proj, pkg/pkg: the same-named folder always exists, so a
+        // name match alone used to nest every already-correct path one level deeper into a
+        // shadow tree, leaving the real files stale.
+        val probe = probe(
+            listOf("/t/mypkg-2/mypkg", "/t/mypkg-2/mypkg/sub", "/t/mypkg-2/tests"),
+            listOf("mypkg", "tests")
+        )
+        val suggestion = RestoreBaseDetector.suggestRestoreBase(
+            "/t/mypkg-2",
+            listOf("mypkg/sub/core.py", "tests/test_core.py", "setup.py"),
+            probe,
+            "mypkg"
+        )
+        assertNull(suggestion, "already-anchored paths must be left alone")
+    }
 }

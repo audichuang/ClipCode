@@ -15,7 +15,7 @@ class ClipboardRestoreParser {
          * Matches: // file: xxx, # file: xxx, file: xxx, etc.
          */
         private val GENERIC_FILE_HEADER = Regex(
-            "^\\s*(?:(//|#|/\\*)\\s*)?file:\\s*(.+?)\\s*(?:\\*/)?$",
+            "^[$ASCII_WS]*(?:(//|#|/\\*)[$ASCII_WS]*)?file:[$ASCII_WS]*($HEADER_PATH_CHARS+?)[$ASCII_WS]*(?:\\*/)?$",
             RegexOption.IGNORE_CASE
         )
 
@@ -43,6 +43,22 @@ class ClipboardRestoreParser {
         }
 
         /** Build side: true when [line] would parse as a file header under [headerFormat]. */
+        /**
+         * The ASCII whitespace class the cross-tool contract pins. Java's `\s` already means
+         * exactly this, but the work-root AGENTS.md forbids relying on that: one
+         * UNICODE_CHARACTER_CLASS away and it silently becomes Unicode-wide.
+         */
+        private const val ASCII_WS = " \\t\\n\\x0B\\f\\r"
+
+        /**
+         * What a header path may contain. Must NOT be `.`: Java's `.` also excludes U+0085
+         * (NEL) while JavaScript's does not, so a path or a content line containing NEL
+         * parsed as a header in one tool and not the other — losing a whole file in one
+         * direction and truncating a real file in the other. Never use UNIX_LINES here: it
+         * would let `.` match \r / U+2028 / U+2029, which JS's `.` does not.
+         */
+        private const val HEADER_PATH_CHARS = "[^\\n\\r\\u2028\\u2029]"
+
         fun wouldParseAsHeader(line: String, headerFormat: String): Boolean =
             findHeaderPath(line, toHeaderPattern(headerFormat)) != null
 
@@ -81,8 +97,13 @@ class ClipboardRestoreParser {
         // degenerate headerFormat that matches everything — so we don't mark every line.
         private fun needsEscape(line: String, customRegex: Regex?): Boolean {
             if (line.startsWith(ESCAPE_MARKER)) return true
-            if (findHeaderPath(line, customRegex) == null) return false
-            return findHeaderPath(ESCAPE_MARKER + line, customRegex) == null
+            // escapeContent splits on "\n", but the parser splits on \r?\n and drops the
+            // \r. Test what the PARSER will see, or a CRLF line that is a header slips
+            // through unescaped and becomes a phantom file on restore. The marker is still
+            // prefixed to the original line, so the payload's line endings are untouched.
+            val asParsed = line.removeSuffix("\r")
+            if (findHeaderPath(asParsed, customRegex) == null) return false
+            return findHeaderPath(ESCAPE_MARKER + asParsed, customRegex) == null
         }
 
         private fun findHeaderPath(line: String, customRegex: Regex?): String? {
@@ -123,7 +144,7 @@ class ClipboardRestoreParser {
 
             val prefix = Regex.escape(headerFormat.substring(0, placeholderIndex))
             val suffix = Regex.escape(headerFormat.substring(placeholderIndex + placeholder.length))
-            return Regex("^$prefix(.+?)$suffix$")
+            return Regex("^$prefix($HEADER_PATH_CHARS+?)$suffix$")
         }
     }
 
