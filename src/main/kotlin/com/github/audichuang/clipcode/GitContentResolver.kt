@@ -55,10 +55,21 @@ class GitContentResolver(
             val revisions = result.output.singleOrNull()?.trim()?.split(" ")
                 ?: throw VcsException("Unable to read parents of $sha")
             if (revisions.firstOrNull() != sha) throw VcsException("Unable to read commit $sha")
-            // First parent is the receiving branch before merge. Compare even when
-            // the IDE supplies a nonempty combined diff: it can omit incoming files.
+            // A merge is the UNION of its diffs against EVERY parent, deduped by path.
+            // Against the first parent alone it hides everything that arrived through
+            // parents 2..N — silent loss on every octopus merge, and a different file set
+            // from what Snipcode's Graph entry produces for the same commit. Compare
+            // explicitly even when the IDE supplies a nonempty combined diff: it can omit
+            // incoming files.
             val changes = if (revisions.size > 1) {
-                GitChangeUtils.getDiff(project, commit.root, revisions[1], sha, null).toList()
+                val byPath = linkedMapOf<String, Change>()
+                revisions.drop(1).forEach { parent ->
+                    GitChangeUtils.getDiff(project, commit.root, parent, sha, null).forEach { change ->
+                        val path = change.afterRevision?.file?.path ?: change.beforeRevision?.file?.path
+                        if (path != null) byPath.putIfAbsent(path, change)
+                    }
+                }
+                byPath.values.toList()
             } else {
                 // A shallow clone grafts boundary commits so they look parentless. "No parents"
                 // therefore only means a real root commit when the history is complete; when we

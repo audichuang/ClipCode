@@ -25,6 +25,15 @@ class RestoreExecutor(
         val cancelled: Boolean = false
     )
 
+    /**
+     * Containment, re-asked immediately before the filesystem is touched. The planner
+     * already checked it, but the user has clicked through modal dialogs since and an
+     * ordinary directory can have become a link to somewhere outside the project in
+     * between. Mirror of the TypeScript executor's pre-write check.
+     */
+    private fun recheck(plan: RestorePlan, absolutePath: String): Boolean =
+        !ClipboardPathResolver.escapesRoots(plan.roots, absolutePath)
+
     fun collectExistingCreatePaths(plan: RestorePlan): List<String> =
         plan.createOperations.filter { it.existed }.map { it.relativePath }
 
@@ -66,11 +75,26 @@ class RestoreExecutor(
                                         val create = plan.createOperations.getOrNull(cursor)
                                         val delete = if (create == null) plan.deleteOperations[cursor - plan.createOperations.size] else null
                                         try {
+                                            if (create != null && !recheck(plan, create.absolutePath)) {
+                                                errors.add("${create.relativePath}: unsafe path")
+                                                cursor++
+                                                continue
+                                            }
+                                            if (delete != null && !recheck(plan, delete.absolutePath)) {
+                                                errors.add("${delete.relativePath}: unsafe path")
+                                                cursor++
+                                                continue
+                                            }
                                             if (create != null) {
                                                 val existingFile = findFile(create.absolutePath)
                                                 when {
                                                     existingFile != null && existingFile.isDirectory -> skippedExistingCount++
                                                     existingFile != null && skipExisting -> skippedExistingCount++
+                                                    // Re-take the encoding verdict too: the plan judged the
+                                                    // bytes that were there THEN, and the file may have been
+                                                    // replaced while the dialogs were open.
+                                                    existingFile != null && overwriteExisting &&
+                                                        Utf8Text.mustNotOverwrite(create.absolutePath) -> skippedExistingCount++
                                                     existingFile != null && overwriteExisting -> {
                                                         overwriteFile(existingFile, create.content)
                                                         overwrittenCount++
@@ -78,6 +102,11 @@ class RestoreExecutor(
                                                     existingFile != null -> skippedExistingCount++
                                                     else -> {
                                                         val file = createFile(create.rootPath, create.relativePath)
+                                                        // A file WE create is UTF-8. Left on the project's
+                                                        // inherited charset it was written as e.g. Big5, and the
+                                                        // copy guard would then refuse the very file this restore
+                                                        // had just produced.
+                                                        file.charset = java.nio.charset.StandardCharsets.UTF_8
                                                         saveTextKeepingContent(file, create.content)
                                                         createdCount++
                                                     }

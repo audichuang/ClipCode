@@ -46,6 +46,20 @@ class ClipboardRestoreParserTest {
     }
 
     @Test
+    fun `the Turkish dotless i is not a header on either side`() {
+        val format = "// file: \$FILE_PATH"
+        // Kotlin's IGNORE_CASE is CASE_INSENSITIVE|UNICODE_CASE and folds U+0131 onto `i`;
+        // JavaScript's /i refuses that fold. This line used to be a header here and plain
+        // content in VS Code, so a Snipcode payload pasted here was truncated into a
+        // phantom file.
+        assertTrue(parser.parse("// f\u0131le: phantom.ts", format).isEmpty(),
+            "U+0131 must not make this a header")
+        // ASCII case-insensitivity is preserved.
+        assertEquals("a.ts", parser.parse("// FILE: a.ts\nbody", format).single().path)
+        assertEquals("b.ts", parser.parse("// File: b.ts\nbody", format).single().path)
+    }
+
+    @Test
     fun `parse returns empty list for blank input`() {
         val entries = parser.parse("", "// file: \$FILE_PATH")
 

@@ -212,7 +212,7 @@ class CopyRestoreE2ETest : BasePlatformTestCase() {
      * Scenario 7: 非 UTF-8 編碼檔案複製必須走檔案 charset 解碼，而非強制 UTF-8。
      * 覆蓋 VfsUtilCore.loadText 取代 String(bytes, UTF_8) 的改動。
      */
-    fun testScenario7CopyNonUtf8FileUsesFileCharset() {
+    fun testScenario7NonUtf8FileIsSkippedRatherThanCopiedUnroundtrippably() {
         val chineseText = "你好世界\n版本 = v1"
         // UTF-16 LE BOM 0xFF 0xFE + UTF-16 bytes
         val utf16Bytes = byteArrayOf(0xFF.toByte(), 0xFE.toByte()) +
@@ -230,11 +230,13 @@ class CopyRestoreE2ETest : BasePlatformTestCase() {
         }
         val output = clipboardText()
 
-        // 必須拿到正確解碼的中文，而非 UTF-8 強制解碼後的亂碼
-        assertContains(output, "你好世界")
-        assertContains(output, "版本 = v1")
-        // 若被當 UTF-8 解碼，BOM 0xFF 0xFE 會出現 REPLACEMENT CHARACTER 或損壞字
-        assertFalse(output.contains('�'), "UTF-8 強制解碼會出現 \\uFFFD replacement char")
+        // Deliberately inverted. Decoding with the file's charset produced correct text
+        // HERE and nothing that could round-trip: the clipboard format carries no encoding,
+        // so VS Code writes the payload back as UTF-8 and the UTF-16 bytes are gone. Both
+        // tools now skip such a file — visibly, with a count — instead of emitting
+        // something that cannot come back. Never mojibake either way.
+        assertFalse(output.contains("\u4f60\u597d\u4e16\u754c"), "a file that cannot round-trip must not be copied")
+        assertFalse(output.contains('\uFFFD'), "and it must certainly never be mojibake")
     }
 
     /**
@@ -619,7 +621,12 @@ class CopyRestoreE2ETest : BasePlatformTestCase() {
             pathResolver = ClipboardPathResolver.fromRootPaths(listOf(repoRootPath), repoRootPath),
             settings = CopyFileContentSettings.getInstance(project)
         )
-        return clipboardText()
+        // Drop the `// clipcode-root:` line: this file asserts on file CONTENT, and the
+        // metadata line now carries a randomly-named temp repo, whose characters can match
+        // a `contains` probe by accident. The line itself is pinned by the contract fixtures.
+        return clipboardText().lineSequence()
+            .dropWhile { it.startsWith(ClipboardRestoreParser.SOURCE_ROOT_MARKER) }
+            .joinToString("\n")
     }
 
     private fun invokeCopyResolvedEntries(

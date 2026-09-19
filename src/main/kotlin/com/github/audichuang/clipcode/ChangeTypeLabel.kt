@@ -21,7 +21,8 @@ enum class ChangeTypeLabel(val label: String) {
         val SINGLE_LABEL_PATTERN: Regex = Regex("\\[(${ALL_LABELS.joinToString("|")})\\]")
 
         /** Regex pattern matching one or more labels at start of string */
-        val MULTI_LABEL_PATTERN: Regex = Regex("^(?:\\[(${ALL_LABELS.joinToString("|")})\\]\\s*)+")
+        val MULTI_LABEL_PATTERN: Regex =
+            Regex("^(?:\\[(${ALL_LABELS.joinToString("|")})\\][ \\t\\n\\x0B\\f\\r]*)+")
 
         /** Convert IntelliJ Change.Type to ChangeTypeLabel */
         fun fromChangeType(type: Change.Type): ChangeTypeLabel? = when (type) {
@@ -48,6 +49,6 @@ enum class ChangeTypeLabel(val label: String) {
 
         /** Strip all change type labels from path */
         fun stripLabels(path: String): String =
-            path.replace(MULTI_LABEL_PATTERN, "").trim()
+            ClipboardRestoreParser.asciiTrim(path.replace(MULTI_LABEL_PATTERN, ""))
     }
 }

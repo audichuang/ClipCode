@@ -26,7 +26,8 @@ class PasteAndRestoreFilesActionTest : BasePlatformTestCase() {
                 createOp("src/test/Existing.java", "/workspace/inv-adv/src/test/Existing.java", existed = true)
             ),
             deleteOperations = emptyList(),
-            skippedOperations = emptyList()
+            skippedOperations = emptyList(),
+            roots = emptyList()
         )
 
         val message = PasteAndRestoreFilesAction().confirmationMessage(plan)
@@ -44,7 +45,8 @@ class PasteAndRestoreFilesActionTest : BasePlatformTestCase() {
         val plan = RestorePlan(
             createOperations = emptyList(),
             deleteOperations = listOf(deleteOp("src/Old.kt", "/workspace/src/Old.kt")),
-            skippedOperations = emptyList()
+            skippedOperations = emptyList(),
+            roots = emptyList()
         )
         val message = PasteAndRestoreFilesAction().confirmationMessage(plan)
         assertContains(message, "Files to DELETE (1):")
@@ -59,7 +61,8 @@ class PasteAndRestoreFilesActionTest : BasePlatformTestCase() {
                 skipped("src/X.kt", "src/X.kt", RestorePlan.SkipReason.ALREADY_ABSENT),
                 skipped("src/Y.kt", "src/Y.kt", RestorePlan.SkipReason.AMBIGUOUS_TARGET),
                 skipped("@nope", null, RestorePlan.SkipReason.UNRESOLVED_PATH)
-            )
+            ),
+            roots = emptyList()
         )
         val message = PasteAndRestoreFilesAction().confirmationMessage(plan)
         assertContains(message, "Will be SKIPPED:")
@@ -73,17 +76,20 @@ class PasteAndRestoreFilesActionTest : BasePlatformTestCase() {
         val createOnly = RestorePlan(
             createOperations = listOf(createOp("a", "/r/a", false)),
             deleteOperations = emptyList(),
-            skippedOperations = emptyList()
+            skippedOperations = emptyList(),
+            roots = emptyList()
         )
         val deleteOnly = RestorePlan(
             createOperations = emptyList(),
             deleteOperations = listOf(deleteOp("a", "/r/a")),
-            skippedOperations = emptyList()
+            skippedOperations = emptyList(),
+            roots = emptyList()
         )
         val both = RestorePlan(
             createOperations = listOf(createOp("a", "/r/a", false)),
             deleteOperations = listOf(deleteOp("b", "/r/b")),
-            skippedOperations = emptyList()
+            skippedOperations = emptyList(),
+            roots = emptyList()
         )
         kotlin.test.assertEquals("Restore Files from Clipboard", action.dialogTitle(createOnly))
         kotlin.test.assertEquals("Delete Files", action.dialogTitle(deleteOnly))

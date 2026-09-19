@@ -14,9 +14,16 @@ class ClipboardRestoreParser {
         /**
          * Matches: // file: xxx, # file: xxx, file: xxx, etc.
          */
+        // The `file:` token is spelled out per-character instead of relying on a
+        // case-insensitive flag. Kotlin's RegexOption.IGNORE_CASE is
+        // CASE_INSENSITIVE|UNICODE_CASE, which folds the Turkish dotless i (U+0131) onto
+        // `i`; JavaScript's /i explicitly refuses that fold (a non-ASCII char whose
+        // canonical form is ASCII is left alone). A content line "// fıle: phantom.ts"
+        // was therefore a header here and plain content in VS Code, so a Snipcode payload
+        // pasted into IntelliJ was truncated and grew a phantom file. ASCII case folding
+        // is all this token ever needed.
         private val GENERIC_FILE_HEADER = Regex(
-            "^[$ASCII_WS]*(?:(//|#|/\\*)[$ASCII_WS]*)?file:[$ASCII_WS]*($HEADER_PATH_CHARS+?)[$ASCII_WS]*(?:\\*/)?$",
-            RegexOption.IGNORE_CASE
+            "^[$ASCII_WS]*(?:(//|#|/\\*)[$ASCII_WS]*)?[Ff][Ii][Ll][Ee]:[$ASCII_WS]*($HEADER_PATH_CHARS+?)[$ASCII_WS]*(?:\\*/)?$"
         )
 
         /**
@@ -35,11 +42,37 @@ class ClipboardRestoreParser {
          */
         const val SOURCE_ROOT_MARKER = "// clipcode-root: "
 
+        /**
+         * Terminates the last file's body. Without it NOTHING on the wire says where the
+         * file content stops and the configured footer starts, so the footer was
+         * accumulated INTO that file — which also made a size-skipped placeholder body
+         * multi-line and walked straight past the placeholder guard, overwriting a real
+         * 1100-byte file with a 58-byte stub. Reconstructing the footer from the
+         * RECEIVER's setting cannot work: the two tools do not share settings, so it
+         * missed exactly when it mattered, and on a foreign payload it silently deleted a
+         * real closing line. An explicit marker is receiver-independent. Escaped like any
+         * other line when it appears in real content. MUST be byte-identical to the VS
+         * Code mirror (clipboardFormat.ts POST_TEXT_MARKER).
+         */
+        const val POST_TEXT_MARKER = "// clipcode-end"
+
+        /**
+         * ASCII-only trim, never String.trim(). Kotlin's trim is Character.isWhitespace ∪
+         * isSpaceChar and JavaScript's is the ECMAScript WhiteSpace set; they disagree on
+         * U+001C-U+001F and U+FEFF. That disagreement is not cosmetic — it decided whether
+         * a header path kept a trailing control char (so the two tools wrote DIFFERENT
+         * filenames), whether a line counted as blank, and, through isPlaceholderBody,
+         * whether a real file got overwritten. One ASCII class on both sides removes it.
+         */
+        private val ASCII_WS_CHARS = charArrayOf(' ', '\t', '\n', '\u000B', '\u000C', '\r')
+
+        fun asciiTrim(value: String): String = value.trim(*ASCII_WS_CHARS)
+
         /** Read the source-root metadata from the first line, if present. */
         fun extractSourceRoot(clipboardText: String): String? {
             val firstLine = clipboardText.substringBefore('\n')
             if (!firstLine.startsWith(SOURCE_ROOT_MARKER)) return null
-            return firstLine.removePrefix(SOURCE_ROOT_MARKER).trim().ifEmpty { null }
+            return asciiTrim(firstLine.removePrefix(SOURCE_ROOT_MARKER)).ifEmpty { null }
         }
 
         /** Build side: true when [line] would parse as a file header under [headerFormat]. */
@@ -86,8 +119,8 @@ class ClipboardRestoreParser {
             val lines = text.split("\n")
             var start = 0
             var end = lines.size
-            while (start < end && lines[start].isBlank()) start++
-            while (end > start && lines[end - 1].isBlank()) end--
+            while (start < end && asciiTrim(lines[start]).isEmpty()) start++
+            while (end > start && asciiTrim(lines[end - 1]).isEmpty()) end--
             return lines.subList(start, end).joinToString("\n")
         }
 
@@ -97,6 +130,8 @@ class ClipboardRestoreParser {
         // degenerate headerFormat that matches everything — so we don't mark every line.
         private fun needsEscape(line: String, customRegex: Regex?): Boolean {
             if (line.startsWith(ESCAPE_MARKER)) return true
+            // A real content line that IS the end marker must not terminate its own file.
+            if (line == POST_TEXT_MARKER || line == POST_TEXT_MARKER + "\r") return true
             // escapeContent splits on "\n", but the parser splits on \r?\n and drops the
             // \r. Test what the PARSER will see, or a CRLF line that is a header slips
             // through unescaped and becomes a phantom file on restore. The marker is still
@@ -123,8 +158,8 @@ class ClipboardRestoreParser {
         }
 
         private fun isLikelyBareFileHeaderPath(rawPath: String): Boolean {
-            val path = ChangeTypeLabel.stripLabels(rawPath).trim()
-            if (path.isBlank()) return false
+            val path = asciiTrim(ChangeTypeLabel.stripLabels(rawPath))
+            if (path.isEmpty()) return false
             if (path.startsWith("\"") || path.startsWith("'")) return false
             if (path.endsWith(",") || path.endsWith(";")) return false
 
@@ -164,18 +199,36 @@ class ClipboardRestoreParser {
         var currentChangeTypes: Set<ChangeTypeLabel> = emptySet()
         val currentContent = StringBuilder(512)
 
+        fun flush() {
+            val path = currentFilePath ?: return
+            parsedEntries.add(
+                ParsedClipboardEntry(
+                    path = path,
+                    content = unescapeContent(joinContent(currentContent.toString())),
+                    changeTypes = currentChangeTypes
+                )
+            )
+            currentFilePath = null
+            currentChangeTypes = emptySet()
+            currentContent.clear()
+        }
+
         for (line in lines) {
             val rawPath = findHeaderPath(line, customRegex)
+            // The HEADER wins. Under a permissive format such as `// $FILE_PATH` this very
+            // line is the header of a real file named `clipcode-end`, and treating it as
+            // the terminator first discarded that file and its body outright. The builder
+            // suppresses the marker for exactly those formats, so the two rules never
+            // fight over the same line.
+            if (rawPath == null && line == POST_TEXT_MARKER) {
+                // Ends the CURRENT file's body — the footer follows. NOT the whole parse:
+                // two payloads pasted back to back is an ordinary thing to do, and stopping
+                // here dropped every file in the second one without a word.
+                flush()
+                continue
+            }
             if (rawPath != null) {
-                if (currentFilePath != null) {
-                    parsedEntries.add(
-                        ParsedClipboardEntry(
-                            path = currentFilePath,
-                            content = unescapeContent(joinContent(currentContent.toString())),
-                            changeTypes = currentChangeTypes
-                        )
-                    )
-                }
+                flush()
 
                 currentChangeTypes = ChangeTypeLabel.extractLeadingLabels(rawPath)
                 currentFilePath = ChangeTypeLabel.stripLabels(rawPath)
@@ -188,15 +241,7 @@ class ClipboardRestoreParser {
             }
         }
 
-        if (currentFilePath != null) {
-            parsedEntries.add(
-                ParsedClipboardEntry(
-                    path = currentFilePath,
-                    content = unescapeContent(joinContent(currentContent.toString())),
-                    changeTypes = currentChangeTypes
-                )
-            )
-        }
+        flush()
 
         return parsedEntries
     }

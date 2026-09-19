@@ -335,6 +335,9 @@ class PasteAndRestoreFilesAction : AnAction() {
         grouped[RestorePlan.SkipReason.PLACEHOLDER_BODY]?.let { items ->
             summaryLines.add("  - not copied in full by the source: ${items.size}")
         }
+        grouped[RestorePlan.SkipReason.NON_UTF8_TARGET]?.let { items ->
+            summaryLines.add("  - the file on disk is not UTF-8: ${items.size}")
+        }
 
         return summaryLines.joinToString("\n")
     }
@@ -421,6 +424,8 @@ class PasteAndRestoreFilesAction : AnAction() {
                         "$path: ambiguous target, skipped for safety"
                     RestorePlan.SkipReason.PLACEHOLDER_BODY ->
                         "$path: the clipboard holds only a placeholder, not the file's content"
+                    RestorePlan.SkipReason.NON_UTF8_TARGET ->
+                        "$path: the file on disk is not UTF-8; writing would change its encoding"
                 }
             }
             val more = if (skippedOperations.size > 5) "<br>..." else ""

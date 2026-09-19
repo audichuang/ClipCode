@@ -87,6 +87,18 @@ object ClipboardPayloadFormatter {
         }
 
         if (includeEmptyWrappers || options.postText.isNotEmpty()) {
+            // Only when there IS a footer — an empty wrapper slot needs no terminator, and
+            // this keeps every postText-free payload byte-identical to the previous format.
+            // Suppressed when the configured header would swallow the marker line, exactly
+            // as the `clipcode-root` line is: under `// $FILE_PATH` the marker IS a valid
+            // header for a file named `clipcode-end`, so emitting it would make that real
+            // file unrepresentable. Without the terminator the footer glues onto the last
+            // file, which payloads from before this marker already do.
+            if (options.postText.isNotEmpty() &&
+                !ClipboardRestoreParser.wouldParseAsHeader(ClipboardRestoreParser.POST_TEXT_MARKER, headerFormat)
+            ) {
+                lines.add(ClipboardRestoreParser.POST_TEXT_MARKER)
+            }
             lines.add(ClipboardRestoreParser.escapeContent(options.postText, headerFormat))
         }
 
