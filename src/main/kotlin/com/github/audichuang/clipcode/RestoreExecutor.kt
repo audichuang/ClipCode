@@ -78,7 +78,7 @@ class RestoreExecutor(
                                                     existingFile != null -> skippedExistingCount++
                                                     else -> {
                                                         val file = createFile(create.rootPath, create.relativePath)
-                                                        VfsUtil.saveText(file, create.content)
+                                                        saveTextKeepingContent(file, create.content)
                                                         createdCount++
                                                     }
                                                 }
@@ -123,6 +123,20 @@ class RestoreExecutor(
         )
     }
 
+    /**
+     * VfsUtil.saveText encodes with the file's charset — for a file we just created that is the
+     * PROJECT default, which is Big5/GBK on many CJK setups — and Java's encoder silently
+     * substitutes '?' for every character it cannot represent. Restoring UTF-8 content into such
+     * a project therefore mangles CJK text and drops characters like '€', reporting success.
+     * Only act when the alternative is certain corruption: switch that file to UTF-8.
+     */
+    private fun saveTextKeepingContent(file: VirtualFile, content: String) {
+        if (!file.charset.newEncoder().canEncode(content)) {
+            file.charset = java.nio.charset.StandardCharsets.UTF_8
+        }
+        VfsUtil.saveText(file, content)
+    }
+
     private fun overwriteFile(file: VirtualFile, content: String) {
         val manager = com.intellij.openapi.fileEditor.FileDocumentManager.getInstance()
         val document = manager.getDocument(file)
@@ -132,7 +146,7 @@ class RestoreExecutor(
         } else {
             val before = file.contentsToByteArray()
             val unsavedText = document?.takeIf { manager.isDocumentUnsaved(it) }?.text
-            writeRaw(file) { VfsUtil.saveText(file, content) }
+            writeRaw(file) { saveTextKeepingContent(file, content) }
             com.intellij.openapi.command.undo.UndoManager.getInstance(project).undoableActionPerformed(
                 object : com.intellij.openapi.command.undo.BasicUndoableAction(file) {
                     override fun undo() {

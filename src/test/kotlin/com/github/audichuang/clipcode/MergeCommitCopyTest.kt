@@ -192,6 +192,72 @@ class MergeCommitCopyTest : BasePlatformTestCase() {
         assertTrue(!payload.text.contains("develop only"))
     }
 
+    fun testShallowBoundaryCommitIsRefusedInsteadOfCopyingTheWholeTree() {
+        git("checkout", "-b", "history")
+        write("incoming.txt", "incoming\n")
+        commit()
+        git("checkout", "trust")
+        write("receiver.txt", "receiver\n")
+        commit()
+        git("merge", "--no-ff", "history", "-m", "merge")
+
+        // --depth 1 grafts the tip so it looks parentless. file:// is required: git ignores
+        // --depth for a plain local path clone.
+        val shallow = java.nio.file.Files.createTempDirectory("clipcode-shallow").toFile()
+        val clone = File(shallow, "clone")
+        runIn(shallow, "git", "clone", "--depth", "1", "file://${root.absolutePath}", "clone")
+        val cloneVf = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(clone)!!
+        ProjectLevelVcsManager.getInstance(project).setDirectoryMappings(
+            listOf(VcsDirectoryMapping(clone.path, GitVcs.NAME)))
+        try {
+            // Precondition: git really does hide the parent, otherwise this test proves nothing.
+            assertEquals(1, runIn(clone, "git", "rev-list", "--parents", "-n", "1", "HEAD")
+                .trim().split(" ").size)
+            val sha = runIn(clone, "git", "rev-parse", "HEAD").trim()
+            val selection = GitSelectionCollector.Selection(
+                emptyList(), emptyList(), emptySet(), emptySet(),
+                SelectionSource.GIT_LOG_OR_HISTORY, CommitId(HashImpl.build(sha), cloneVf))
+            val failure = try {
+                resolve(selection); null
+            } catch (e: java.util.concurrent.ExecutionException) {
+                e.cause
+            }
+            assertTrue(failure?.message?.contains("shallow") == true,
+                "a shallow boundary must be refused with a reason, got: ${failure?.message}")
+        } finally {
+            ProjectLevelVcsManager.getInstance(project).setDirectoryMappings(
+                listOf(VcsDirectoryMapping(root.path, GitVcs.NAME)))
+            shallow.deleteRecursively()
+        }
+    }
+
+    fun testBinaryBlobInACommitIsNotDecodedAsText() {
+        val png = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+            0x00, 0x01, 0x02, 0xFF.toByte(), 0xFE.toByte(), 0x00, 0x7F)
+        File(root, "logo.png").writeBytes(png)
+        rootVf.refresh(false, true)
+        write("notes.txt", "plain text\n")
+        commit()
+        val sha = git("rev-parse", "HEAD")
+
+        val entries = resolve(GitSelectionCollector(logger).collect(event(sha)))
+            .associateBy { File(it.filePath).name }
+        assertEquals(setOf("logo.png", "notes.txt"), entries.keys)
+        assertEquals("plain text\n", entries.getValue("notes.txt").contentFromRevision)
+        // Decoding a PNG as text yields U+FFFD soup that Paste & Restore would write back
+        // over the real asset, so the revision read must decline it.
+        // JUnit3's TestCase.assertNull(String, Object) would shadow kotlin.test's here.
+        kotlin.test.assertNull(entries.getValue("logo.png").contentFromRevision,
+            "binary blob must not be decoded as text")
+    }
+
+    private fun runIn(dir: File, vararg cmd: String): String {
+        val process = ProcessBuilder(*cmd).directory(dir).redirectErrorStream(true).start()
+        val output = process.inputStream.bufferedReader().readText()
+        assertEquals(0, process.waitFor(), output)
+        return output
+    }
+
     private fun event(sha: String, place: String = "Vcs.Log.ContextMenu", changes: Array<Change> = emptyArray(), useCommitSelection: Boolean = true): AnActionEvent {
         val id = CommitId(HashImpl.build(sha), rootVf)
         val log = Proxy.newProxyInstance(VcsLog::class.java.classLoader, arrayOf(VcsLog::class.java)) { _, method, _ ->

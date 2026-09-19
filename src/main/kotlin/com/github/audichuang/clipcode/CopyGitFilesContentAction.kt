@@ -1,6 +1,7 @@
 package com.github.audichuang.clipcode
 
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.vcs.VcsException
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -64,8 +65,12 @@ class CopyGitFilesContentAction : AnAction() {
 
                 override fun onThrowable(error: Throwable) {
                     logger.warn("Failed to copy Git selection", error)
-                    if (!project.isDisposed) CopyFileContentAction.showNotification(
-                        "Unable to read selected Git revision. Clipboard unchanged. See IDE log for details.",
+                    if (project.isDisposed) return
+                    // Surface the cause: "history is shallow, run git fetch --unshallow" is
+                    // actionable, the generic sentence is not.
+                    val detail = (error as? VcsException)?.message?.takeIf { it.isNotBlank() }
+                    CopyFileContentAction.showNotification(
+                        detail ?: "Unable to read selected Git revision. Clipboard unchanged. See IDE log for details.",
                         NotificationType.ERROR, project
                     )
                 }

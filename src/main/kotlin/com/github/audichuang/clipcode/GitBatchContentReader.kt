@@ -32,7 +32,10 @@ internal object GitBatchContentReader {
             // Specialized revisions (binary, submodule, custom providers) retain their own semantics.
             it.javaClass == GitContentRevision::class.java && !it.file.isDirectory &&
                 GitUtil.isHashString(it.revisionNumber.asString()) &&
-                !it.file.path.contains('\n') && !it.file.path.contains('\r')
+                !it.file.path.contains('\n') && !it.file.path.contains('\r') &&
+                // Binary blobs must not be decoded as text; the cache lookup below would
+                // otherwise hand back mojibake before readRevisionContent's guard is reached.
+                !GitContentResolver.isBinaryRevision(it)
         }
         if (candidates.size < 2) return result
         val missing = candidates.filter { revision ->

@@ -332,6 +332,9 @@ class PasteAndRestoreFilesAction : AnAction() {
         grouped[RestorePlan.SkipReason.AMBIGUOUS_TARGET]?.let { items ->
             summaryLines.add("  - ambiguous target: ${items.size}")
         }
+        grouped[RestorePlan.SkipReason.PLACEHOLDER_BODY]?.let { items ->
+            summaryLines.add("  - not copied in full by the source: ${items.size}")
+        }
 
         return summaryLines.joinToString("\n")
     }
@@ -416,6 +419,8 @@ class PasteAndRestoreFilesAction : AnAction() {
                         "$path: path unresolved"
                     RestorePlan.SkipReason.AMBIGUOUS_TARGET ->
                         "$path: ambiguous target, skipped for safety"
+                    RestorePlan.SkipReason.PLACEHOLDER_BODY ->
+                        "$path: the clipboard holds only a placeholder, not the file's content"
                 }
             }
             val more = if (skippedOperations.size > 5) "<br>..." else ""
