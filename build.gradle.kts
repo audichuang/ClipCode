@@ -79,6 +79,14 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.2.12 - Keep the IntelliJ and VS Code sides byte-compatible</h2>
+            <ul>
+                <li><b>Fixed:</b> A file path or content line containing U+0085 (NEL) was a header to one tool and not the other. Pasting a VS Code copy into IntelliJ silently dropped the whole file; the reverse truncated a real file and invented a phantom one. Both sides now use the same explicit character class.</li>
+                <li><b>Fixed:</b> A CRLF content line that would parse as a custom file header was not escaped, so on restore it became a phantom file and the real file came back empty. The escape check now tests the line the way the parser sees it.</li>
+                <li><b>Fixed:</b> Paste &amp; Restore no longer relocates files that already land correctly in the target project. A flat-layout repository (requests/requests, proj/proj) restored into a differently-named checkout used to nest every correct path one level deeper into a shadow tree, leaving the real files stale.</li>
+                <li>The clipboard wire format is unchanged: every existing payload still restores byte-for-byte as before.</li>
+            </ul>
+
             <h2>Version 1.2.11 - Stop Paste &amp; Restore from destroying files</h2>
             <ul>
                 <li><b>Fixed:</b> When the copy side could not embed a file (over the size limit, or unreadable) it substituted a one-line comment for the body. Paste &amp; Restore wrote that comment over the real file. Such entries are now reported as skipped and left untouched.</li>

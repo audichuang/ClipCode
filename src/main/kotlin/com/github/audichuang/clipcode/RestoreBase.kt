@@ -55,6 +55,12 @@ object RestoreBaseDetector {
 
     private fun joinPath(root: String, rel: String): String = "${root.trimEnd('/')}/$rel"
 
+    /** True when [rel]'s parent directory already exists under [primaryRoot]. */
+    private fun parentExists(primaryRoot: String, rel: String, probe: DirProbe): Boolean {
+        val slash = rel.lastIndexOf('/')
+        return slash >= 0 && probe.isDir(joinPath(primaryRoot, rel.substring(0, slash)))
+    }
+
     private fun baseNameOf(p: String): String =
         p.replace('\\', '/').trimEnd('/').substringAfterLast('/')
 
@@ -75,7 +81,17 @@ object RestoreBaseDetector {
         // own folder name as a redundant leading segment) → strip it.
         val multi = rels.filter { it.contains('/') }
         val firstSegments = multi.map { it.substringBefore('/') }.toSet()
+        // A name match alone is not evidence: only relocate when it actually resolves MORE
+        // paths than leaving them where they are. Without this, a flat-layout repo
+        // (requests/requests, proj/proj) restored into a differently-named checkout gets
+        // every already-correct path nested one level deeper into a shadow tree.
+        // Relocating is only safe when the paths do NOT already land somewhere here. In a
+        // flat-layout repo (requests/requests, proj/proj) the same-named folder always
+        // exists, so a name match alone used to nest every already-correct path one level
+        // deeper into a shadow tree, leaving the real files stale.
+        val alreadyAnchored = rels.any { parentExists(primaryRoot, it, probe) }
         if (multi.isNotEmpty() && firstSegments.size == 1 && firstSegments.first() == targetName) {
+            if (alreadyAnchored) return null
             return RestoreBaseSuggestion(
                 base = RestoreBase.Strip(targetName),
                 label = "remove the leading \"$targetName/\"",
@@ -87,6 +103,7 @@ object RestoreBaseDetector {
         // The bundle was copied with the repo as root, and that repo folder exists here
         // (project opened one level up) → nest everything under it.
         if (probe.isDir("${primaryRoot.trimEnd('/')}/$sourceRoot")) {
+            if (alreadyAnchored) return null
             return RestoreBaseSuggestion(
                 base = RestoreBase.Add(sourceRoot),
                 label = "place everything under \"$sourceRoot/\"",
