@@ -3,6 +3,7 @@ package com.github.audichuang.clipcode
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
+import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -339,6 +340,44 @@ class RestorePlanBuilderTest {
         val reasons = plan.skippedOperations.map { it.reason }.toSet()
         assertTrue(reasons.contains(RestorePlan.SkipReason.ALREADY_ABSENT))
         assertTrue(reasons.contains(RestorePlan.SkipReason.UNRESOLVED_PATH))
+    }
+
+    @Test
+    fun `skips placeholder bodies instead of overwriting the real file`() {
+        val root = Files.createTempDirectory("clipcode-plan-placeholder")
+        val victim = root.resolve("src/Big.kt")
+        victim.parent.createDirectories()
+        victim.writeText("the real 600 KB file")
+
+        val plan = planFor(
+            root,
+            listOf(
+                ClipboardRestoreParser.ParsedClipboardEntry(
+                    path = "src/Big.kt",
+                    content = "// File skipped: size exceeds limit (614400 bytes)"
+                ),
+                ClipboardRestoreParser.ParsedClipboardEntry(
+                    path = "src/Unreadable.kt",
+                    content = "// Unable to read file content"
+                ),
+                ClipboardRestoreParser.ParsedClipboardEntry(
+                    path = "src/Failed.kt",
+                    content = "// Error reading file content"
+                ),
+                ClipboardRestoreParser.ParsedClipboardEntry(
+                    path = "src/Real.kt",
+                    content = "// File skipped: size exceeds limit (1 bytes)\nbut there is real content too"
+                )
+            )
+        )
+
+        assertEquals(listOf("src/Real.kt"), plan.createOperations.map { it.relativePath })
+        assertEquals(
+            listOf("src/Big.kt", "src/Unreadable.kt", "src/Failed.kt"),
+            plan.skippedOperations.map { it.rawPath }
+        )
+        assertTrue(plan.skippedOperations.all { it.reason == RestorePlan.SkipReason.PLACEHOLDER_BODY })
+        assertEquals("the real 600 KB file", victim.readText())
     }
 
     private fun planFor(root: Path, entries: List<ClipboardRestoreParser.ParsedClipboardEntry>): RestorePlan {

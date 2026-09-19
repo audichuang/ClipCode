@@ -231,5 +231,41 @@ class RestoreExecutorTest : BasePlatformTestCase() {
         }
     }
 
+    fun testRestoredContentSurvivesANonUnicodeProjectEncoding() {
+        val encodings = com.intellij.openapi.vfs.encoding.EncodingProjectManager.getInstance(project)
+        val previous = encodings.defaultCharsetName
+        val root = Files.createTempDirectory("clipcode-executor-charset")
+        try {
+            encodings.setDefaultCharsetName("Big5")
+            val target = root.resolve("src/Cjk.kt")
+            val content = "hello \u20ac \u3041 \u65e5\u672c\u8a9e"
+            val result = RestoreExecutor(project).execute(
+                RestorePlan(
+                    createOperations = listOf(
+                        RestorePlan.CreateOperation(
+                            relativePath = "src/Cjk.kt",
+                            absolutePath = target.systemIndependentPath(),
+                            rootPath = root.systemIndependentPath(),
+                            content = content,
+                            existed = false
+                        )
+                    ),
+                    deleteOperations = emptyList(),
+                    skippedOperations = emptyList()
+                ),
+                overwriteExisting = true,
+                skipExisting = false,
+                indicator = com.intellij.openapi.progress.EmptyProgressIndicator()
+            )
+            assertTrue(result.errors.isEmpty(), result.errors.toString())
+            assertEquals(1, result.createdCount)
+            // Big5 cannot represent these, and the encoder substitutes '?' silently.
+            assertEquals(content, String(java.nio.file.Files.readAllBytes(target), Charsets.UTF_8))
+        } finally {
+            encodings.setDefaultCharsetName(previous)
+            root.toFile().deleteRecursively()
+        }
+    }
+
     private fun Path.systemIndependentPath(): String = toString().replace('\\', '/')
 }

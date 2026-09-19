@@ -79,6 +79,15 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.2.11 - Stop Paste &amp; Restore from destroying files</h2>
+            <ul>
+                <li><b>Fixed:</b> When the copy side could not embed a file (over the size limit, or unreadable) it substituted a one-line comment for the body. Paste &amp; Restore wrote that comment over the real file. Such entries are now reported as skipped and left untouched.</li>
+                <li><b>Fixed:</b> Binary files in a copied commit were decoded as text and could be written back over the real asset. The Git paths now decline them, as the plain file copy already did.</li>
+                <li><b>Fixed:</b> Restored content that the project's default encoding cannot represent was silently written as '?'. Such a file is now written as UTF-8 instead of being corrupted.</li>
+                <li><b>Fixed:</b> Copying a commit from a shallow clone treated a grafted boundary commit as an initial commit and copied the entire repository tree. It now reports that the history is shallow and leaves the clipboard unchanged.</li>
+                <li>A Git revision that cannot be read now says why, instead of a generic message.</li>
+            </ul>
+
             <h2>Version 1.2.10 - Copy a whole merge from the Git Log</h2>
             <ul>
                 <li>Right-clicking a merge commit in the Git Log now copies every file the merge actually brought into the receiving branch, compared against the merge's first parent.</li>

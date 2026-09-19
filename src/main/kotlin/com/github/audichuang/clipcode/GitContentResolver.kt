@@ -60,6 +60,13 @@ class GitContentResolver(
             val changes = if (revisions.size > 1) {
                 GitChangeUtils.getDiff(project, commit.root, revisions[1], sha, null).toList()
             } else {
+                // A shallow clone grafts boundary commits so they look parentless. "No parents"
+                // therefore only means a real root commit when the history is complete; when we
+                // cannot tell, refuse rather than copy the whole tree as this commit's net change.
+                if (isShallowRepository(project, commit.root)) throw VcsException(
+                    "Repository history is shallow, so the parent of $sha is not available locally. " +
+                        "Run 'git fetch --unshallow' and try again."
+                )
                 GitChangeUtils.getRevisionChanges(project, commit.root, sha, false, true, false).changes.toList()
             }
             selected.copy(changes = changes, commit = null)
@@ -214,7 +221,11 @@ class GitContentResolver(
 
     private fun readRevisionContent(revision: ContentRevision?): String? =
         try {
-            revision?.content
+            // Revision reads decode bytes with a charset and never fail on binary input, so
+            // without this guard a PNG reaches the payload as mojibake and Paste & Restore
+            // writes that back over the real asset. The plain file copy path already skips
+            // binaries (CopyFileContentAction.isBinaryFile), and so does the VS Code sibling.
+            if (revision != null && isBinaryRevision(revision)) null else revision?.content
         } catch (e: ProcessCanceledException) {
             throw e
         } catch (e: Exception) {
@@ -288,4 +299,23 @@ class GitContentResolver(
     private fun findFile(path: String): VirtualFile? =
         LocalFileSystem.getInstance().findFileByPath(path)
             ?: LocalFileSystem.getInstance().refreshAndFindFileByPath(path)
+
+    // Only reached on the rare "commit lists no parents" branch, so the common path pays nothing.
+    private fun isShallowRepository(project: Project, root: VirtualFile): Boolean {
+        val handler = GitLineHandler(project, root, GitCommand.REV_PARSE)
+        handler.addParameters("--is-shallow-repository")
+        val result = Git.getInstance().runCommand(handler)
+        result.throwOnError()
+        return result.output.firstOrNull()?.trim() == "true"
+    }
+
+    companion object {
+        /** Shared with GitBatchContentReader so both revision paths skip the same files. */
+        internal fun isBinaryRevision(revision: ContentRevision): Boolean =
+            ApplicationManager.getApplication().runReadAction<Boolean> {
+                val fileType = revision.file.fileType
+                // A deleted source file can have UnknownFileType without a VFS file.
+                fileType.isBinary && (fileType != UnknownFileType.INSTANCE || revision.file.virtualFile != null)
+            }
+    }
 }
