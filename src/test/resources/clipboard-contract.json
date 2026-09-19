@@ -57,7 +57,7 @@
           }
         ]
       },
-      "wire": "// clipcode-root: myrepo\nBEFORE\n// file: src/a.ts\nx();\nAFTER"
+      "wire": "// clipcode-root: myrepo\nBEFORE\n// file: src/a.ts\nx();\n// clipcode-end\nAFTER"
     },
     {
       "name": "regular: no source root -> no metadata line",
@@ -283,6 +283,158 @@
         ]
       },
       "wire": "// [DELETED] src/Gone.ts\n//clipcode-esc: // This file has been deleted in this change"
+    },
+    {
+      "name": "regular: a path that literally starts with a change label is written as-is",
+      "kind": "regular",
+      "options": {
+        "headerFormat": "// file: $FILE_PATH",
+        "preText": "",
+        "postText": "",
+        "addExtraLineBetweenFiles": false,
+        "sourceRoot": "myrepo",
+        "files": [
+          {
+            "path": "[DELETED] x.ts",
+            "content": "keep me"
+          }
+        ]
+      },
+      "wire": "// clipcode-root: myrepo\n\n// file: [DELETED] x.ts\nkeep me\n"
+    },
+    {
+      "name": "regular: leading and trailing blank lines are emitted verbatim (parse trims them)",
+      "kind": "regular",
+      "options": {
+        "headerFormat": "// file: $FILE_PATH",
+        "preText": "",
+        "postText": "",
+        "addExtraLineBetweenFiles": false,
+        "sourceRoot": "myrepo",
+        "files": [
+          {
+            "path": "src/a.ts",
+            "content": "\n  \nfoo\n\n"
+          }
+        ]
+      },
+      "wire": "// clipcode-root: myrepo\n\n// file: src/a.ts\n\n  \nfoo\n\n\n"
+    },
+    {
+      "name": "regular: CRLF content is emitted verbatim (the builder never normalises endings)",
+      "kind": "regular",
+      "options": {
+        "headerFormat": "// file: $FILE_PATH",
+        "preText": "",
+        "postText": "",
+        "addExtraLineBetweenFiles": false,
+        "sourceRoot": "myrepo",
+        "files": [
+          {
+            "path": "src/a.ts",
+            "content": "foo\r\nbar\r\n"
+          }
+        ]
+      },
+      "wire": "// clipcode-root: myrepo\n\n// file: src/a.ts\nfoo\r\nbar\r\n\n"
+    },
+    {
+      "name": "regular: a Turkish dotless i header lookalike is NOT escaped on either side",
+      "kind": "regular",
+      "options": {
+        "headerFormat": "// file: $FILE_PATH",
+        "preText": "",
+        "postText": "",
+        "addExtraLineBetweenFiles": false,
+        "sourceRoot": "myrepo",
+        "files": [
+          {
+            "path": "src/a.ts",
+            "content": "before\n// fıle: phantom.ts\nafter"
+          }
+        ]
+      },
+      "wire": "// clipcode-root: myrepo\n\n// file: src/a.ts\nbefore\n// fıle: phantom.ts\nafter\n"
+    },
+    {
+      "name": "regular: content containing a literal end marker line is escaped",
+      "kind": "regular",
+      "options": {
+        "headerFormat": "// file: $FILE_PATH",
+        "preText": "",
+        "postText": "",
+        "addExtraLineBetweenFiles": false,
+        "sourceRoot": "myrepo",
+        "files": [
+          {
+            "path": "src/a.ts",
+            "content": "before\n// clipcode-end\nafter"
+          }
+        ]
+      },
+      "wire": "// clipcode-root: myrepo\n\n// file: src/a.ts\nbefore\n//clipcode-esc: // clipcode-end\nafter\n"
+    },
+    {
+      "name": "git: a footer is terminated by the end marker here too",
+      "kind": "git",
+      "options": {
+        "headerFormat": "// file: $FILE_PATH",
+        "preText": "",
+        "postText": "</files>",
+        "addExtraLineBetweenFiles": true,
+        "sourceRoot": "myrepo",
+        "files": [
+          {
+            "path": "src/Mod.ts",
+            "content": "modified();",
+            "changeType": "MODIFIED"
+          }
+        ]
+      },
+      "wire": "// clipcode-root: myrepo\n// file: [MODIFIED] src/Mod.ts\nmodified();\n\n// clipcode-end\n</files>"
+    },
+    {
+      "name": "regular: a permissive header suppresses the end marker, so a file named clipcode-end survives",
+      "kind": "regular",
+      "options": {
+        "headerFormat": "// $FILE_PATH",
+        "preText": "",
+        "postText": "FOOTER",
+        "addExtraLineBetweenFiles": false,
+        "files": [
+          {
+            "path": "a.ts",
+            "content": "one"
+          },
+          {
+            "path": "clipcode-end",
+            "content": "KEEP"
+          },
+          {
+            "path": "b.ts",
+            "content": "two"
+          }
+        ]
+      },
+      "wire": "\n// a.ts\none\n// clipcode-end\nKEEP\n// b.ts\ntwo\nFOOTER"
+    },
+    {
+      "name": "regular: post text that would parse as a header is escaped",
+      "kind": "regular",
+      "options": {
+        "headerFormat": "// file: $FILE_PATH",
+        "preText": "",
+        "postText": "// file: fake/footer.ts",
+        "addExtraLineBetweenFiles": false,
+        "sourceRoot": "myrepo",
+        "files": [
+          {
+            "path": "src/a.ts",
+            "content": "x();"
+          }
+        ]
+      },
+      "wire": "// clipcode-root: myrepo\n\n// file: src/a.ts\nx();\n// clipcode-end\n//clipcode-esc: // file: fake/footer.ts"
     }
   ],
   "parseCases": [
@@ -439,6 +591,270 @@
           "changeTypes": []
         }
       ]
+    },
+    {
+      "name": "parse: the end marker terminates the last file, whatever follows it",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// file: src/a.ts\na();\n\n// clipcode-end\n</files>",
+      "expected": [
+        {
+          "path": "src/a.ts",
+          "content": "a();",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: a size-skipped placeholder followed by a footer stays just the placeholder",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// file: src/large.txt\n// File skipped: size exceeds limit (1100 bytes)\n\n// clipcode-end\n</files>",
+      "expected": [
+        {
+          "path": "src/large.txt",
+          "content": "// File skipped: size exceeds limit (1100 bytes)",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: the end marker ends that file only — a second payload still parses",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// file: src/a.ts\na();\n\n// clipcode-end\n</files>\n<files>\n// file: src/b.ts\nb();\n\n// clipcode-end\n</files>",
+      "expected": [
+        {
+          "path": "src/a.ts",
+          "content": "a();",
+          "changeTypes": []
+        },
+        {
+          "path": "src/b.ts",
+          "content": "b();",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: a stray end marker before any header changes nothing",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// clipcode-end\n// file: src/a.ts\na();",
+      "expected": [
+        {
+          "path": "src/a.ts",
+          "content": "a();",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: an escaped end marker is ordinary file content",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// file: src/a.ts\nbefore\n//clipcode-esc: // clipcode-end\nafter",
+      "expected": [
+        {
+          "path": "src/a.ts",
+          "content": "before\n// clipcode-end\nafter",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: under a permissive header the marker line is a real file, not a terminator",
+      "headerFormat": "// $FILE_PATH",
+      "input": "// a.ts\none\n// clipcode-end\nKEEP\n// b.ts\ntwo",
+      "expected": [
+        {
+          "path": "a.ts",
+          "content": "one",
+          "changeTypes": []
+        },
+        {
+          "path": "clipcode-end",
+          "content": "KEEP",
+          "changeTypes": []
+        },
+        {
+          "path": "b.ts",
+          "content": "two",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: a foreign payload with no end marker keeps its real closing lines",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// file: doc.md\n# Title\n\n```js\ncode()\n```",
+      "expected": [
+        {
+          "path": "doc.md",
+          "content": "# Title\n\n```js\ncode()\n```",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: a trailing U+001C stays part of the header path",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// file: a.ts\u001c\nbody",
+      "expected": [
+        {
+          "path": "a.ts\u001c",
+          "content": "body",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: a trailing U+FEFF stays part of the header path",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// file: a.ts﻿\nbody",
+      "expected": [
+        {
+          "path": "a.ts﻿",
+          "content": "body",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: a line of only U+001C is NOT a blank line and survives trimming",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// file: a.ts\n\u001c\nfoo\n\u001c",
+      "expected": [
+        {
+          "path": "a.ts",
+          "content": "\u001c\nfoo\n\u001c",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: a line of only U+FEFF is NOT a blank line and survives trimming",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// file: a.ts\n﻿\nfoo\n﻿",
+      "expected": [
+        {
+          "path": "a.ts",
+          "content": "﻿\nfoo\n﻿",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: a bare header path keeping a leading U+001F is judged on the same bytes",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "file: \u001f\"quoted.ts\"\nbody",
+      "expected": [
+        {
+          "path": "\u001f\"quoted.ts\"",
+          "content": "body",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: the Turkish dotless i is content on both sides, never a header",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// file: src/a.ts\nbefore\n// fıle: phantom.ts\nafter",
+      "expected": [
+        {
+          "path": "src/a.ts",
+          "content": "before\n// fıle: phantom.ts\nafter",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: ASCII case-insensitivity of the generic header is preserved",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// FILE: src/a.ts\na();\n// File: src/b.ts\nb();",
+      "expected": [
+        {
+          "path": "src/a.ts",
+          "content": "a();",
+          "changeTypes": []
+        },
+        {
+          "path": "src/b.ts",
+          "content": "b();",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: U+0085 NEL is not a line break, so the header-like tail stays content",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// file: src/a.ts\nbefore// file: fake/inline.ts",
+      "expected": [
+        {
+          "path": "src/a.ts",
+          "content": "before// file: fake/inline.ts",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: a U+FEFF before the comment marker keeps the line as content",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// file: src/a.ts\n﻿// file: fake/inline.ts\nafter",
+      "expected": [
+        {
+          "path": "src/a.ts",
+          "content": "﻿// file: fake/inline.ts\nafter",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: U+001C-U+001F inside a content line do not split it",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// file: src/a.ts\na\u001cb\u001dc\u001ed\u001fe",
+      "expected": [
+        {
+          "path": "src/a.ts",
+          "content": "a\u001cb\u001dc\u001ed\u001fe",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: a file whose real name starts with [DELETED] is indistinguishable on the wire",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// file: [DELETED] x.ts\nkeep me",
+      "expected": [
+        {
+          "path": "x.ts",
+          "content": "keep me",
+          "changeTypes": [
+            "DELETED"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "parse: [MOVED] carries only the new path — the old one is not on the wire",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// file: [MOVED] src/new.ts\nmoved();",
+      "expected": [
+        {
+          "path": "src/new.ts",
+          "content": "moved();",
+          "changeTypes": [
+            "MOVED"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "parse: leading blank lines are trimmed from a body too",
+      "headerFormat": "// file: $FILE_PATH",
+      "input": "// file: src/a.ts\n\n  \nfoo\n\n",
+      "expected": [
+        {
+          "path": "src/a.ts",
+          "content": "foo",
+          "changeTypes": []
+        }
+      ]
     }
   ],
   "tokenCases": [
@@ -553,6 +969,14 @@
       "lines": 1,
       "words": 2,
       "tokens": 2
+    },
+    {
+      "name": "U+0085 NEL does NOT split (JS \\s has it, the ASCII class does not)",
+      "text": "ab",
+      "chars": 3,
+      "lines": 1,
+      "words": 1,
+      "tokens": 1
     },
     {
       "name": "U+001C-U+001F file/group/record/unit separators do NOT split",

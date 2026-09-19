@@ -15,7 +15,6 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
@@ -207,6 +206,18 @@ class CopyFileContentAction : AnAction() {
         }
 
         indicator.checkCanceled()
+        // Byte-mirror of ClipboardPayloadFormatter: the terminator goes in only when there
+        // is a footer. This path does NOT go through the formatter (see AGENTS.md), so
+        // every wire rule has to be repeated here — and NOTHING pins the two together:
+        // buildCopyPayload needs the IDE runtime, so the formatter's own tests do not
+        // cover it. Change one, change the other by hand.
+        if (settings.state.postText.isNotEmpty() &&
+            !ClipboardRestoreParser.wouldParseAsHeader(
+                ClipboardRestoreParser.POST_TEXT_MARKER, settings.state.headerFormat
+            )
+        ) {
+            fileContents.add(ClipboardRestoreParser.POST_TEXT_MARKER)
+        }
         fileContents.add(ClipboardRestoreParser.escapeContent(settings.state.postText, settings.state.headerFormat))
 
         val text = fileContents.joinToString(separator = "\n")
@@ -215,6 +226,7 @@ class CopyFileContentAction : AnAction() {
             text = text,
             fileCount = session.fileCount,
             skippedFileSizeCount = session.skippedFileSizeCount,
+            skippedUnreadableCount = session.skippedUnreadableCount,
             fileLimitReached = session.fileLimitReached
         )
     }
@@ -244,9 +256,15 @@ class CopyFileContentAction : AnAction() {
             result.fileCount == 1 -> "1 file copied."
             else -> "${result.fileCount} files copied."
         }
+        // Reported, never silent — the VS Code half says the same sentence.
+        val unreadableMessage = if (result.skippedUnreadableCount > 0) {
+            " ${result.skippedUnreadableCount} skipped: not UTF-8 text or unreadable."
+        } else {
+            ""
+        }
 
         showPayloadNotification("", result.text, project)
-        showNotification("<html><b>$fileCountMessage</b></html>", NotificationType.INFORMATION, project)
+        showNotification("<html><b>$fileCountMessage</b>$unreadableMessage</html>", NotificationType.INFORMATION, project)
     }
 
     // No statistics fields on purpose: chars/lines/words/tokens are all a function of
@@ -258,6 +276,7 @@ class CopyFileContentAction : AnAction() {
         val text: String,
         val fileCount: Int,
         val skippedFileSizeCount: Int,
+        val skippedUnreadableCount: Int,
         val fileLimitReached: Boolean
     )
 
@@ -318,59 +337,22 @@ class CopyFileContentAction : AnAction() {
 
         var content = ""
         
-        // Check filters if enabled
+        // Check filters if enabled. The decision itself lives in CopyFilterMatcher so the
+        // git payload builder applies exactly the same rules — it used to apply none.
         if (session.useFilters) {
-            val fileRelativePathFromRoot = CopyPathFormatter.relativeFilterPath(session.pathResolver, file.path)
-            val fileAbsolutePath = file.path
-
-            // Enabled filter rules are partitioned once per copy on the session
-            val includeRules = session.includeRules
-            val excludeRules = session.excludeRules
-
-            // Check excludes first (if exclude filters are enabled)
-            if (session.useExcludeFilters && excludeRules.isNotEmpty()) {
-                val isExcluded = excludeRules.any { rule ->
-                    when (rule.type) {
-                        CopyFileContentSettings.FilterType.PATTERN -> {
-                            matchesPattern(file.name, rule.value, session.patternCache)
-                        }
-                        CopyFileContentSettings.FilterType.PATH -> {
-                            if (PathRuleMatcher.isAbsolutePath(rule.value)) {
-                                PathRuleMatcher.matchesPath(fileAbsolutePath, rule.value)
-                            } else {
-                                fileRelativePathFromRoot != null &&
-                                    PathRuleMatcher.matchesPath(fileRelativePathFromRoot, rule.value)
-                            }
-                        }
-                    }
-                }
-                if (isExcluded) {
-                    logger.info("Skipping file: ${file.name} - File is excluded")
-                    return ""
-                }
-            }
-            
-            // Check includes if specified (if include filters are enabled)
-            if (session.useIncludeFilters && includeRules.isNotEmpty()) {
-                val matchesInclude = includeRules.any { rule ->
-                    when (rule.type) {
-                        CopyFileContentSettings.FilterType.PATTERN -> {
-                            matchesPattern(file.name, rule.value, session.patternCache)
-                        }
-                        CopyFileContentSettings.FilterType.PATH -> {
-                            if (PathRuleMatcher.isAbsolutePath(rule.value)) {
-                                PathRuleMatcher.matchesPath(fileAbsolutePath, rule.value)
-                            } else {
-                                fileRelativePathFromRoot != null &&
-                                    PathRuleMatcher.matchesPath(fileRelativePathFromRoot, rule.value)
-                            }
-                        }
-                    }
-                }
-                if (!matchesInclude) {
-                    logger.info("Skipping file: ${file.name} - File does not match any include rule")
-                    return ""
-                }
+            val passes = CopyFilterMatcher.passes(
+                fileName = file.name,
+                relativePath = CopyPathFormatter.relativeFilterPath(session.pathResolver, file.path),
+                absolutePath = file.path,
+                useIncludeFilters = session.useIncludeFilters,
+                useExcludeFilters = session.useExcludeFilters,
+                includeRules = session.includeRules,
+                excludeRules = session.excludeRules,
+                cache = session.patternCache
+            )
+            if (!passes) {
+                logger.info("Skipping file: ${file.name} - filtered out")
+                return ""
             }
         }
 
@@ -400,12 +382,19 @@ class CopyFileContentAction : AnAction() {
         if (isExternalLibrary) {
             // Check if file should be processed
             if (!handler.shouldProcessFile(file)) {
+                // Counted like every other drop. VS Code has no extension blocklist, so the
+                // two tools still disagree on WHICH library files they copy — but a drop the
+                // user is never told about is the part that is simply a bug.
+                session.skippedUnreadableCount++
                 logger.info("Skipping external library file: ${file.name}")
                 return ""
             }
             
             // Try to read content from external library (size already checked above)
-            content = handler.readContent(file) ?: return ""
+            content = handler.readContent(file) ?: run {
+                session.skippedUnreadableCount++
+                return ""
+            }
             
             if (content.isNotEmpty() || file.length == 0L) {
                 val header = customHeaderGenerator?.invoke(file, fileRelativePath)
@@ -417,12 +406,16 @@ class CopyFileContentAction : AnAction() {
                     fileContents.add("")
                 }
             } else {
+                session.skippedUnreadableCount++
                 logger.info("Skipping file: ${file.name} - Could not read content from external library")
             }
         } else {
             // Handle regular project files (size already checked above)
             if (!isBinaryFile(file)) {
-                content = readFileContents(file) ?: return ""
+                content = readFileContents(file) ?: run {
+                    session.skippedUnreadableCount++
+                    return ""
+                }
 
                 if (content.isNotEmpty() || file.length == 0L) {
                     val header = customHeaderGenerator?.invoke(file, fileRelativePath)
@@ -434,9 +427,18 @@ class CopyFileContentAction : AnAction() {
                         fileContents.add("")
                     }
                 } else {
+                    // Same class of silent drop as the external-library twin above. Strict
+                    // decoding makes this branch near-unreachable (non-empty bytes decode to
+                    // a non-empty string), but "near" is not "never" and an uncounted drop
+                    // is exactly what this counter exists to stop.
+                    session.skippedUnreadableCount++
                     logger.info("Skipping file: ${file.name} - Could not read content")
                 }
             } else {
+                // Counted too: VS Code reaches the same verdict through decodeUtf8OrSkip's
+                // NUL check and counts it there, so leaving this one silent would make the
+                // two tools report different numbers for the same folder.
+                session.skippedUnreadableCount++
                 logger.info("Skipping file: ${file.name} - Binary file")
             }
         }
@@ -468,6 +470,13 @@ class CopyFileContentAction : AnAction() {
                     break
                 }
                 if (childIsDirectory) {
+                    // Not through a link. Ancestor-cycle tracking stops a loop but still
+                    // admits every non-cyclic alias across cross-linked siblings, so a
+                    // pnpm/Bazel tree multiplies into a path count that grows like a sum of
+                    // falling factorials — and with a file-count limit the copy fills up
+                    // with aliases of the same few files. The real directories are reached
+                    // on their own; VS Code walks a link only when it IS the selection.
+                    if (childFile.`is`(com.intellij.openapi.vfs.VFileProperty.SYMLINK)) continue
                     processDirectory(childFile, fileContents, session, settings, addExtraLine, customHeaderGenerator)
                 } else {
                     processFile(childFile, fileContents, session, settings, addExtraLine, customHeaderGenerator)
@@ -507,8 +516,14 @@ class CopyFileContentAction : AnAction() {
             }
         }
 
-        // Check includes if specified
-        if (session.useIncludeFilters && includePathRules.isNotEmpty()) {
+        // Check includes if specified.
+        // Only when the INCLUDE set is PATH-only. A PATTERN include such as `*.md` says
+        // nothing about which directories may contain a match, so pruning on the PATH
+        // rules alone threw away directories whose files the pattern would have included —
+        // VS Code evaluates every include rule per file as an OR and copied them. Pruning
+        // is an optimisation; it may never drop a file the per-file filter would keep.
+        val includeIsPathOnly = session.includeRules.size == includePathRules.size
+        if (session.useIncludeFilters && includePathRules.isNotEmpty() && includeIsPathOnly) {
             val shouldProcess = includePathRules.any { rule ->
                 if (PathRuleMatcher.isAbsolutePath(rule.value)) {
                     PathRuleMatcher.overlapsDirectory(dirAbsolutePath, rule.value)
@@ -534,10 +549,14 @@ class CopyFileContentAction : AnAction() {
     }
 
     @IdeBoundCode
+    /** Files dropped because their bytes are not UTF-8 — reported, never silent. */
     private fun readFileContents(file: VirtualFile): String? {
         return try {
-            // VfsUtilCore.loadText 會依檔案編碼解碼，避免強制 UTF-8 造成中文/big5/sjis 亂碼
-            VfsUtilCore.loadText(file)
+            // Strict UTF-8 or skip — NOT VfsUtilCore.loadText. loadText decodes with the
+            // file's charset, which reads a Big5/Shift_JIS/UTF-16 file correctly here and
+            // then cannot round-trip: the wire carries no encoding, so VS Code writes it
+            // back as UTF-8 and the original bytes are lost. See Utf8Text.
+            Utf8Text.decodeOrNull(file.contentsToByteArray())
         } catch (e: ProcessCanceledException) {
             throw e
         } catch (e: Exception) {
@@ -551,32 +570,7 @@ class CopyFileContentAction : AnAction() {
     
     /** Uncached entry point; kept because `CopyFileContentInternalTest` calls it by reflection. */
     private fun matchesPattern(fileName: String, pattern: String): Boolean =
-        matchesPattern(fileName, pattern, null)
-
-    /**
-     * [cache] memoises the compiled pattern per copy, keyed by the raw pattern string.
-     * Only successful compiles are cached — an invalid pattern still falls back to
-     * contains on every call, exactly as before.
-     */
-    private fun matchesPattern(fileName: String, pattern: String, cache: MutableMap<String, Regex>?): Boolean {
-        cache?.get(pattern)?.let { return fileName.matches(it) }
-        return try {
-            // Convert wildcard pattern to regex if needed
-            val regexPattern = if (pattern.contains("*") || pattern.contains("?")) {
-                pattern.replace(".", "\\.")
-                    .replace("*", ".*")
-                    .replace("?", ".")
-            } else {
-                pattern
-            }
-            val regex = Regex(regexPattern)
-            cache?.put(pattern, regex)
-            fileName.matches(regex)
-        } catch (e: Exception) {
-            // If pattern is invalid, try simple contains match
-            fileName.contains(pattern)
-        }
-    }
+        CopyFilterMatcher.matchesPattern(fileName, pattern, null)
 
     companion object {
         /**
@@ -658,6 +652,11 @@ class CopyFileContentAction : AnAction() {
         val patternCache: MutableMap<String, Regex> = mutableMapOf(),
         var fileCount: Int = 0,
         var skippedFileSizeCount: Int = 0,
+        // Files whose bytes are not UTF-8 (or could not be read at all). They are dropped
+        // on purpose — the wire carries no encoding, so they cannot round-trip — but a
+        // drop the user is never told about is indistinguishable from the file not being
+        // there. Mirror of copy.ts CopyState.skippedUnreadableCount.
+        var skippedUnreadableCount: Int = 0,
         var fileLimitReached: Boolean = false
     )
 

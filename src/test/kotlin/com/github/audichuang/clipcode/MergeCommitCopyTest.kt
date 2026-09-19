@@ -64,8 +64,12 @@ class MergeCommitCopyTest : BasePlatformTestCase() {
         val selection = GitSelectionCollector(logger).collect(event(merge))
         assertTrue(selection.hasGitMetadata, "A commit node must work without IDE file changes")
         val entries = resolve(selection)
-        assertEquals(listOf("history.txt"), entries.map { File(it.filePath).name })
-        assertEquals("incoming\n", entries.single().contentFromRevision)
+        // Deliberately inverted: a merge is the UNION of its diffs against EVERY parent.
+        // First-parent only hid everything that arrived through parents 2..N — silent loss
+        // on every octopus merge, and a different file set from Snipcode's graph for the
+        // same commit. trust.txt is what this merge differs from the `history` parent on.
+        assertEquals(listOf("history.txt", "trust.txt"), entries.map { File(it.filePath).name }.sorted())
+        assertEquals("incoming\n", entries.first { File(it.filePath).name == "history.txt" }.contentFromRevision)
         val settings = CopyFileContentSettings.getInstance(project)!!.state
         settings.showCopyNotification = false
         settings.setMaxFileCount = false
@@ -113,18 +117,19 @@ class MergeCommitCopyTest : BasePlatformTestCase() {
         assertEquals(listOf("shared.txt"), filesOnly.map { File(it.filePath).name })
     }
 
-    fun testMergeWithNoNetChangesLeavesClipboardUnchanged() {
+    fun testOursMergeReportsWhatItDiscardedRatherThanNothing() {
         git("checkout", "-b", "history")
         write("incoming.txt", "intentionally excluded\n")
         commit()
         git("checkout", "trust")
         git("merge", "--no-ff", "-s", "ours", "history", "-m", "keep trust tree")
         val merge = git("rev-parse", "HEAD")
-        assertTrue(resolve(GitSelectionCollector(logger).collect(event(merge))).isEmpty())
-        val clipboard = Toolkit.getDefaultToolkit().systemClipboard
-        clipboard.setContents(StringSelection("keep existing clipboard"), null)
-        CopyGitFilesContentAction().actionPerformed(event(merge))
-        assertEquals("keep existing clipboard", clipboard.getData(DataFlavor.stringFlavor))
+        // Deliberately inverted, and the honest cost of union semantics: `-s ours` has no
+        // net change against the FIRST parent, so this used to copy nothing. Against the
+        // other parent it dropped incoming.txt, and that is exactly the kind of thing
+        // first-parent-only hid. Reporting it beats silence.
+        val entries = resolve(GitSelectionCollector(logger).collect(event(merge)))
+        assertEquals(listOf("incoming.txt"), entries.map { File(it.filePath).name })
     }
 
     fun testInitialAndOrdinaryCommitNodes() {
@@ -136,7 +141,7 @@ class MergeCommitCopyTest : BasePlatformTestCase() {
         assertEquals("ordinary edit\n", resolve(GitSelectionCollector(logger).collect(event(ordinary))).single().contentFromRevision)
     }
 
-    fun testInterleavedBranchesMergedIntoDevelopMatchGitFirstParentExactly() {
+    fun testInterleavedBranchesMergedIntoDevelopUnionEveryParent() {
         git("branch", "-m", "develop")
         write("deleted.txt", "legacy\n")
         write("old.txt", "stable renamed content\n")
@@ -167,8 +172,14 @@ class MergeCommitCopyTest : BasePlatformTestCase() {
         write("shared.txt", "RESOLVED hardened trust with history\n")
         commit()
         val merge = git("rev-parse", "HEAD")
-        val expectedPaths = git("diff", "--name-only", before, merge).lines().toSet()
-        assertEquals(setOf("deleted.txt", "renamed.txt", "shared.txt", "history.txt"), expectedPaths)
+        // Deliberately inverted: against the first parent alone this is the four-file set
+        // below; the union adds develop.txt, which the `history` parent never had. That
+        // file really did change in this merge relative to one of its parents.
+        assertEquals(
+            setOf("deleted.txt", "renamed.txt", "shared.txt", "history.txt"),
+            git("diff", "--name-only", before, merge).lines().toSet()
+        )
+        val expectedPaths = setOf("deleted.txt", "renamed.txt", "shared.txt", "history.txt", "develop.txt")
         write("shared.txt", "LATER COMMIT\n")
         commit()
         write("history.txt", "UNCOMMITTED\n")
@@ -189,7 +200,7 @@ class MergeCommitCopyTest : BasePlatformTestCase() {
         assertTrue(!payload.text.contains("LATER COMMIT"))
         assertTrue(!payload.text.contains("UNCOMMITTED"))
         assertTrue(!payload.text.contains("already integrated"))
-        assertTrue(!payload.text.contains("develop only"))
+        assertTrue(payload.text.contains("develop only"), "the second parent's side must be in the union")
     }
 
     fun testShallowBoundaryCommitIsRefusedInsteadOfCopyingTheWholeTree() {

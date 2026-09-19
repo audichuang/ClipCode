@@ -6,6 +6,14 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.name
 
+/**
+ * NOTE on emptiness: this file uses isEmpty/isNotEmpty and NEVER isBlank/isNotBlank.
+ * Kotlin's blank test is Unicode-aware and the TypeScript mirror simply drops empty
+ * segments, so a path segment consisting of U+001C or U+00A0 was discarded here and kept
+ * there — the two tools then wrote DIFFERENT files for one clipboard path, and deletion
+ * followed the same split. Trimming, where it is needed at all, goes through
+ * ClipboardRestoreParser.asciiTrim.
+ */
 class ClipboardPathResolver private constructor(
     private val orderedRoots: List<RootEntry>,
     private val primaryRoot: RootEntry?,
@@ -45,7 +53,75 @@ class ClipboardPathResolver private constructor(
     }
 
     companion object {
-        private val DETACHED_ABSOLUTE_PATH_ANCHORS = setOf("node_modules")
+        /**
+         * The same containment question, answerable without a resolver instance, so the
+         * executor can re-ask it immediately before touching the filesystem. A plan-time
+         * verdict is a verdict on the layout that existed THEN; the user has clicked through
+         * modal dialogs since, and a directory can have become a link in between.
+         */
+        fun escapesRoots(rootPaths: List<String>, absolutePath: String): Boolean {
+            val real = containmentTarget(Path.of(absolutePath)) ?: return true
+            return rootPaths.none { rootPath ->
+                val root = runCatching { Path.of(rootPath) }.getOrNull() ?: return@none false
+                val rootReal = runCatching { root.toRealPath() }.getOrElse { root.normalize() }
+                real == rootReal || real.startsWith(rootReal)
+            }
+        }
+
+        /**
+         * Where this path REALLY lands, with every symlink on it resolved, or null when that
+         * cannot be established.
+         *
+         * toRealPath does the whole job when the path exists, and the OS is the only thing that
+         * gets symlink resolution right. When it does not exist — a file about to be created —
+         * the deepest existing ancestor is resolved and the remaining names appended, and the
+         * first name below it, which may be a DANGLING symlink, is read relative to that
+         * RESOLVED parent.
+         *
+         * Three things here were each wrong once. Skipping the leaf link meant
+         * `[DELETED] link/keep.txt` reached a file outside the project. Resolving the link text
+         * against the path we walked IN by — rather than against the link's real parent —
+         * fabricated an in-project answer whenever a directory symlink was on the way in. And
+         * counting MISSING ANCESTORS against a fixed budget meant a path with more missing
+         * levels than the budget gave up before reaching the link above them, and gave up by
+         * ALLOWING. The ancestor walk is therefore unbounded — it terminates at the filesystem
+         * root on its own — and only symlink HOPS are capped, because only they can cycle.
+         * Mirror of pathResolver.ts containmentTarget.
+         */
+        private fun containmentTarget(target: Path, hops: Int = 0): Path? {
+            // normalize() only — never toAbsolutePath(). The resolver's own targets are built
+            // from the configured roots and are already absolute in real use; resolving against
+            // the process CWD would instead rebase a Windows-style path handed to a POSIX JVM
+            // and make it look like an escape from its own root.
+            val normalized = target.normalize()
+            runCatching { return normalized.toRealPath() }
+            if (hops > 40) return null // pathological symlink nest: cannot establish, so refuse
+
+            val missing = ArrayDeque<Path>()
+            var probe: Path = normalized
+            while (true) {
+                val parent = probe.parent ?: return normalized // nothing on the path exists at all
+                probe.fileName?.let { missing.addFirst(it) }
+                probe = parent
+                val realProbe = runCatching { probe.toRealPath() }.getOrNull() ?: continue
+                // Only the FIRST name below the deepest existing ancestor can be a dangling
+                // symlink; anything deeper does not exist at all.
+                val first = realProbe.resolve(missing.first())
+                if (Files.isSymbolicLink(first)) {
+                    val link = runCatching { Files.readSymbolicLink(first) }.getOrNull()
+                    if (link != null) {
+                        var linked = realProbe.resolve(link).normalize()
+                        missing.drop(1).forEach { linked = linked.resolve(it) }
+                        return containmentTarget(linked, hops + 1)
+                    }
+                }
+                var resolved = realProbe
+                missing.forEach { resolved = resolved.resolve(it) }
+                return resolved.normalize()
+            }
+        }
+
+
         private val DUPLICATE_SEPARATORS = Regex("/+")
         private val WINDOWS_DRIVE_ROOT = Regex("^[A-Za-z]:/$")
         private val WINDOWS_STYLE_PATH = Regex("^[A-Za-z]:($|/.*)")
@@ -74,26 +150,26 @@ class ClipboardPathResolver private constructor(
         fun fromRootPaths(rootPaths: List<String>, primaryRootPath: String? = rootPaths.firstOrNull()): ClipboardPathResolver {
             val normalizedRootPaths = rootPaths
                 .map(::normalizeSystemPath)
-                .filter(String::isNotBlank)
+                .filter(String::isNotEmpty)
                 .distinctBy(::systemPathLookupKey)
 
             val normalizedPrimary = primaryRootPath
                 ?.let(::normalizeSystemPath)
-                ?.takeIf(String::isNotBlank)
+                ?.takeIf(String::isNotEmpty)
                 ?: normalizedRootPaths.firstOrNull()
 
             val allRootPaths = buildList {
                 normalizedPrimary?.let(::add)
                 addAll(normalizedRootPaths)
             }
-                .filter(String::isNotBlank)
+                .filter(String::isNotEmpty)
                 .distinctBy(::systemPathLookupKey)
 
             val primaryPath = normalizedPrimary?.let(Path::of)
             val allRootPathObjects = allRootPaths.map(Path::of)
             val externalLabels = allRootPathObjects
                 .filter { root -> primaryPath == null || !samePath(root, primaryPath) && !isUnderRoot(root, primaryPath) }
-                .mapNotNull { root -> root.name.takeIf(String::isNotBlank) }
+                .mapNotNull { root -> root.name.takeIf(String::isNotEmpty) }
             val externalLabelCounts = externalLabels
                 .groupingBy { it }
                 .eachCount()
@@ -116,7 +192,7 @@ class ClipboardPathResolver private constructor(
                 .map { root ->
                     val isPrimary = primaryPath != null && samePath(root, primaryPath)
                     val isExternalRoot = !isPrimary && (primaryPath == null || !isUnderRoot(root, primaryPath))
-                    val label = if (isExternalRoot) root.name.takeIf(String::isNotBlank) else null
+                    val label = if (isExternalRoot) root.name.takeIf(String::isNotEmpty) else null
                     RootEntry(
                         path = root,
                         isPrimary = isPrimary,
@@ -133,7 +209,9 @@ class ClipboardPathResolver private constructor(
         }
 
         private fun normalizeSystemPath(path: String): String =
-            trimTrailingSeparator(path.replace('\\', '/').replace(DUPLICATE_SEPARATORS, "/").trim())
+            trimTrailingSeparator(
+            ClipboardRestoreParser.asciiTrim(path.replace('\\', '/').replace(DUPLICATE_SEPARATORS, "/"))
+        )
 
         private fun trimTrailingSeparator(path: String): String =
             when {
@@ -162,7 +240,7 @@ class ClipboardPathResolver private constructor(
                 return null
             }
             val relativePath = normalizedPath.substring(normalizedRoot.length + 1)
-            return relativePath.substringBefore("/").takeIf(String::isNotBlank)
+            return relativePath.substringBefore("/").takeIf(String::isNotEmpty)
         }
 
         private fun systemPathLookupKey(path: String): String {
@@ -177,8 +255,18 @@ class ClipboardPathResolver private constructor(
     fun roots(): List<String> = orderedRoots.map { normalizePathString(it.path.toString()) }
 
     /**
-     * Basename of the only root, or null when zero or multiple roots. Mirrors the
-     * VS Code side's single-root gate for the `// clipcode-root:` metadata line.
+     * The `// clipcode-root:` value: the basename of the base the PATHS in this payload
+     * are relative to.
+     *
+     * Its only job is to let Paste & Restore line folder levels up, which works precisely
+     * when the name and the paths describe the same base. Naming the git repository root
+     * instead — while the headers stayed root-relative — broke exactly that: with the
+     * project opened at `repo/src`, a payload said root `repo` and path `a.txt`, so
+     * restoring into `repo` saw the name already matching and offered no adjustment,
+     * landing the file at `repo/a.txt` instead of `repo/src/a.txt`.
+     *
+     * Multiple roots means the paths are labelled per root, so no single name describes
+     * them and none is emitted. Mirror of pathResolver.ts sourceRootName.
      */
     fun singleRootName(): String? {
         val rootPaths = roots()
@@ -208,8 +296,36 @@ class ClipboardPathResolver private constructor(
         return directRelative ?: normalizedAbsolutePath
     }
 
-    fun resolveWriteTarget(path: String): WriteResolution {
+    /** Containment is enforced once, on the way out, so no branch can bypass it. */
+    fun resolveWriteTarget(path: String): WriteResolution =
+        when (val resolution = resolveWriteTargetInternal(path)) {
+            is WriteResolution.Resolved ->
+                if (escapesAllRoots(Path.of(resolution.target.absolutePath))) {
+                    WriteResolution.Unresolved(path)
+                } else {
+                    resolution
+                }
+            else -> resolution
+        }
+
+    fun resolveDeleteTarget(path: String): DeleteResolution =
+        when (val resolution = resolveDeleteTargetInternal(path)) {
+            is DeleteResolution.Resolved ->
+                if (escapesAllRoots(Path.of(resolution.target.absolutePath))) {
+                    DeleteResolution.Unresolved(path)
+                } else {
+                    resolution
+                }
+            else -> resolution
+        }
+
+    private fun resolveWriteTargetInternal(path: String): WriteResolution {
         absoluteRootCandidate(path)?.let { candidate ->
+            val existed = Files.exists(candidate.target) && !Files.isDirectory(candidate.target)
+            return WriteResolution.Resolved(candidate.toResolvedTarget(candidate.rootRelativePath, existed))
+        }
+
+        crossMachineSuffixCandidate(path)?.let { candidate ->
             val existed = Files.exists(candidate.target) && !Files.isDirectory(candidate.target)
             return WriteResolution.Resolved(candidate.toResolvedTarget(candidate.rootRelativePath, existed))
         }
@@ -272,8 +388,16 @@ class ClipboardPathResolver private constructor(
         }
     }
 
-    fun resolveDeleteTarget(path: String): DeleteResolution {
+    private fun resolveDeleteTargetInternal(path: String): DeleteResolution {
         absoluteRootCandidate(path)?.let { candidate ->
+            return if (Files.exists(candidate.target) && !Files.isDirectory(candidate.target)) {
+                DeleteResolution.Resolved(candidate.toResolvedTarget(candidate.rootRelativePath, existed = true))
+            } else {
+                DeleteResolution.Missing(candidate.rootRelativePath)
+            }
+        }
+
+        crossMachineSuffixCandidate(path)?.let { candidate ->
             return if (Files.exists(candidate.target) && !Files.isDirectory(candidate.target)) {
                 DeleteResolution.Resolved(candidate.toResolvedTarget(candidate.rootRelativePath, existed = true))
             } else {
@@ -328,14 +452,14 @@ class ClipboardPathResolver private constructor(
 
     fun resolveExistingPath(path: String): String? {
         val normalizedPath = normalizePathString(path)
-        if (normalizedPath.isBlank()) {
+        if (normalizedPath.isEmpty()) {
             return null
         }
         if (isAbsolutePath(normalizedPath)) {
             return normalizedPath.takeIf { Files.exists(Path.of(it)) }
         }
 
-        val relativePath = sanitizeRelativePath(normalizedPath)?.takeIf { it.isNotBlank() } ?: return null
+        val relativePath = sanitizeRelativePath(normalizedPath)?.takeIf { it.isNotEmpty() } ?: return null
         val explicitRootCandidates = explicitRootLabelCandidates(relativePath)
             .ifEmpty { explicitRootLabelRootCandidates(relativePath) }
         val candidates = explicitRootCandidates.takeIf { it.isNotEmpty() } ?: legacyTargetCandidates(relativePath)
@@ -350,23 +474,23 @@ class ClipboardPathResolver private constructor(
 
     private fun toRelativeProjectPath(path: String): String? {
         val normalizedPath = normalizePathString(path)
-        if (normalizedPath.isBlank()) {
+        if (normalizedPath.isEmpty()) {
             return null
         }
 
         if (!isAbsolutePath(normalizedPath)) {
-            return sanitizeRelativePath(normalizedPath)?.takeIf { it.isNotBlank() }
+            return sanitizeRelativePath(normalizedPath)?.takeIf { it.isNotEmpty() }
         }
 
         primaryRoot?.let { root ->
             relativizePath(normalizedPath, root.path)
-                ?.takeIf { it.isNotBlank() }
+                ?.takeIf { it.isNotEmpty() }
                 ?.let { return it }
         }
 
         orderedRoots.filter { it != primaryRoot }.forEach { root ->
             val rootRelativePath = relativizePath(normalizedPath, root.path)
-                ?.takeIf { it.isNotBlank() }
+                ?.takeIf { it.isNotEmpty() }
                 ?: return@forEach
             if (root.clipboardLabel != null && !root.hasAmbiguousLabel) {
                 return root.toClipboardPath(rootRelativePath)
@@ -374,108 +498,27 @@ class ClipboardPathResolver private constructor(
             return rootRelativePath
         }
 
-        val absoluteSegments = normalizedPath.trim('/').split('/').filter(String::isNotBlank)
+        val absoluteSegments = normalizedPath.trim('/').split('/').filter(String::isNotEmpty)
         val windowsStyleSuffix = isWindowsStylePath(normalizedPath) ||
             orderedRoots.any { root -> isWindowsStylePath(normalizePathString(root.path.toString())) }
-        val suffixMatches = orderedRoots
-            .flatMap { root ->
-                val rootName = root.path.name.takeIf(String::isNotBlank) ?: return@flatMap emptyList()
-                absoluteSegments.indices.mapNotNull { index ->
-                    if (!segmentsMatch(absoluteSegments[index], rootName, windowsStyleSuffix) || index >= absoluteSegments.lastIndex) {
-                        return@mapNotNull null
-                    }
-                    sanitizeRelativePath(absoluteSegments.drop(index + 1).joinToString("/"))
-                        ?.takeIf { it.isNotBlank() }
-                        ?.let { relativePath ->
-                            TargetCandidate(
-                                root = root,
-                                target = root.path.resolve(relativePath).normalize(),
-                                rootRelativePath = relativePath
-                            )
-                        }
-                }
+        val suffixMatches = suffixMatchesFor(absoluteSegments, windowsStyleSuffix)
+
+        uniqueTargetOf(suffixMatches)?.let { winner ->
+            return if (!winner.root.isPrimary &&
+                winner.root.clipboardLabel != null && !winner.root.hasAmbiguousLabel
+            ) {
+                winner.root.toClipboardPath(winner.rootRelativePath)
+            } else {
+                winner.rootRelativePath
             }
-            .distinctBy { candidate ->
-                "${pathLookupKey(candidate.root.path.toString())}\u0000${candidate.rootRelativePath}"
-            }
-
-        val targetGroups = suffixMatches.groupBy { candidate ->
-            pathLookupKey(candidate.target.toString())
-        }
-        when (targetGroups.size) {
-            1 -> return targetGroups.values.single()
-                .firstOrNull { it.root.isPrimary }
-                ?.rootRelativePath
-                ?: targetGroups.values.single().first().rootRelativePath
         }
 
-        if (suffixMatches.isNotEmpty()) {
-            return null
-        }
-
-        return detachedPrimaryChildFallback(absoluteSegments, windowsStyleSuffix)
-            ?: detachedAbsolutePathFallback(absoluteSegments, windowsStyleSuffix)
-    }
-
-    private fun detachedPrimaryChildFallback(absoluteSegments: List<String>, windowsStylePath: Boolean): String? {
-        val root = primaryRoot ?: return null
-        if (!Files.isDirectory(root.path)) {
-            return null
-        }
-
-        val childNames = Files.list(root.path).use { children ->
-            children
-                .filter(Files::isDirectory)
-                .map { child -> child.name }
-                .filter { childName -> childName.isNotBlank() }
-                .toList()
-        }
-        if (childNames.isEmpty()) {
-            return null
-        }
-
-        val anchorIndex = absoluteSegments.indexOfFirst { segment ->
-            DETACHED_ABSOLUTE_PATH_ANCHORS.any { anchor -> segmentsMatch(segment, anchor, windowsStylePath) }
-        }
-        val childMatches = absoluteSegments.indices
-            .filter { index ->
-                childNames.any { childName -> segmentsMatch(absoluteSegments[index], childName, windowsStylePath) }
-            }
-            .filter { index -> index < absoluteSegments.lastIndex }
-
-        val preferredMatch = if (anchorIndex > 0) {
-            childMatches
-                .filter { index -> index < anchorIndex }
-                .filterNot { index ->
-                    DETACHED_ABSOLUTE_PATH_ANCHORS.any { anchor ->
-                        segmentsMatch(absoluteSegments[index], anchor, windowsStylePath)
-                    }
-                }
-                .maxOrNull()
-        } else {
-            childMatches
-                .filterNot { index ->
-                    DETACHED_ABSOLUTE_PATH_ANCHORS.any { anchor ->
-                        segmentsMatch(absoluteSegments[index], anchor, windowsStylePath)
-                    }
-                }
-                .singleOrNull()
-        } ?: return null
-
-        return sanitizeRelativePath(absoluteSegments.drop(preferredMatch).joinToString("/"))
-            ?.takeIf { it.isNotBlank() }
-    }
-
-    private fun detachedAbsolutePathFallback(absoluteSegments: List<String>, windowsStylePath: Boolean): String? {
-        val anchorIndex = absoluteSegments.indexOfFirst { segment ->
-            DETACHED_ABSOLUTE_PATH_ANCHORS.any { anchor -> segmentsMatch(segment, anchor, windowsStylePath) }
-        }
-        if (anchorIndex < 0 || anchorIndex >= absoluteSegments.lastIndex) {
-            return null
-        }
-
-        return sanitizeRelativePath(absoluteSegments.drop(anchorIndex).joinToString("/"))
-            ?.takeIf { it.isNotBlank() }
+        // An absolute path that matches no root is UNRESOLVED. It used to be guessed at:
+        // `/Users/bob/other-repo/src/main.ts` was written into `<project>/src/main.ts`
+        // because the tail looked plausible — taking content from a repo that is not this
+        // one and overwriting a same-named file, with an overwrite prompt that showed
+        // nothing unusual. VS Code refuses these, and refusing is the safe side.
+        return null
     }
 
     private fun relativizePath(absolutePath: String, root: Path): String? {
@@ -489,11 +532,13 @@ class ClipboardPathResolver private constructor(
             return null
         }
         return sanitizeRelativePath(absolutePath.substring(normalizedRoot.length + 1))
-            ?.takeIf { it.isNotBlank() }
+            ?.takeIf { it.isNotEmpty() }
     }
 
     private fun normalizePathString(path: String): String =
-        trimTrailingSeparator(path.replace('\\', '/').replace(DUPLICATE_SEPARATORS, "/").trim())
+        trimTrailingSeparator(
+            ClipboardRestoreParser.asciiTrim(path.replace('\\', '/').replace(DUPLICATE_SEPARATORS, "/"))
+        )
 
     private fun pathLookupKey(path: String): String {
         val normalizedPath = normalizePathString(path)
@@ -501,7 +546,12 @@ class ClipboardPathResolver private constructor(
     }
 
     private fun sanitizeRelativePath(path: String): String? {
-        val normalizedPath = path.trim().replace('\\', '/').replace(DUPLICATE_SEPARATORS, "/").trimStart('/')
+        // asciiTrim, not String.trim(): the two stdlibs disagree on U+001C-U+001F and
+        // U+FEFF, and here that decided the FILENAME each tool wrote — `// file: a.txt\u001C`
+        // restored as `a.txt` here and `a.txt\u001C` in VS Code. The parsers were aligned
+        // first; without this the divergence just moved one layer down.
+        val normalizedPath = ClipboardRestoreParser.asciiTrim(path)
+            .replace('\\', '/').replace(DUPLICATE_SEPARATORS, "/").trimStart('/')
         val segments = normalizedPath.split('/')
             .filter { segment -> segment.isNotEmpty() && segment != "." }
         if (segments.isEmpty()) {
@@ -521,6 +571,71 @@ class ClipboardPathResolver private constructor(
 
     private fun segmentsMatch(left: String, right: String, windowsStylePath: Boolean): Boolean =
         left.equals(right, ignoreCase = windowsStylePath)
+
+    /** Every root/segment-index pairing whose suffix could name this file. */
+    private fun suffixMatchesFor(
+        absoluteSegments: List<String>,
+        windowsStyleSuffix: Boolean
+    ): List<TargetCandidate> =
+        orderedRoots
+            .flatMap { root ->
+                val rootName = root.path.name.takeIf(String::isNotEmpty) ?: return@flatMap emptyList()
+                absoluteSegments.indices.mapNotNull { index ->
+                    if (!segmentsMatch(absoluteSegments[index], rootName, windowsStyleSuffix) || index >= absoluteSegments.lastIndex) {
+                        return@mapNotNull null
+                    }
+                    sanitizeRelativePath(absoluteSegments.drop(index + 1).joinToString("/"))
+                        ?.takeIf { it.isNotEmpty() }
+                        ?.let { relativePath ->
+                            TargetCandidate(
+                                root = root,
+                                target = root.path.resolve(relativePath).normalize(),
+                                rootRelativePath = relativePath
+                            )
+                        }
+                }
+            }
+            .distinctBy { candidate ->
+                "${pathLookupKey(candidate.root.path.toString())}\u0000${candidate.rootRelativePath}"
+            }
+
+    /** The single target the suffix matches agree on, or null for zero/several. */
+    private fun uniqueTargetOf(matches: List<TargetCandidate>): TargetCandidate? {
+        val groups = matches.groupBy { pathLookupKey(it.target.toString()) }
+        if (groups.size != 1) return null
+        val group = groups.values.single()
+        return group.firstOrNull { it.root.isPrimary } ?: group.first()
+    }
+
+    /**
+     * The suffix match already determines a UNIQUE target root. Handing the resolvers only
+     * a relative path threw that away, so they resolved it against the PRIMARY root: a file
+     * belonging to an external root was written over the primary repo's same-named file and
+     * the real target was never created. Both resolvers take this candidate; the string form
+     * stays in toRelativeProjectPath for its own label and ambiguity fallbacks.
+     */
+    private fun crossMachineSuffixCandidate(path: String): TargetCandidate? {
+        val normalizedPath = normalizePathString(path)
+        if (normalizedPath.isEmpty() || !isAbsolutePath(normalizedPath)) return null
+        val absoluteSegments = normalizedPath.trim('/').split('/').filter(String::isNotEmpty)
+        val windowsStyleSuffix = isWindowsStylePath(normalizedPath) ||
+            orderedRoots.any { root -> isWindowsStylePath(normalizePathString(root.path.toString())) }
+        return uniqueTargetOf(suffixMatchesFor(absoluteSegments, windowsStyleSuffix))
+    }
+
+    /**
+     * True when the target's REAL location is no longer inside any root — i.e. a directory
+     * symlink inside the project points out of it. Containment is the property that matters,
+     * not "contains a symlink": a link that stays inside the project is legitimate (pnpm's
+     * node_modules layout depends on it). Without this, `[DELETED] link/keep.txt` really
+     * removed a file outside the project.
+     */
+    /**
+     * null from containmentTarget means containment could not be established — refuse.
+     * Failing OPEN there is how a deep path stepped over the symlink above it.
+     */
+    private fun escapesAllRoots(target: Path): Boolean =
+        escapesRoots(orderedRoots.map { it.path.toString() }, target.toString())
 
     private fun absoluteRootCandidate(path: String): TargetCandidate? {
         val normalizedPath = normalizePathString(path)
@@ -543,11 +658,11 @@ class ClipboardPathResolver private constructor(
 
     private fun explicitRootLabelCandidates(relativePath: String): List<TargetCandidate> {
         val firstSegment = relativePath.substringBefore("/")
-        if (firstSegment == relativePath || firstSegment.isBlank()) {
+        if (firstSegment == relativePath || firstSegment.isEmpty()) {
             return emptyList()
         }
         val rootRelativePath = relativePath.substringAfter("/")
-            .takeIf(String::isNotBlank)
+            .takeIf(String::isNotEmpty)
             ?: return emptyList()
 
         return buildList {
@@ -627,7 +742,7 @@ class ClipboardPathResolver private constructor(
 
     private fun hasNestedRootPrefix(relativePath: String): Boolean {
         val firstSegment = relativePath.substringBefore("/")
-        if (firstSegment.isBlank()) {
+        if (firstSegment.isEmpty()) {
             return false
         }
 
@@ -636,7 +751,7 @@ class ClipboardPathResolver private constructor(
 
         return orderedRoots
             .filter { it != primaryRoot }
-            .mapNotNull { it.path.name.takeIf(String::isNotBlank) }
+            .mapNotNull { it.path.name.takeIf(String::isNotEmpty) }
             .any { rootName -> segmentsMatch(rootName, firstSegment, windowsStylePath) }
     }
 
@@ -654,7 +769,7 @@ class ClipboardPathResolver private constructor(
         )
 
     private fun RootEntry.toClipboardPath(relativePath: String): String =
-        if (relativePath.isBlank()) {
+        if (relativePath.isEmpty()) {
             clipboardLabel.orEmpty()
         } else {
             "${clipboardLabel.orEmpty()}/$relativePath"

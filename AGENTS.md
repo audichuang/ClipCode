@@ -36,6 +36,23 @@ Kotlin-side pins for the shared invariants:
   (the TS side pins an `ASCII_WS` class to match this behaviour). `TokenEstimator.kt`
   spells the ASCII set out anyway — same semantics, but it keeps the two scans
   visibly identical to the eye.
+- **`RegexOption.IGNORE_CASE` is banned in the parser.** It is
+  `CASE_INSENSITIVE|UNICODE_CASE`, which folds the Turkish dotless `ı` (U+0131) onto
+  `i` where JavaScript's `/i` does not — `// fıle: x.ts` was a header here and content
+  there. `GENERIC_FILE_HEADER` spells the token out as `[Ff][Ii][Ll][Ee]:`; the label
+  regexes are case-sensitive on both sides.
+- The builder emits `ClipboardRestoreParser.POST_TEXT_MARKER` before a non-empty post
+  text and the parser stops there. Do NOT reintroduce a `postText` parameter on `parse()`
+  — see the work-root `AGENTS.md` for why reconstructing the footer from the receiver's
+  setting silently deletes real content.
+- No `String.trim()` / `isBlank()` in the parse path — `ClipboardRestoreParser.asciiTrim`
+  only, including in `RestorePlan.isPlaceholderBody` and `ChangeTypeLabel.stripLabels`.
+- The per-file filter decision lives in `CopyFilterMatcher` and **nowhere else**.
+  `GitClipboardPayloadBuilder` applies it and the file-count limit too: it is where this
+  action lands whenever a selection mixes revision or deleted entries, and it used to
+  apply neither, so an EXCLUDE rule stopped working the moment a staged file was selected
+  beside the excluded one. Directory pruning may only run when the INCLUDE set is
+  PATH-only — a PATTERN include says nothing about which directories can hold a match.
 - `$FILE_PATH` substitution uses `String.replace` (literal, not regex).
 - Parsing splits on `splitLines` — a `\r?\n` regex, **never** `String.lines()`.
 - The copy notification's four statistics (characters / lines / words / tokens) are

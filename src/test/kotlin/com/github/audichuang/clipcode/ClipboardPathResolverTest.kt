@@ -499,7 +499,12 @@ class ClipboardPathResolverTest {
     }
 
     @Test
-    fun `resolveWriteTarget accepts Windows node_modules absolute path without matching project root name`() {
+    fun `resolveWriteTarget refuses an absolute path that belongs to a different checkout`() {
+        // Deliberately inverted. This used to be RESOLVED by anchoring on `node_modules`:
+        // a path naming someone else's machine and someone else's project was written into
+        // THIS project, and the overwrite prompt showed nothing unusual. VS Code refuses
+        // these, and refusing is the safe side of a guess that can silently clobber a
+        // same-named file.
         val resolver = ClipboardPathResolver.fromRootPaths(
             listOf("C:/workspace/current-project"),
             "C:/workspace/current-project"
@@ -509,15 +514,14 @@ class ClipboardPathResolverTest {
             "D:\\Users\\00508726\\Documents\\Project\\cat\\inv-web-console\\node_modules\\cub-lib-view-rootng\\styles\\cdk\\_a11y-theme.scss"
         )
 
-        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
-        assertEquals(
-            "node_modules/cub-lib-view-rootng/styles/cdk/_a11y-theme.scss",
-            resolved.target.relativePath
-        )
+        assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(resolution)
     }
 
     @Test
-    fun `resolveWriteTarget prefers existing primary child directory before node_modules fallback`() {
+    fun `resolveWriteTarget refuses a foreign absolute path even when a child dir name matches`() {
+        // Deliberately inverted, same reason as above: a same-named child directory is not
+        // evidence that the file belongs here. A root-name suffix match still resolves —
+        // that is the supported cross-machine case, and it is pinned separately.
         val root = Files.createTempDirectory("clipcode-root-wrapper")
         root.resolve("inv-web-console").createDirectories()
         root.resolve("node_modules").createDirectories()
@@ -530,11 +534,7 @@ class ClipboardPathResolverTest {
             "D:\\Users\\00508726\\Documents\\Project\\cat\\inv-web-console\\node_modules\\cub-lib-view-rootng\\styles\\cdk\\_a11y-theme.scss"
         )
 
-        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
-        assertEquals(
-            "inv-web-console/node_modules/cub-lib-view-rootng/styles/cdk/_a11y-theme.scss",
-            resolved.target.relativePath
-        )
+        assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(resolution)
     }
 
     @Test
@@ -565,5 +565,92 @@ class ClipboardPathResolverTest {
         assertNull((resolver.resolveDeleteTarget("../secret.txt") as? ClipboardPathResolver.DeleteResolution.Resolved))
     }
 
+    @Test
+    fun `containment holds however many missing levels sit under an escaping link`() {
+        val base = Files.createTempDirectory("clipcode-deep")
+        val repo = base.resolve("repo").createDirectories()
+        val outside = base.resolve("outside").createDirectories()
+        Files.createSymbolicLink(repo.resolve("link"), outside)
+
+        val resolver = ClipboardPathResolver.fromRootPaths(listOf(repo.toString()), repo.toString())
+        // A fixed iteration budget counted MISSING ANCESTORS, so a path with more levels
+        // than the budget gave up before reaching the link above them — and gave up by
+        // ALLOWING.
+        val deep = (listOf("link") + List(42) { "d" } + listOf("new.txt")).joinToString("/")
+        assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(resolver.resolveWriteTarget(deep))
+        assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(resolver.resolveWriteTarget("link/new.txt"))
+
+        // A deep path that stays inside is still writable.
+        val inside = (List(42) { "d" } + listOf("new.txt")).joinToString("/")
+        assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolver.resolveWriteTarget(inside))
+    }
+
+    @Test
+    fun `a path segment of control characters is kept, not dropped`() {
+        val base = Files.createTempDirectory("clipcode-ctrl")
+        val repo = base.resolve("repo").createDirectories()
+        val resolver = ClipboardPathResolver.fromRootPaths(listOf(repo.toString()), repo.toString())
+
+        // Kotlin's isBlank is Unicode-aware and the VS Code mirror only drops EMPTY
+        // segments, so this segment was discarded here and kept there — the two tools then
+        // wrote DIFFERENT files for one clipboard path.
+        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(
+            resolver.resolveWriteTarget("\u001C/keep.txt")
+        )
+        assertEquals("\u001C/keep.txt", resolved.target.relativePath)
+    }
+
     private fun Path.systemIndependentPath(): String = toString().replace('\\', '/')
+
+    @Test
+    fun `an external root keeps its identity through cross-machine suffix matching`() {
+        val base = Files.createTempDirectory("clipcode-multiroot")
+        val app = base.resolve("dest/app")
+        val shared = base.resolve("dest/shared-lib")
+        // The primary repo also contains a same-named folder — that collision is what makes
+        // the label ambiguous and pushes resolution onto the suffix path in the first place.
+        app.resolve("shared-lib").createDirectories()
+        shared.createDirectories()
+
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(app.toString(), shared.toString()),
+            app.toString()
+        )
+        // A payload copied on another machine carries the external file's absolute path.
+        val resolution = resolver.resolveWriteTarget("/source/shared-lib/new.ts")
+
+        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
+        assertEquals(
+            shared.resolve("new.ts").normalize().toString(),
+            Path.of(resolved.target.absolutePath).normalize().toString(),
+            "must land in the external root, not be written over the primary repo"
+        )
+    }
+
+    @Test
+    fun `restore must not escape the project through a directory symlink`() {
+        val base = Files.createTempDirectory("clipcode-symdel")
+        val repo = base.resolve("repo").createDirectories()
+        val outside = base.resolve("outside").createDirectories()
+        outside.resolve("keep.txt").writeText("must survive")
+        Files.createSymbolicLink(repo.resolve("link"), outside)
+        // pnpm's node_modules layout is exactly this: a link that never leaves the project.
+        repo.resolve("packages/ui").createDirectories()
+        repo.resolve("node_modules").createDirectories()
+        Files.createSymbolicLink(repo.resolve("node_modules/ui"), repo.resolve("packages/ui"))
+
+        val resolver = ClipboardPathResolver.fromRootPaths(listOf(repo.toString()), repo.toString())
+        // Neither direction may reach outside the project through the link.
+        assertIs<ClipboardPathResolver.DeleteResolution.Unresolved>(
+            resolver.resolveDeleteTarget("link/keep.txt"))
+        assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(
+            resolver.resolveWriteTarget("link/new.txt"))
+
+        // A link that stays inside is legitimate — refusing every symlink would lock these
+        // users out of restore entirely, and VS Code must agree.
+        assertIs<ClipboardPathResolver.WriteResolution.Resolved>(
+            resolver.resolveWriteTarget("node_modules/ui/index.ts"))
+        assertIs<ClipboardPathResolver.WriteResolution.Resolved>(
+            resolver.resolveWriteTarget("inside.txt"))
+    }
 }

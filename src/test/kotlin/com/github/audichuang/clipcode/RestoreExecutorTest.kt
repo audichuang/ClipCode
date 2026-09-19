@@ -54,7 +54,8 @@ class RestoreExecutorTest : BasePlatformTestCase() {
                         absolutePath = root.resolve("src/Missing.kt").systemIndependentPath()
                     )
                 ),
-                skippedOperations = emptyList()
+                skippedOperations = emptyList(),
+                roots = listOf(rootPath)
             )
 
             val skipResult = executor.execute(skipPlan, overwriteExisting = false, skipExisting = true)
@@ -78,7 +79,8 @@ class RestoreExecutorTest : BasePlatformTestCase() {
                     )
                 ),
                 deleteOperations = emptyList(),
-                skippedOperations = emptyList()
+                skippedOperations = emptyList(),
+                roots = listOf(rootPath)
             )
 
             val overwriteResult = executor.execute(overwritePlan, overwriteExisting = true, skipExisting = false)
@@ -112,7 +114,8 @@ class RestoreExecutorTest : BasePlatformTestCase() {
                         )
                     ),
                     deleteOperations = emptyList(),
-                    skippedOperations = emptyList()
+                    skippedOperations = emptyList(),
+                    roots = listOf(rootPath)
                 ),
                 overwriteExisting = false,
                 skipExisting = false
@@ -146,7 +149,8 @@ class RestoreExecutorTest : BasePlatformTestCase() {
                     )
                 ),
                 deleteOperations = emptyList(),
-                skippedOperations = emptyList()
+                skippedOperations = emptyList(),
+                roots = listOf(rootPath)
             )
 
             targetFile.writeText("appeared after planning")
@@ -158,6 +162,52 @@ class RestoreExecutorTest : BasePlatformTestCase() {
             assertEquals(1, result.skippedExistingCount)
             assertEquals("appeared after planning", targetFile.readText())
             assertTrue(result.errors.isEmpty())
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    /**
+     * The pre-write containment re-check must hold for a DELETE-ONLY plan. It used to
+     * derive its root set from the CREATE operations, so a plan with none carried an empty
+     * set, the check short-circuited to "allowed", and a symlink appearing between planning
+     * and execution let the delete follow it out of the project — the exact race the
+     * re-check exists to close.
+     */
+    fun testDeleteOnlyPlanStillRechecksContainmentBeforeUnlinking() {
+        val root = Files.createTempDirectory("clipcode-executor-delete-recheck")
+        try {
+            val outside = Files.createTempDirectory("clipcode-executor-outside")
+            try {
+                val victim = outside.resolve("keep.txt")
+                victim.writeText("outside original")
+                // Planned as an ordinary in-project directory; it becomes a link afterwards.
+                val link = root.resolve("link")
+                Files.createSymbolicLink(link, outside)
+
+                val result = RestoreExecutor(project).execute(
+                    RestorePlan(
+                        createOperations = emptyList(),
+                        deleteOperations = listOf(
+                            RestorePlan.DeleteOperation(
+                                relativePath = "link/keep.txt",
+                                absolutePath = link.resolve("keep.txt").systemIndependentPath()
+                            )
+                        ),
+                        skippedOperations = emptyList(),
+                        roots = listOf(root.systemIndependentPath())
+                    ),
+                    overwriteExisting = false,
+                    skipExisting = false
+                )
+
+                assertEquals(0, result.deletedCount)
+                assertTrue(result.errors.any { it.contains("unsafe path") }, result.errors.toString())
+                assertTrue(victim.exists(), "a file outside the project must survive")
+                assertEquals("outside original", victim.readText())
+            } finally {
+                outside.toFile().deleteRecursively()
+            }
         } finally {
             root.toFile().deleteRecursively()
         }
@@ -181,7 +231,8 @@ class RestoreExecutorTest : BasePlatformTestCase() {
                         )
                     ),
                     deleteOperations = emptyList(),
-                    skippedOperations = emptyList()
+                    skippedOperations = emptyList(),
+                    roots = listOf(missingRoot.systemIndependentPath())
                 ),
                 overwriteExisting = false,
                 skipExisting = false
@@ -190,6 +241,10 @@ class RestoreExecutorTest : BasePlatformTestCase() {
             assertEquals(0, result.createdCount)
             assertEquals(1, result.errors.size)
             assertTrue(result.errors.single().contains("src/Broken.kt"))
+            // Pin WHICH error: a missing root is a create failure, not an escape. Without
+            // this the containment re-check could start firing here and the test would go
+            // on passing while proving something else.
+            assertFalse(result.errors.single().contains("unsafe path"), result.errors.toString())
         } finally {
             root.toFile().deleteRecursively()
         }
@@ -215,7 +270,8 @@ class RestoreExecutorTest : BasePlatformTestCase() {
                         )
                     ),
                     deleteOperations = emptyList(),
-                    skippedOperations = emptyList()
+                    skippedOperations = emptyList(),
+                    roots = listOf(rootPath)
                 ),
                 overwriteExisting = true,
                 skipExisting = false
@@ -251,7 +307,8 @@ class RestoreExecutorTest : BasePlatformTestCase() {
                         )
                     ),
                     deleteOperations = emptyList(),
-                    skippedOperations = emptyList()
+                    skippedOperations = emptyList(),
+                    roots = listOf(root.systemIndependentPath())
                 ),
                 overwriteExisting = true,
                 skipExisting = false,

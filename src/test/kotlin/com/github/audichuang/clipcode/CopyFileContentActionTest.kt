@@ -1,5 +1,7 @@
 package com.github.audichuang.clipcode
 
+import com.intellij.notification.Notification
+import com.intellij.notification.Notifications
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.Presentation
@@ -102,7 +104,12 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         val file = myFixture.addFileToProject("Wrap.kt", "wrapped").virtualFile
         CopyFileContentAction().performCopyFilesContent(project, arrayOf(file))
         val text = clipboardText()
-        assertTrue(text.startsWith("=== BEFORE ==="), "Expected pre text; got: $text")
+        // The `// clipcode-root:` line legitimately precedes the pre text — it always has,
+        // and it now appears for projects that previously had no single root name.
+        val body = text.lineSequence()
+            .dropWhile { it.startsWith(ClipboardRestoreParser.SOURCE_ROOT_MARKER) }
+            .joinToString("\n")
+        assertTrue(body.startsWith("=== BEFORE ==="), "Expected pre text; got: $text")
         assertTrue(text.trimEnd().endsWith("=== AFTER ==="), "Expected post text; got: $text")
     }
 
@@ -371,6 +378,43 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         val empty = myFixture.addFileToProject("Empty.kt", "").virtualFile
         CopyFileContentAction().performCopyFilesContent(project, arrayOf(empty))
         // 空檔不會丟例外，但可能不會被加進輸出（readFileContents 返回空字串就 skip）
+    }
+
+    /**
+     * A non-UTF-8 file is dropped on purpose — the wire carries no encoding, so it cannot
+     * round-trip — but it used to be dropped in SILENCE, which is indistinguishable from
+     * the file not being there. VS Code counts and reports the same drop
+     * (copy.ts skippedUnreadableCount); the work-root contract requires both to.
+     */
+    fun testNonUtf8FileIsCountedInTheCopyNotification() {
+        val state = CopyFileContentSettings.getInstance(project)!!.state
+        state.showCopyNotification = true
+        val readable = myFixture.addFileToProject("Readable.txt", "readable").virtualFile
+        val big5 = myFixture.addFileToProject("Big5.txt", "placeholder").virtualFile
+        // Big5 bytes for 中文 — a valid file, and not valid UTF-8.
+        ApplicationManager.getApplication().runWriteAction {
+            big5.setBinaryContent(byteArrayOf(0xA4.toByte(), 0xA4.toByte(), 0xA4.toByte(), 0xE5.toByte()))
+        }
+
+        val messages = mutableListOf<String>()
+        project.messageBus.connect(testRootDisposable).subscribe(
+            Notifications.TOPIC,
+            object : Notifications {
+                override fun notify(notification: Notification) {
+                    messages.add(notification.content)
+                }
+            }
+        )
+
+        CopyFileContentAction().performCopyFilesContent(project, arrayOf(readable, big5))
+
+        val text = clipboardText()
+        assertContains(text, "readable")
+        assertFalse(text.contains("Big5.txt"), "a non-UTF-8 file must not reach the clipboard")
+        assertTrue(
+            messages.any { it.contains("1 skipped: not UTF-8 text or unreadable") },
+            "the drop must be reported, not silent: $messages"
+        )
     }
 
     fun testNotificationShownWhenSettingEnabled() {

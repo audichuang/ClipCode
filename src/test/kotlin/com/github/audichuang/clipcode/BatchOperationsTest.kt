@@ -26,7 +26,7 @@ class BatchOperationsTest : BasePlatformTestCase() {
         LocalFileSystem.getInstance().refreshAndFindFileByIoFile(root)
         val plan = RestorePlan((0 until 300).map {
             RestorePlan.CreateOperation("f$it.txt", "${root.path}/f$it.txt", root.path, "x".repeat(4096), false)
-        }, emptyList(), emptyList())
+        }, emptyList(), emptyList(), listOf(root.path))
         val durations = mutableListOf<Double>()
         var started = 0L
         val connection = ApplicationManager.getApplication().messageBus.connect()
@@ -50,7 +50,7 @@ class BatchOperationsTest : BasePlatformTestCase() {
         LocalFileSystem.getInstance().refreshAndFindFileByIoFile(root)!!.refresh(false, true)
         val plan = RestorePlan((0 until 70).map {
             RestorePlan.CreateOperation("f$it.txt", "${root.path}/f$it.txt", root.path, "value $it", it == 0)
-        }, listOf(RestorePlan.DeleteOperation("deleted.txt", "${root.path}/deleted.txt")), emptyList())
+        }, listOf(RestorePlan.DeleteOperation("deleted.txt", "${root.path}/deleted.txt")), emptyList(), listOf(root.path))
         val result = RestoreExecutor(project).execute(plan, true, false)
         assertEquals(69, result.createdCount)
         assertEquals(1, result.overwrittenCount)
@@ -66,7 +66,7 @@ class BatchOperationsTest : BasePlatformTestCase() {
         com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().saveAllDocuments()
         plan.createOperations.forEach { assertEquals(it.content, File(it.absolutePath).readText()) }
         assertFalse(File(root, "deleted.txt").exists())
-        val next = RestorePlan(listOf(RestorePlan.CreateOperation("next.txt", "${root.path}/next.txt", root.path, "next", false)), emptyList(), emptyList())
+        val next = RestorePlan(listOf(RestorePlan.CreateOperation("next.txt", "${root.path}/next.txt", root.path, "next", false)), emptyList(), emptyList(), listOf(root.path))
         RestoreExecutor(project).execute(next, false, false)
         undo.undo(null)
         assertFalse(File(root, "next.txt").exists())
@@ -79,7 +79,7 @@ class BatchOperationsTest : BasePlatformTestCase() {
         val indicator = com.intellij.openapi.progress.EmptyProgressIndicator()
         val plan = RestorePlan((0 until 100).map {
             RestorePlan.CreateOperation("f$it.txt", "${root.path}/f$it.txt", root.path, "value", false)
-        }, emptyList(), emptyList())
+        }, emptyList(), emptyList(), listOf(root.path))
         val connection = ApplicationManager.getApplication().messageBus.connect()
         connection.subscribe(CommandListener.TOPIC, object : CommandListener {
             override fun commandFinished(event: CommandEvent) { indicator.cancel() }
@@ -99,7 +99,7 @@ class BatchOperationsTest : BasePlatformTestCase() {
         LocalFileSystem.getInstance().refreshAndFindFileByIoFile(root)
         val plan = RestorePlan((0 until 1000).map {
             RestorePlan.CreateOperation("f$it.txt", "${root.path}/f$it.txt", root.path, "x".repeat(4096), false)
-        }, emptyList(), emptyList())
+        }, emptyList(), emptyList(), listOf(root.path))
         val done = java.util.concurrent.atomic.AtomicBoolean(false)
         var heartbeats = 0
         val durations = mutableListOf<Double>()
@@ -142,7 +142,7 @@ class BatchOperationsTest : BasePlatformTestCase() {
             }
         })
         try {
-            val plan = RestorePlan(listOf(RestorePlan.CreateOperation("file.txt", path, root.path, "value", false)), emptyList(), emptyList())
+            val plan = RestorePlan(listOf(RestorePlan.CreateOperation("file.txt", path, root.path, "value", false)), emptyList(), emptyList(), listOf(root.path))
             assertEquals(1, RestoreExecutor(project).execute(plan, false, false).createdCount)
         } finally { connection.disconnect() }
         assertTrue(checked)
@@ -210,7 +210,7 @@ class BatchOperationsTest : BasePlatformTestCase() {
             val file = File(root, name).apply { writeBytes(before) }
             val vf = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(file)!!
             if (name.endsWith(".txt")) com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().getDocument(vf)
-            val plan = RestorePlan(listOf(RestorePlan.CreateOperation(name, file.path, root.path, content, true)), emptyList(), emptyList())
+            val plan = RestorePlan(listOf(RestorePlan.CreateOperation(name, file.path, root.path, content, true)), emptyList(), emptyList(), listOf(root.path))
             val result = RestoreExecutor(project).execute(plan, true, false)
             assertTrue(result.errors.toString(), result.errors.isEmpty())
             assertEquals(content, file.readText())
