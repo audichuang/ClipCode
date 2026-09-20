@@ -266,7 +266,7 @@ class MergeCommitCopyTest : BasePlatformTestCase() {
     }
 
     private fun runIn(dir: File, vararg cmd: String): String {
-        val process = ProcessBuilder(*cmd).directory(dir).redirectErrorStream(true).start()
+        val process = ProcessBuilder(*cmd).directory(dir).redirectErrorStream(true).isolatedGitConfig().start()
         val output = process.inputStream.bufferedReader().readText()
         assertEquals(0, process.waitFor(), output)
         return output
@@ -311,12 +311,7 @@ class MergeCommitCopyTest : BasePlatformTestCase() {
 
     private fun git(vararg args: String, expectedExit: Int = 0): String {
         val process = ProcessBuilder(listOf("git") + args).directory(root).redirectErrorStream(true)
-            // Isolate the developer's own git config. Without this a global
-            // commit.gpgsign=true makes `git commit` invoke gpg with no TTY and exit
-            // non-zero, and a global core.hooksPath runs foreign hooks inside this
-            // throwaway repo — the suite then fails on that person's machine only.
-            // core.autocrlf and init.defaultBranch are covered by the same two vars.
-            .apply { environment()["GIT_CONFIG_GLOBAL"] = NUL_CONFIG; environment()["GIT_CONFIG_SYSTEM"] = NUL_CONFIG }
+            .isolatedGitConfig()
             .start()
         val output = process.inputStream.bufferedReader().readText()
         assertEquals(expectedExit, process.waitFor(), output)
