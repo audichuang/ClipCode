@@ -20,7 +20,7 @@ import kotlin.test.assertEquals
  */
 class ContractFixturesTest {
     private companion object {
-        const val EXPECTED_FIXTURES_SHA = "1af7c6b768be54c4b2d3611fedaf742799ce8eae128119f838c7145188b2d23c"
+        const val EXPECTED_FIXTURES_SHA = "ea413ab8171060e7b47479990687a5a22f8fb810bc28b9ac5ea310a34fbe26d3"
         const val RESOURCE = "/clipboard-contract.json"
     }
 

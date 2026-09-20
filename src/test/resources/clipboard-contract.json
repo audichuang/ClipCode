@@ -131,6 +131,24 @@
       "wire": "// clipcode-root: myrepo\n\n### src/a.ts ###\nx();\n"
     },
     {
+      "name": "regular: repeated $FILE_PATH placeholders",
+      "kind": "regular",
+      "options": {
+        "headerFormat": "### $FILE_PATH -> $FILE_PATH ###",
+        "preText": "",
+        "postText": "",
+        "addExtraLineBetweenFiles": false,
+        "sourceRoot": "myrepo",
+        "files": [
+          {
+            "path": "src/Cost$&$$plan[1].ts",
+            "content": "x();"
+          }
+        ]
+      },
+      "wire": "// clipcode-root: myrepo\n\n### src/Cost$&$$plan[1].ts -> src/Cost$&$$plan[1].ts ###\nx();\n"
+    },
+    {
       "name": "regular: permissive header format suppresses the metadata line",
       "kind": "regular",
       "options": {
@@ -454,6 +472,24 @@
           "changeTypes": []
         }
       ]
+    },
+    {
+      "name": "parse: repeated $FILE_PATH placeholders read back as one file",
+      "headerFormat": "### $FILE_PATH -> $FILE_PATH ###",
+      "input": "### src/Cost$&$$plan[1].ts -> src/Cost$&$$plan[1].ts ###\nx();",
+      "expected": [
+        {
+          "path": "src/Cost$&$$plan[1].ts",
+          "content": "x();",
+          "changeTypes": []
+        }
+      ]
+    },
+    {
+      "name": "parse: repeated $FILE_PATH placeholders reject mismatched paths",
+      "headerFormat": "### $FILE_PATH -> $FILE_PATH ###",
+      "input": "### src/a.ts -> src/b.ts ###\nx();",
+      "expected": []
     },
     {
       "name": "parse: leading clipcode-root metadata line is dropped",
