@@ -83,6 +83,24 @@ class ClipboardRestoreParserTest {
     }
 
     @Test
+    fun `round trips paths with dollar signs through repeated header placeholders`() {
+        val format = "### \$FILE_PATH -> \$FILE_PATH ###"
+        val path = "src/Cost\$&\$\$plan[1].kt"
+        val payload = ClipboardPayloadFormatter.buildPayload(
+            ClipboardPayloadFormatter.Options(
+                headerFormat = format,
+                addExtraLineBetweenFiles = false,
+                files = listOf(ClipboardPayloadFormatter.PayloadFile(path, "content"))
+            )
+        )
+
+        val entry = parser.parse(payload, format).single()
+        assertEquals(path, entry.path)
+        assertEquals("content", entry.content)
+        assertTrue(parser.parse("### first -> second ###\ncontent", format).isEmpty())
+    }
+
+    @Test
     fun `falls back to generic file header`() {
         val entries = parser.parse(
             """
