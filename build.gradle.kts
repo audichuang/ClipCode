@@ -79,6 +79,19 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.2.13 - Copy and restore the same files as the VS Code side</h2>
+            <ul>
+                <li><b>Upgrade both tools together.</b> A payload with a configured post text now ends the last file with a <code>// clipcode-end</code> line. Older Snipcode/ClipCode builds do not know that line and will write it into the last file's content. The marker exists because without it the post text itself was written into that file &mdash; including over a real file that the copy side had only stubbed out.</li>
+                <li><b>Fixed:</b> Paste &amp; Restore could write outside the project. A <code>[DELETED]</code> entry followed a directory symlink and removed a file outside it, and an absolute path that matched no root was guessed at &mdash; taking a file from an unrelated checkout and overwriting the same-named file here, with an overwrite prompt that showed nothing unusual. Containment is now decided by a real filesystem resolve, and an unmatched absolute path is refused.</li>
+                <li><b>Fixed:</b> A file that is not UTF-8 is no longer copied, and no longer overwritten on restore. The clipboard format carries no encoding, so a Big5 or UTF-16 file looked copyable and came back as UTF-8 with the original bytes gone.</li>
+                <li><b>Fixed:</b> The Git Log copy applied none of your filters and ignored the file-count limit whenever a selection mixed revision or deleted entries. An EXCLUDE rule stopped working the moment a staged file was selected next to the excluded one.</li>
+                <li><b>Fixed:</b> A merge commit now copies the union of its diffs against every parent. Against the first parent alone it hid everything that arrived through the others.</li>
+                <li><b>Fixed:</b> A deleted file now carries its pre-deletion content on every surface, instead of a bare marker on some of them.</li>
+                <li><b>Fixed:</b> Files skipped as binary or non-UTF-8 are now counted in the copy notification instead of going missing in silence.</li>
+                <li>Directory symlinks are no longer followed while walking a folder, so a pnpm or Bazel tree no longer fills the copy with aliases of the same few files.</li>
+                <li>A <code>*.txt</code> style filter, a header containing <code>${'$'}FILE_PATH</code> twice, and paths containing control characters now behave identically in both tools.</li>
+            </ul>
+
             <h2>Version 1.2.12 - Keep the IntelliJ and VS Code sides byte-compatible</h2>
             <ul>
                 <li><b>Fixed:</b> A file path or content line containing U+0085 (NEL) was a header to one tool and not the other. Pasting a VS Code copy into IntelliJ silently dropped the whole file; the reverse truncated a real file and invented a phantom one. Both sides now use the same explicit character class.</li>
