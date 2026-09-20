@@ -34,7 +34,10 @@ class MergeCommitCopyTest : BasePlatformTestCase() {
     override fun setUp() {
         super.setUp()
         root = java.nio.file.Files.createTempDirectory("clipcode-merge-test").toFile()
-        git("init", "-b", "trust")
+        // `git init -b` needs git >= 2.28 (Ubuntu 20.04 LTS ships 2.25.1); this is
+        // equivalent and works everywhere.
+        git("init")
+        git("symbolic-ref", "HEAD", "refs/heads/trust")
         git("config", "user.name", "Test")
         git("config", "user.email", "test@example.invalid")
         git("config", "commit.gpgsign", "false")
@@ -307,7 +310,14 @@ class MergeCommitCopyTest : BasePlatformTestCase() {
     private fun commit() { git("add", "-A"); git("commit", "-m", "change") }
 
     private fun git(vararg args: String, expectedExit: Int = 0): String {
-        val process = ProcessBuilder(listOf("git") + args).directory(root).redirectErrorStream(true).start()
+        val process = ProcessBuilder(listOf("git") + args).directory(root).redirectErrorStream(true)
+            // Isolate the developer's own git config. Without this a global
+            // commit.gpgsign=true makes `git commit` invoke gpg with no TTY and exit
+            // non-zero, and a global core.hooksPath runs foreign hooks inside this
+            // throwaway repo — the suite then fails on that person's machine only.
+            // core.autocrlf and init.defaultBranch are covered by the same two vars.
+            .apply { environment()["GIT_CONFIG_GLOBAL"] = NUL_CONFIG; environment()["GIT_CONFIG_SYSTEM"] = NUL_CONFIG }
+            .start()
         val output = process.inputStream.bufferedReader().readText()
         assertEquals(expectedExit, process.waitFor(), output)
         return output.trim()
