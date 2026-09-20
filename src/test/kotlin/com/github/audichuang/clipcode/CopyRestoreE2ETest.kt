@@ -677,6 +677,12 @@ class CopyRestoreE2ETest : BasePlatformTestCase() {
 
     private fun runGit(vararg args: String): String {
         val process = ProcessBuilder(listOf(gitExecutable()) + args)
+            // Isolate the developer's own git config. Without this a global
+            // commit.gpgsign=true makes `git commit` invoke gpg with no TTY and exit
+            // non-zero, and a global core.hooksPath runs foreign hooks inside this
+            // throwaway repo — the suite then fails on that person's machine only.
+            // core.autocrlf and init.defaultBranch are covered by the same two vars.
+            .apply { environment()["GIT_CONFIG_GLOBAL"] = NUL_CONFIG; environment()["GIT_CONFIG_SYSTEM"] = NUL_CONFIG }
             .directory(repoRoot)
             .redirectErrorStream(true)
             .start()
