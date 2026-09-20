@@ -174,12 +174,17 @@ class ClipboardRestoreParser {
 
         private fun toHeaderPattern(headerFormat: String): Regex? {
             val placeholder = "\$FILE_PATH"
-            val placeholderIndex = headerFormat.indexOf(placeholder)
-            if (placeholderIndex < 0) return null
+            val parts = headerFormat.split(placeholder)
+            if (parts.size == 1) return null
 
-            val prefix = Regex.escape(headerFormat.substring(0, placeholderIndex))
-            val suffix = Regex.escape(headerFormat.substring(placeholderIndex + placeholder.length))
-            return Regex("^$prefix($HEADER_PATH_CHARS+?)$suffix$")
+            val pattern = StringBuilder("^")
+            parts.forEachIndexed { index, part ->
+                pattern.append(Regex.escape(part))
+                if (index < parts.lastIndex) {
+                    pattern.append(if (index == 0) "($HEADER_PATH_CHARS+?)" else "(?:\\1)")
+                }
+            }
+            return Regex("$pattern$")
         }
     }
 

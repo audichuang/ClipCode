@@ -63,7 +63,7 @@ class ClipboardPathResolver private constructor(
             val real = containmentTarget(Path.of(absolutePath)) ?: return true
             return rootPaths.none { rootPath ->
                 val root = runCatching { Path.of(rootPath) }.getOrNull() ?: return@none false
-                val rootReal = runCatching { root.toRealPath() }.getOrElse { root.normalize() }
+                val rootReal = containmentTarget(root) ?: return@none false
                 real == rootReal || real.startsWith(rootReal)
             }
         }
