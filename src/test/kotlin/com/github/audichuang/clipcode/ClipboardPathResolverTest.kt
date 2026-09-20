@@ -627,6 +627,42 @@ class ClipboardPathResolverTest {
         )
     }
 
+    /**
+     * Builds its own symlink instead of relying on the host. On macOS `/tmp` IS a symlink
+     * to `/private/tmp`, so this bug reproduced there and was INVISIBLE on Linux — the VS
+     * Code half of it stayed green with the fix reverted, and this side had no test at all.
+     * A guard that can only fail on one OS is not a guard.
+     *
+     * The bug: containmentTarget() resolves the target through its deepest EXISTING
+     * ancestor, but the ROOT side used toRealPath() and fell back to the UNRESOLVED path
+     * when the root did not exist yet. The two then lived in different namespaces and a
+     * perfectly safe create was refused as an escape. Mirror of pathResolver.test.ts
+     * "a workspace root that does not exist yet is canonicalized like its targets".
+     */
+    @Test
+    fun `a root that does not exist yet is canonicalized like its targets`() {
+        val base = Files.createTempDirectory("clipcode-rootcanon")
+        val real = base.resolve("real").createDirectories()
+        Files.createSymbolicLink(base.resolve("link"), real)
+
+        // Reached through the link, and not created yet — exactly a fresh restore target.
+        val root = base.resolve("link/workspace")
+        val resolver = ClipboardPathResolver.fromRootPaths(listOf(root.toString()), root.toString())
+        assertIs<ClipboardPathResolver.WriteResolution.Resolved>(
+            resolver.resolveWriteTarget("src/New.kt"),
+            "a safe create under a not-yet-created root must be allowed")
+
+        // The guard itself must still bite: a link inside that root pointing out of it escapes.
+        val outside = base.resolve("outside").createDirectories()
+        val ws2Real = real.resolve("ws2").createDirectories()
+        Files.createSymbolicLink(ws2Real.resolve("out"), outside)
+        val ws2 = base.resolve("link/ws2")
+        val guarded = ClipboardPathResolver.fromRootPaths(listOf(ws2.toString()), ws2.toString())
+        assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(
+            guarded.resolveWriteTarget("out/escape.kt"),
+            "a link leaving the root must still be refused")
+    }
+
     @Test
     fun `restore must not escape the project through a directory symlink`() {
         val base = Files.createTempDirectory("clipcode-symdel")
