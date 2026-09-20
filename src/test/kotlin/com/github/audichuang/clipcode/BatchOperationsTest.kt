@@ -154,12 +154,7 @@ class BatchOperationsTest : BasePlatformTestCase() {
         val root = File(project.basePath!!).apply { mkdirs() }
         fun git(vararg args: String): String {
             val p = ProcessBuilder(listOf("git") + args).directory(root).redirectErrorStream(true)
-                // Isolate the developer's own git config. Without this a global
-                // commit.gpgsign=true makes `git commit` invoke gpg with no TTY and exit
-                // non-zero, and a global core.hooksPath runs foreign hooks inside this
-                // throwaway repo — the suite then fails on that person's machine only.
-                // core.autocrlf and init.defaultBranch are covered by the same two vars.
-                .apply { environment()["GIT_CONFIG_GLOBAL"] = NUL_CONFIG; environment()["GIT_CONFIG_SYSTEM"] = NUL_CONFIG }
+                .isolatedGitConfig()
                 .start()
             val text = p.inputStream.bufferedReader().readText()
             assertEquals(text, 0, p.waitFor()); return text.trim()
@@ -235,12 +230,7 @@ class BatchOperationsTest : BasePlatformTestCase() {
         val root = File(project.basePath!!).apply { mkdirs() }
         fun git(vararg args: String): String {
             val p = ProcessBuilder(listOf("git") + args).directory(root).redirectErrorStream(true)
-                // Isolate the developer's own git config. Without this a global
-                // commit.gpgsign=true makes `git commit` invoke gpg with no TTY and exit
-                // non-zero, and a global core.hooksPath runs foreign hooks inside this
-                // throwaway repo — the suite then fails on that person's machine only.
-                // core.autocrlf and init.defaultBranch are covered by the same two vars.
-                .apply { environment()["GIT_CONFIG_GLOBAL"] = NUL_CONFIG; environment()["GIT_CONFIG_SYSTEM"] = NUL_CONFIG }
+                .isolatedGitConfig()
                 .start()
             val out = p.inputStream.bufferedReader().readText()
             assertEquals(out, 0, p.waitFor())
