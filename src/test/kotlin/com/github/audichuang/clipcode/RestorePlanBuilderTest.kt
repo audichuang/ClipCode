@@ -215,14 +215,7 @@ class RestorePlanBuilderTest {
     }
 
     @Test
-    fun `refuses a Windows absolute path that belongs to a different checkout`() {
-        // Deliberately inverted. These paths used to be RESOLVED by anchoring on
-        // `node_modules` (and on a same-named child directory): a path naming someone
-        // else's machine and someone else's project was written into THIS project, with an
-        // overwrite prompt that showed nothing unusual. VS Code refuses them; refusing is
-        // the safe side of a guess that can silently clobber a same-named file. The
-        // supported cross-machine case — a ROOT-NAME suffix match — still resolves and is
-        // pinned separately.
+    fun `plans creation with the entire path from a different checkout`() {
         val root = Files.createTempDirectory("clipcode-plan-node-modules")
         root.resolve("inv-web-console").createDirectories()
         root.resolve("node_modules").createDirectories()
@@ -240,8 +233,10 @@ class RestorePlanBuilderTest {
             )
         )
 
-        assertEquals(emptyList(), plan.createOperations)
-        assertEquals(RestorePlan.SkipReason.UNRESOLVED_PATH, plan.skippedOperations.single().reason)
+        val created = plan.createOperations.single()
+        assertEquals("D/Users/00508726/Documents/Project/cat/inv-web-console/node_modules/cub-lib-view-rootng/styles/cdk/_a11y-theme.scss", created.relativePath)
+        assertEquals(root.resolve(created.relativePath).systemIndependentPath(), created.absolutePath)
+        assertEquals(emptyList(), plan.skippedOperations)
     }
     @Test
     fun `marks unresolved path when clipboard path is invalid`() {

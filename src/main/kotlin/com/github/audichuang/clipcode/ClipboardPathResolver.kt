@@ -320,12 +320,7 @@ class ClipboardPathResolver private constructor(
         }
 
     private fun resolveWriteTargetInternal(path: String): WriteResolution {
-        absoluteRootCandidate(path)?.let { candidate ->
-            val existed = Files.exists(candidate.target) && !Files.isDirectory(candidate.target)
-            return WriteResolution.Resolved(candidate.toResolvedTarget(candidate.rootRelativePath, existed))
-        }
-
-        crossMachineSuffixCandidate(path)?.let { candidate ->
+        (absoluteRootCandidate(path) ?: crossMachineSuffixCandidate(path) ?: literalAbsoluteCandidate(path))?.let { candidate ->
             val existed = Files.exists(candidate.target) && !Files.isDirectory(candidate.target)
             return WriteResolution.Resolved(candidate.toResolvedTarget(candidate.rootRelativePath, existed))
         }
@@ -513,11 +508,7 @@ class ClipboardPathResolver private constructor(
             }
         }
 
-        // An absolute path that matches no root is UNRESOLVED. It used to be guessed at:
-        // `/Users/bob/other-repo/src/main.ts` was written into `<project>/src/main.ts`
-        // because the tail looked plausible — taking content from a repo that is not this
-        // one and overwriting a same-named file, with an overwrite prompt that showed
-        // nothing unusual. VS Code refuses these, and refusing is the safe side.
+        // Writes have a literal absolute fallback; deletes require a mapped target.
         return null
     }
 
@@ -636,6 +627,19 @@ class ClipboardPathResolver private constructor(
      */
     private fun escapesAllRoots(target: Path): Boolean =
         escapesRoots(orderedRoots.map { it.path.toString() }, target.toString())
+
+    // Unmapped absolute paths retain every directory under the primary root. Only the
+    // drive colon/root separator is removed; archive names and arbitrary folders stay.
+    // Writes only: a foreign delete must not acquire a new target through this fallback.
+    private fun literalAbsoluteCandidate(path: String): TargetCandidate? {
+        val root = primaryRoot ?: return null
+        val normalizedPath = normalizePathString(path)
+        if (!isAbsolutePath(normalizedPath) || normalizedPath.matches(WINDOWS_DRIVE_ROOT)) return null
+        val relativePath = sanitizeRelativePath(
+            if (normalizedPath.matches(WINDOWS_ABSOLUTE_PATH)) normalizedPath.removeRange(1, 2) else normalizedPath
+        )?.takeIf { it.isNotEmpty() } ?: return null
+        return TargetCandidate(root, root.path.resolve(relativePath).normalize(), relativePath)
+    }
 
     private fun absoluteRootCandidate(path: String): TargetCandidate? {
         val normalizedPath = normalizePathString(path)
