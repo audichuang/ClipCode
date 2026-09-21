@@ -12,6 +12,34 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class RestoreExecutorTest : BasePlatformTestCase() {
+    fun testRestoresUnmatchedAbsolutePathsWithTheirEntireDirectoryTree() {
+        val root = Files.createTempDirectory("clipcode-literal-restore")
+        try {
+            val paths = listOf(
+                "D:\\Users\\author\\.m2\\repository\\library.jar!\\com\\example\\Library\$Inner.java" to
+                    "D/Users/author/.m2/repository/library.jar!/com/example/Library\$Inner.java",
+                "/foreign/checkout/src/New.kt" to "foreign/checkout/src/New.kt",
+                "\\\\server\\share\\arbitrary\\New.txt" to "server/share/arbitrary/New.txt"
+            )
+            val payload = paths.mapIndexed { index, (source, _) -> "// file: $source\ncontent-$index" }
+                .joinToString("\n")
+            val entries = ClipboardRestoreParser().parse(payload, "// file: \$FILE_PATH")
+            val resolver = ClipboardPathResolver.fromRootPaths(listOf(root.systemIndependentPath()))
+            val plan = RestorePlanBuilder(resolver).build(entries)
+
+            assertEquals(paths.map { it.second }, plan.createOperations.map { it.relativePath })
+            assertTrue(plan.skippedOperations.isEmpty())
+            val result = RestoreExecutor(project).execute(plan, overwriteExisting = false, skipExisting = false)
+            assertEquals(paths.size, result.createdCount)
+            assertTrue(result.errors.isEmpty(), result.errors.toString())
+            paths.forEachIndexed { index, (_, relative) ->
+                assertEquals("content-$index", root.resolve(relative).readText())
+            }
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     fun testExecutesCreateSkipOverwriteAndDeleteOperations() {
         val root = Files.createTempDirectory("clipcode-executor")
         try {

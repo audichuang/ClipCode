@@ -358,7 +358,7 @@ class ClipboardPathResolverTest {
     }
 
     @Test
-    fun `resolveWriteTarget rejects cross machine absolute suffix when sibling root names repeat`() {
+    fun `resolveWriteTarget preserves full path when sibling root names repeat`() {
         val projectRoot = Files.createTempDirectory("clipcode-primary-root")
         val workspaceOne = Files.createTempDirectory("clipcode-ws-one")
         val workspaceTwo = Files.createTempDirectory("clipcode-ws-two")
@@ -375,7 +375,9 @@ class ClipboardPathResolverTest {
 
         val resolution = resolver.resolveWriteTarget("D:/old-workspace/shared-lib/src/App.kt")
 
-        assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(resolution)
+        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
+        assertEquals("D/old-workspace/shared-lib/src/App.kt", resolved.target.relativePath)
+        assertEquals(projectRoot.systemIndependentPath(), resolved.target.rootPath)
     }
 
     @Test
@@ -499,12 +501,7 @@ class ClipboardPathResolverTest {
     }
 
     @Test
-    fun `resolveWriteTarget refuses an absolute path that belongs to a different checkout`() {
-        // Deliberately inverted. This used to be RESOLVED by anchoring on `node_modules`:
-        // a path naming someone else's machine and someone else's project was written into
-        // THIS project, and the overwrite prompt showed nothing unusual. VS Code refuses
-        // these, and refusing is the safe side of a guess that can silently clobber a
-        // same-named file.
+    fun `resolveWriteTarget preserves an absolute path from a different checkout`() {
         val resolver = ClipboardPathResolver.fromRootPaths(
             listOf("C:/workspace/current-project"),
             "C:/workspace/current-project"
@@ -514,14 +511,13 @@ class ClipboardPathResolverTest {
             "D:\\Users\\00508726\\Documents\\Project\\cat\\inv-web-console\\node_modules\\cub-lib-view-rootng\\styles\\cdk\\_a11y-theme.scss"
         )
 
-        assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(resolution)
+        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
+        assertEquals("D/Users/00508726/Documents/Project/cat/inv-web-console/node_modules/cub-lib-view-rootng/styles/cdk/_a11y-theme.scss", resolved.target.relativePath)
+        assertEquals("C:/workspace/current-project", resolved.target.rootPath)
     }
 
     @Test
-    fun `resolveWriteTarget refuses a foreign absolute path even when a child dir name matches`() {
-        // Deliberately inverted, same reason as above: a same-named child directory is not
-        // evidence that the file belongs here. A root-name suffix match still resolves —
-        // that is the supported cross-machine case, and it is pinned separately.
+    fun `resolveWriteTarget preserves the full path even when a child dir name matches`() {
         val root = Files.createTempDirectory("clipcode-root-wrapper")
         root.resolve("inv-web-console").createDirectories()
         root.resolve("node_modules").createDirectories()
@@ -534,18 +530,22 @@ class ClipboardPathResolverTest {
             "D:\\Users\\00508726\\Documents\\Project\\cat\\inv-web-console\\node_modules\\cub-lib-view-rootng\\styles\\cdk\\_a11y-theme.scss"
         )
 
-        assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(resolution)
+        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
+        assertEquals("D/Users/00508726/Documents/Project/cat/inv-web-console/node_modules/cub-lib-view-rootng/styles/cdk/_a11y-theme.scss", resolved.target.relativePath)
+        assertEquals(root.systemIndependentPath(), resolved.target.rootPath)
     }
 
     @Test
-    fun `resolveWriteTarget rejects ambiguous absolute suffix when root name repeats`() {
+    fun `resolveWriteTarget preserves full path when root name repeats`() {
         val resolver = ClipboardPathResolver.fromRootPaths(
             listOf("C:/workspace/ClipCode"),
             "C:/workspace/ClipCode"
         )
 
         val resolution = resolver.resolveWriteTarget("D:/backup/ClipCode/nested/ClipCode/src/App.kt")
-        assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(resolution)
+        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(resolution)
+        assertEquals("D/backup/ClipCode/nested/ClipCode/src/App.kt", resolved.target.relativePath)
+        assertEquals("C:/workspace/ClipCode", resolved.target.rootPath)
     }
 
     @Test
@@ -562,7 +562,31 @@ class ClipboardPathResolverTest {
 
         assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(resolver.resolveWriteTarget("../secret.txt"))
         assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(resolver.resolveWriteTarget("bad:name.txt"))
+        assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(resolver.resolveWriteTarget("D:/foreign/../secret.txt"))
+        assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(resolver.resolveWriteTarget("/foreign/../secret.txt"))
+        assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(resolver.resolveWriteTarget("D:/foreign/bad:name.txt"))
         assertNull((resolver.resolveDeleteTarget("../secret.txt") as? ClipboardPathResolver.DeleteResolution.Resolved))
+    }
+
+    @Test
+    fun `literal absolute fallback stays in primary root and never remaps deletes`() {
+        val parent = Files.createTempDirectory("clipcode-literal-path")
+        try {
+            val root = parent.resolve("project").createDirectories()
+            val sibling = parent.resolve("backup").createDirectories()
+            val outside = parent.resolve("outside").createDirectories()
+            val resolver = ClipboardPathResolver.fromRootPaths(listOf(root.systemIndependentPath(), sibling.systemIndependentPath()))
+            val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(
+                resolver.resolveWriteTarget("/backup/backup/new.txt")
+            )
+            assertEquals(root.resolve("backup/backup/new.txt").systemIndependentPath(), resolved.target.absolutePath)
+            root.resolve("D").createDirectories().resolve("keep.txt").writeText("keep")
+            assertIs<ClipboardPathResolver.DeleteResolution.Unresolved>(resolver.resolveDeleteTarget("D:/keep.txt"))
+            Files.createSymbolicLink(root.resolve("escaped"), outside)
+            assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(resolver.resolveWriteTarget("/escaped/new.txt"))
+        } finally {
+            parent.toFile().deleteRecursively()
+        }
     }
 
     @Test
