@@ -79,6 +79,17 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.2.14 - Never put text on the clipboard that cannot come back</h2>
+            <ul>
+                <li><b>Fixed:</b> Files under External Libraries (node_modules, JARs) skipped the strict UTF-8 rule the ordinary copy path has followed since 1.2.13. A Big5 source was copied as <code>// ????</code>, a UTF-16 one as text no tool can turn back into the original bytes, a real UTF-8 BOM was dropped, and NUL bytes passed whenever the extension was on the text whitelist. They are now skipped and counted in the copy notification, like everywhere else.</li>
+                <li><b>Fixed:</b> A <code>.class</code> file that could not be decompiled was copied as <code>// Error: Could not retrieve source code for X</code> &mdash; counted as a successful copy, and short enough for the other tool to write over the real file, because that string is not one of the markers the restore guard recognises. It is now skipped.</li>
+                <li><b>Fixed:</b> Git index and history reads bypassed the same rule. A staged or committed UTF-16 file reached the clipboard as flawless text and would have been written back as UTF-8 over the original. The bytes are now checked before they become text.</li>
+                <li><b>Fixed:</b> Paste &amp; Restore could write non-UTF-8 bytes while reporting success: overwriting an ASCII file that the IDE maps to a legacy charset wrote <code>caf&eacute;</code> as windows-1252 &mdash; bytes this plugin would then refuse to copy back. Every successful write is now UTF-8.</li>
+                <li><b>Fixed:</b> In a Git copy, an unreadable file counted as a copied file and consumed your file-count limit. With a limit of 1 the notification said one file was copied while the payload held only a note saying nothing could be read, and the next real file was dropped.</li>
+                <li><b>Fixed:</b> An absolute path that matches no root is no longer dropped on restore. Since 1.2.13 it was refused outright; it now keeps its full path under your project root (<code>/Users/bob/other/src/a.ts</code> restores to <code>&lt;project&gt;/Users/bob/other/src/a.ts</code>), so nothing goes missing and nothing is guessed at. Deletions still require a real match, and nothing is ever written outside the project.</li>
+                <li>The clipboard wire format is unchanged: every existing payload still restores byte-for-byte as before. Note the VS Code side still refuses an unmatched absolute path rather than keeping it &mdash; that one case is not yet identical in the two tools.</li>
+            </ul>
+
             <h2>Version 1.2.13 - Copy and restore the same files as the VS Code side</h2>
             <ul>
                 <li><b>Upgrade both tools together.</b> A payload with a configured post text now ends the last file with a <code>// clipcode-end</code> line. Older Snipcode/ClipCode builds do not know that line and will write it into the last file's content. The marker exists because without it the post text itself was written into that file &mdash; including over a real file that the copy side had only stubbed out.</li>
