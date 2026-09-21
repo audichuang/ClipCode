@@ -105,9 +105,8 @@ class RestoreExecutor(
                                                         // A file WE create is UTF-8. Left on the project's
                                                         // inherited charset it was written as e.g. Big5, and the
                                                         // copy guard would then refuse the very file this restore
-                                                        // had just produced.
-                                                        file.charset = java.nio.charset.StandardCharsets.UTF_8
-                                                        saveTextKeepingContent(file, create.content)
+                                                        // had just produced. saveUtf8 does the same for overwrites.
+                                                        saveUtf8(file, create.content)
                                                         createdCount++
                                                     }
                                                 }
@@ -153,14 +152,18 @@ class RestoreExecutor(
     }
 
     /**
-     * VfsUtil.saveText encodes with the file's charset — for a file we just created that is the
-     * PROJECT default, which is Big5/GBK on many CJK setups — and Java's encoder silently
-     * substitutes '?' for every character it cannot represent. Restoring UTF-8 content into such
-     * a project therefore mangles CJK text and drops characters like '€', reporting success.
-     * Only act when the alternative is certain corruption: switch that file to UTF-8.
+     * Every byte this restore writes is UTF-8. VfsUtil.saveText and FileDocumentManager both
+     * encode with the FILE's charset — the project default (Big5/GBK on many CJK setups) for a
+     * file we just created, or whatever the IDE decided for an existing one — and Java's encoder
+     * silently substitutes '?' for what it cannot represent. That mangled CJK text and dropped
+     * '€' while reporting success; an ASCII file mapped to windows-1252 was overwritten as
+     * `63 61 66 E9` for "café", leaving bytes the copy guard would then refuse to read back.
+     * The payload carries no encoding, so UTF-8 is the only thing a write can mean. Only files
+     * that ARE already non-UTF-8 are protected, and those never reach a write
+     * (Utf8Text.mustNotOverwrite).
      */
-    private fun saveTextKeepingContent(file: VirtualFile, content: String) {
-        if (!file.charset.newEncoder().canEncode(content)) {
+    private fun saveUtf8(file: VirtualFile, content: String) {
+        if (file.charset != java.nio.charset.StandardCharsets.UTF_8) {
             file.charset = java.nio.charset.StandardCharsets.UTF_8
         }
         VfsUtil.saveText(file, content)
@@ -169,13 +172,18 @@ class RestoreExecutor(
     private fun overwriteFile(file: VirtualFile, content: String) {
         val manager = com.intellij.openapi.fileEditor.FileDocumentManager.getInstance()
         val document = manager.getDocument(file)
+        // Both branches write UTF-8: saveDocument encodes with the file's charset just as
+        // VfsUtil.saveText does, so the document path needs the same switch.
+        if (file.charset != java.nio.charset.StandardCharsets.UTF_8) {
+            file.charset = java.nio.charset.StandardCharsets.UTF_8
+        }
         if (document != null && '\r' !in content && file.detectedLineSeparator?.contains('\r') != true) {
             document.setText(content)
             manager.saveDocument(document)
         } else {
             val before = file.contentsToByteArray()
             val unsavedText = document?.takeIf { manager.isDocumentUnsaved(it) }?.text
-            writeRaw(file) { saveTextKeepingContent(file, content) }
+            writeRaw(file) { saveUtf8(file, content) }
             com.intellij.openapi.command.undo.UndoManager.getInstance(project).undoableActionPerformed(
                 object : com.intellij.openapi.command.undo.BasicUndoableAction(file) {
                     override fun undo() {
@@ -184,7 +192,7 @@ class RestoreExecutor(
                             if (unsavedText != null) document?.setText(unsavedText)
                         }
                     }
-                    override fun redo() { writeRaw(file) { VfsUtil.saveText(file, content) } }
+                    override fun redo() { writeRaw(file) { saveUtf8(file, content) } }
                 }
             )
         }

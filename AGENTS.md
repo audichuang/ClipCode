@@ -53,6 +53,10 @@ Kotlin-side pins for the shared invariants:
   apply neither, so an EXCLUDE rule stopped working the moment a staged file was selected
   beside the excluded one. Directory pruning may only run when the INCLUDE set is
   PATH-only — a PATTERN include says nothing about which directories can hold a match.
+  Only entries that really carry content count as copied and spend the limit: the
+  `// Unable to read file content` / `// Error reading file content` placeholders travel in
+  `content`, not in `skippedReason`, so they used to do both. Shared with the VS Code side —
+  see the work-root `AGENTS.md` before changing either half.
 - `$FILE_PATH` substitution uses `String.replace` (literal, not regex).
 - Parsing splits on `splitLines` — a `\r?\n` regex, **never** `String.lines()`.
 - The copy notification's four statistics (characters / lines / words / tokens) are

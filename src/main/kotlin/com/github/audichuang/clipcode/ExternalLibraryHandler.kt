@@ -4,13 +4,11 @@ package com.github.audichuang.clipcode
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.progress.ProcessCanceledException
-import com.intellij.openapi.fileEditor.impl.LoadTextUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiCompiledElement
 import com.intellij.psi.PsiManager
-import java.io.IOException
 
 /**
  * Handler for processing files from External Libraries.
@@ -126,66 +124,66 @@ class ExternalLibraryHandler(private val project: Project) {
      * Get decompiled content from .class files using IntelliJ's PSI system.
      */
     @IdeBoundCode
-    private fun getDecompiledClassContent(file: VirtualFile): String {
+    private fun getDecompiledClassContent(file: VirtualFile): String? {
         return try {
             // PsiManager.findFile / PsiCompiledElement.mirror 標 @RequiresReadLock，
             // 必須在 ReadAction 內存取，否則 2024.3+ strict mode 會拋錯
-            ApplicationManager.getApplication().runReadAction<String> {
+            ApplicationManager.getApplication().runReadAction<String?> {
                 val psiFile = PsiManager.getInstance(project).findFile(file)
                 if (psiFile is PsiCompiledElement) {
                     return@runReadAction psiFile.mirror.text
                 }
 
-                val text = LoadTextUtil.loadText(file)
-                if (text.isNotEmpty()) {
-                    return@runReadAction text.toString()
-                }
-
-                psiFile?.viewProvider?.document?.text ?: ""
+                // No decompiler. LoadTextUtil and the view provider's Document both hand
+                // back the .class BYTES decoded with some charset — `����???A` for real
+                // bytecode, copied as if it were source. Strict UTF-8 answers null for
+                // bytecode and still copies a text file that merely happens to be named
+                // .class; there is no third source worth reading.
+                Utf8Text.decodeOrNull(file.contentsToByteArray())?.takeIf { it.isNotEmpty() }
             }
         } catch (e: ProcessCanceledException) {
             throw e
         } catch (e: Exception) {
+            // NOT "// Error: Could not retrieve source code for X": that string was copied
+            // as if it were the file's content — counted as a success, and short enough to
+            // be written over the real file on the other side, because it is not one of the
+            // markers RestorePlan.isPlaceholderBody guards. A failed decompile is a skip.
             logger.warn("Could not decompile ${file.name}: ${e.message}")
-            "// Error: Could not retrieve source code for ${file.name}"
+            null
         }
     }
-    
-    private fun getSourceContent(file: VirtualFile): String {
-        return try {
-            String(file.contentsToByteArray(), Charsets.UTF_8)
-        } catch (e: IOException) {
-            try {
-                file.inputStream?.use { inputStream ->
-                    inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                } ?: ""
-            } catch (e2: ProcessCanceledException) {
-                throw e2
-            } catch (e2: Exception) {
-                logger.warn("Could not read source file ${file.name}: ${e2.message}")
-                ""
-            }
-        }
-    }
-    
-    private fun getTextContent(file: VirtualFile): String {
-        return try {
-            LoadTextUtil.loadText(file).toString()
+
+    /**
+     * Strict UTF-8 or skip, exactly like the ordinary copy path
+     * (`CopyFileContentAction.readFileContents`). `String(bytes, UTF_8)` decoded leniently:
+     * a Big5 source in a library root reached the clipboard as `// ����`, and a UTF-16 one
+     * as text no receiver can turn back into the original bytes. See Utf8Text.
+     */
+    private fun getSourceContent(file: VirtualFile): String? =
+        try {
+            Utf8Text.decodeOrNull(file.contentsToByteArray())
         } catch (e: ProcessCanceledException) {
             throw e
         } catch (e: Exception) {
-            try {
-                file.inputStream?.use { inputStream ->
-                    inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                } ?: ""
-            } catch (e2: ProcessCanceledException) {
-                throw e2
-            } catch (e2: Exception) {
-                logger.warn("Could not read text file ${file.name}: ${e2.message}")
-                ""
-            }
+            logger.warn("Could not read source file ${file.name}: ${e.message}")
+            null
         }
-    }
+
+    /**
+     * Same strict rule. `LoadTextUtil.loadText` decoded with the file's detected charset —
+     * which copied UTF-16 library text, dropped a real UTF-8 BOM, and let NUL bytes through
+     * whenever the extension was whitelisted. It also normalised line separators, so a CRLF
+     * library file now keeps its `\r` like every other copied file.
+     */
+    private fun getTextContent(file: VirtualFile): String? =
+        try {
+            Utf8Text.decodeOrNull(file.contentsToByteArray())
+        } catch (e: ProcessCanceledException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warn("Could not read text file ${file.name}: ${e.message}")
+            null
+        }
     
     private fun isBinaryFile(file: VirtualFile): Boolean {
         // 對外部 library 採白名單策略：未知副檔名一律視為二進位避免噴亂碼

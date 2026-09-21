@@ -189,6 +189,78 @@ class GitClipboardPayloadBuilderTest : BasePlatformTestCase() {
         )
     }
 
+    // === an unreadable placeholder is not a copied file (mirror of extension.ts) ===
+
+    fun testUnreadablePlaceholderIsNotReportedAsCopied() {
+        val payload = buildPayload(
+            listOf(
+                GitContentResolver.ResolvedGitEntry(
+                    changeType = ChangeTypeLabel.MODIFIED,
+                    filePath = "/work/repo-a/src/Gone.kt",
+                    virtualFile = null,
+                    // The one surviving trace of a lenient decode; resolveContentEntry turns
+                    // this entry into the UNREADABLE placeholder.
+                    contentFromRevision = "\uFFFD"
+                )
+            )
+        )
+
+        assertContainsBody(payload.text, "// Unable to read file content")
+        assertEquals("0 files copied (1 skipped: not UTF-8 text or unreadable).", payload.summary)
+    }
+
+    fun testUnreadablePlaceholderDoesNotConsumeTheFileCountLimit() {
+        val payload = withFileCountLimit(1) {
+            buildPayload(
+                listOf(
+                    GitContentResolver.ResolvedGitEntry(
+                        changeType = ChangeTypeLabel.MODIFIED,
+                        filePath = "/work/repo-a/src/Gone.kt",
+                        virtualFile = null,
+                        contentFromRevision = "\uFFFD"
+                    ),
+                    GitContentResolver.ResolvedGitEntry(
+                        changeType = ChangeTypeLabel.MODIFIED,
+                        filePath = "/work/repo-a/src/Real.kt",
+                        virtualFile = null,
+                        contentFromRevision = "GOOD"
+                    )
+                )
+            )
+        }
+
+        // Before: the placeholder ate the limit of 1 and "GOOD" never reached the clipboard,
+        // while the notification claimed one file had been copied.
+        assertContainsBody(payload.text, "GOOD")
+        assertEquals("1 file copied (from Git history) (1 skipped: not UTF-8 text or unreadable).", payload.summary)
+    }
+
+    private fun buildPayload(
+        contentEntries: List<GitContentResolver.ResolvedGitEntry>
+    ): GitClipboardPayloadBuilder.Payload = withSettings("// file: \$FILE_PATH", maxFileSizeKB = 500) {
+        GitClipboardPayloadBuilder.build(
+            contentEntries = contentEntries,
+            deletedMarkerEntries = emptyList(),
+            pathResolver = ClipboardPathResolver.fromRootPaths(listOf("/work/repo-a", "/work/repo-b")),
+            settings = CopyFileContentSettings.getInstance(project),
+            indicator = EmptyProgressIndicator()
+        )
+    }
+
+    private fun <T> withFileCountLimit(limit: Int, block: () -> T): T {
+        val settings = CopyFileContentSettings.getInstance(project)!!
+        val prevSet = settings.state.setMaxFileCount
+        val prevLimit = settings.state.fileCountLimit
+        settings.state.setMaxFileCount = true
+        settings.state.fileCountLimit = limit
+        return try {
+            block()
+        } finally {
+            settings.state.setMaxFileCount = prevSet
+            settings.state.fileCountLimit = prevLimit
+        }
+    }
+
     private fun <T> withSettings(headerFormat: String, maxFileSizeKB: Int, block: () -> T): T {
         val settings = CopyFileContentSettings.getInstance(project)!!
         val prevHeader = settings.state.headerFormat
