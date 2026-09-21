@@ -40,7 +40,12 @@ internal object GitBatchContentReader {
         if (candidates.size < 2) return result
         val missing = candidates.filter { revision ->
             val bytes = cache.getBytes(revision.file, revision.revisionNumber, GitVcs.getKey(), type)
-            if (bytes != null) ContentRevisionCache.getAsString(bytes, revision.file, revision.charset)?.let { result[revision] = it }
+            // decodeOrNull, not ContentRevisionCache.getAsString — see readRevisionContent:
+            // getAsString applies the file's charset, which is exactly how a UTF-16 blob
+            // reached the clipboard as text that cannot be turned back into those bytes.
+            // A blob that is not UTF-8 stays out of the map; the caller then re-reads it
+            // through readRevisionContent, which applies the same rule and returns null.
+            if (bytes != null) Utf8Text.decodeOrNull(bytes)?.let { result[revision] = it }
             bytes == null
         }
         val groups = missing.groupBy { revision ->
@@ -76,7 +81,7 @@ internal object GitBatchContentReader {
                         ContentRevisionCache.checkContentsSize(revision.file.path, content.size.toLong())
                         val cached = ContentRevisionCache.getOrLoadAsBytes(project, revision.file,
                             revision.revisionNumber, GitVcs.getKey(), type) { content }
-                        ContentRevisionCache.getAsString(cached, revision.file, revision.charset)?.let { result[revision] = it }
+                        Utf8Text.decodeOrNull(cached)?.let { result[revision] = it }
                     }
                 } catch (e: ProcessCanceledException) {
                     throw e

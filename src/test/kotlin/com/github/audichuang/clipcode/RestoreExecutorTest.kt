@@ -324,5 +324,50 @@ class RestoreExecutorTest : BasePlatformTestCase() {
         }
     }
 
+    fun testOverwritingAnAsciiFileMappedToALegacyCharsetStillWritesUtf8() {
+        val root = Files.createTempDirectory("clipcode-executor-overwrite-charset")
+        try {
+            val target = root.resolve("legacy.txt")
+            // Pure ASCII on disk, so Utf8Text.mustNotOverwrite lets the write through — the
+            // IDE's charset for that file is what decided the bytes, and windows-1252 wrote
+            // "café" as 63 61 66 E9 while reporting a successful overwrite.
+            target.writeText("ascii")
+            val file = com.intellij.openapi.vfs.LocalFileSystem.getInstance()
+                .refreshAndFindFileByPath(target.systemIndependentPath())!!
+            com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(project) {
+                file.charset = java.nio.charset.Charset.forName("windows-1252")
+            }
+
+            val result = RestoreExecutor(project).execute(
+                RestorePlan(
+                    createOperations = listOf(
+                        RestorePlan.CreateOperation(
+                            relativePath = "legacy.txt",
+                            absolutePath = target.systemIndependentPath(),
+                            rootPath = root.systemIndependentPath(),
+                            content = "caf\u00e9",
+                            existed = true
+                        )
+                    ),
+                    deleteOperations = emptyList(),
+                    skippedOperations = emptyList(),
+                    roots = listOf(root.systemIndependentPath())
+                ),
+                overwriteExisting = true,
+                skipExisting = false,
+                indicator = com.intellij.openapi.progress.EmptyProgressIndicator()
+            )
+
+            assertTrue(result.errors.isEmpty(), result.errors.toString())
+            assertEquals(1, result.overwrittenCount)
+            assertEquals(
+                "caf\u00e9".toByteArray(Charsets.UTF_8).toList(),
+                Files.readAllBytes(target).toList()
+            )
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     private fun Path.systemIndependentPath(): String = toString().replace('\\', '/')
 }

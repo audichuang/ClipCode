@@ -17,6 +17,18 @@ object GitClipboardPayloadBuilder {
     private val logger = Logger.getInstance(GitClipboardPayloadBuilder::class.java)
     private const val DELETED_MARKER = "// This file has been deleted in this change"
 
+    // The two "we could not produce content" bodies. Byte-identical to the strings
+    // RestorePlan.isPlaceholderBody / restore.ts isPlaceholderBody refuse to write over a
+    // real file, and to gitCopy.ts UNREADABLE_FILE_MARKER — a receiver recognises them, so
+    // this side must not report them as copied files either. Accepted cost, same as the
+    // restore guard's: a real file whose whole body IS one of these lines is counted as
+    // skipped (it still reaches the clipboard verbatim).
+    private const val UNREADABLE_MARKER = "// Unable to read file content"
+    private const val READ_ERROR_MARKER = "// Error reading file content"
+
+    private fun isPlaceholder(content: String?): Boolean =
+        content == UNREADABLE_MARKER || content == READ_ERROR_MARKER
+
     data class Payload(val text: String, val summary: String)
 
     fun build(
@@ -31,6 +43,8 @@ object GitClipboardPayloadBuilder {
 
         val payloadFiles = mutableListOf<ClipboardPayloadFormatter.PayloadFile>()
         var skippedSizeCount = 0
+        var skippedUnreadableCount = 0
+        var copiedCount = 0
         // The ordinary filters and the file-count limit apply HERE too. This builder is
         // where the same action lands whenever a selection mixes revision or deleted
         // entries, and it applied neither: an EXCLUDE rule stopped working the moment a
@@ -47,11 +61,13 @@ object GitClipboardPayloadBuilder {
         val countLimit = if (state?.setMaxFileCount == true) state.fileCountLimit else Int.MAX_VALUE
         var fileLimitReached = false
 
-        // Only files that actually carry content count against the limit — a size
-        // placeholder is a note that a file was NOT copied. Counting placeholders made a
-        // limit of 1 stop after a single skipped file, while VS Code went on to copy the
-        // next real one.
-        fun copiedSoFar(): Int = payloadFiles.count { it.skippedReason.isNullOrEmpty() }
+        // Only files that actually carry content count against the limit — a placeholder is
+        // a note that a file was NOT copied. Counting placeholders made a limit of 1 stop
+        // after a single skipped file, while VS Code went on to copy the next real one.
+        // `skippedReason` alone was not enough: the UNREADABLE / READ_ERROR placeholders
+        // travel in `content`, so an unreadable file ate the limit AND was reported as
+        // copied, and a real file behind it never reached the clipboard.
+        fun copiedSoFar(): Int = copiedCount
 
         fun accepted(filePath: String): Boolean {
             if (copiedSoFar() >= countLimit) {
@@ -78,23 +94,32 @@ object GitClipboardPayloadBuilder {
         // ORIGINAL lists reported "10 files copied" when 5 were filtered out and
         // "200 files copied" when the limit stopped it at 30 — the very bug the VS Code
         // half of this change fixed on its own notification path.
-        val acceptedContent = mutableListOf<GitContentResolver.ResolvedGitEntry>()
+        // Entries that really carried content — NOT every accepted entry. A placeholder
+        // must not be summarised as a copied file.
+        val copiedContent = mutableListOf<GitContentResolver.ResolvedGitEntry>()
         val acceptedDeleted = mutableListOf<GitContentResolver.ResolvedGitEntry>()
 
         contentEntries.forEach { entry ->
             indicator.checkCanceled()
             if (!accepted(entry.filePath)) return@forEach
-            acceptedContent.add(entry)
             val resolved = ApplicationManager.getApplication().runReadAction<ClipboardPayloadFormatter.PayloadFile> {
                 resolveContentEntry(entry, pathResolver, maxFileSizeBytes)
             }
-            if (resolved.skippedReason != null) skippedSizeCount++
+            when {
+                resolved.skippedReason != null -> skippedSizeCount++
+                isPlaceholder(resolved.content) -> skippedUnreadableCount++
+                else -> {
+                    copiedContent.add(entry)
+                    copiedCount++
+                }
+            }
             payloadFiles.add(resolved)
         }
 
         deletedMarkerEntries.forEach { entry ->
             if (!accepted(entry.filePath)) return@forEach
             acceptedDeleted.add(entry)
+            copiedCount++
             payloadFiles.add(
                 ClipboardPayloadFormatter.PayloadFile(
                     path = pathResolver.toClipboardPath(entry.filePath),
@@ -118,7 +143,7 @@ object GitClipboardPayloadBuilder {
         val limitSuffix = if (fileLimitReached) " File limit $countLimit reached." else ""
         return Payload(
             text = text,
-            summary = buildSummary(acceptedContent, acceptedDeleted, skippedSizeCount) + limitSuffix
+            summary = buildSummary(copiedContent, acceptedDeleted, skippedSizeCount, skippedUnreadableCount) + limitSuffix
         )
     }
 
@@ -143,7 +168,7 @@ object GitClipboardPayloadBuilder {
             // mojibake on the clipboard for the other tool to write over a real file.
             logger.info("Skipping Git revision content that did not decode cleanly: ${entry.filePath}")
             return ClipboardPayloadFormatter.PayloadFile(
-                path, content = "// Unable to read file content", changeType = changeType
+                path, content = UNREADABLE_MARKER, changeType = changeType
             )
         }
         if (revisionContent != null) {
@@ -165,43 +190,53 @@ object GitClipboardPayloadBuilder {
                 // Strict UTF-8 or skip, same rule as the ordinary copy path — see Utf8Text.
                 val text = Utf8Text.decodeOrNull(virtualFile.contentsToByteArray())
                     ?: return ClipboardPayloadFormatter.PayloadFile(
-                        path, content = "// Unable to read file content", changeType = changeType
+                        path, content = UNREADABLE_MARKER, changeType = changeType
                     )
                 ClipboardPayloadFormatter.PayloadFile(path, content = text, changeType = changeType)
             } catch (e: ProcessCanceledException) {
                 throw e
             } catch (e: Exception) {
                 logger.warn("Failed to read Git file content: ${entry.filePath}", e)
-                ClipboardPayloadFormatter.PayloadFile(path, content = "// Error reading file content", changeType = changeType)
+                ClipboardPayloadFormatter.PayloadFile(path, content = READ_ERROR_MARKER, changeType = changeType)
             }
         }
 
-        return ClipboardPayloadFormatter.PayloadFile(path, content = "// Unable to read file content", changeType = changeType)
+        return ClipboardPayloadFormatter.PayloadFile(path, content = UNREADABLE_MARKER, changeType = changeType)
     }
 
     // Reason string embedded into the formatter's "// File skipped: <reason>" line.
     private fun sizeReason(bytes: Long): String = "size exceeds limit ($bytes bytes)"
 
+    /**
+     * [contentEntries] are the entries that really carried content — placeholders and size
+     * skips are counted separately, never summarised as copied files.
+     */
     private fun buildSummary(
         contentEntries: List<GitContentResolver.ResolvedGitEntry>,
         deletedMarkerEntries: List<GitContentResolver.ResolvedGitEntry>,
-        skippedSizeCount: Int
+        skippedSizeCount: Int,
+        skippedUnreadableCount: Int
     ): String {
         // hasVirtualFileContent 讀 VirtualFile 的 isValid/exists，也要在 read lock 內
-        val (diskBackedCount, filesFromHistory) = ApplicationManager.getApplication().runReadAction<Pair<Int, Int>> {
+        val (filesFromDisk, filesFromHistory) = ApplicationManager.getApplication().runReadAction<Pair<Int, Int>> {
             contentEntries.count { it.hasVirtualFileContent } to
                 contentEntries.count { !it.hasVirtualFileContent && it.contentFromRevision != null }
         }
-        val filesFromDisk = diskBackedCount - skippedSizeCount.coerceAtMost(diskBackedCount)
-        val copiedWithContent = contentEntries.size - skippedSizeCount
+        val copiedWithContent = contentEntries.size
         val totalCopied = copiedWithContent + deletedMarkerEntries.size
-        val skippedSuffix = if (skippedSizeCount > 0) " ($skippedSizeCount skipped: size exceeded)" else ""
+        val skipped = listOfNotNull(
+            "$skippedSizeCount skipped: size exceeded".takeIf { skippedSizeCount > 0 },
+            "$skippedUnreadableCount skipped: not UTF-8 text or unreadable".takeIf { skippedUnreadableCount > 0 }
+        )
+        val skippedSuffix = if (skipped.isEmpty()) "" else " (${skipped.joinToString(", ")})"
 
         return when {
+            contentEntries.isEmpty() && deletedMarkerEntries.isEmpty() ->
+                "0 files copied$skippedSuffix."
             contentEntries.isEmpty() && deletedMarkerEntries.size == 1 ->
-                "1 deleted file marker copied."
+                "1 deleted file marker copied$skippedSuffix."
             contentEntries.isEmpty() ->
-                "${deletedMarkerEntries.size} deleted file markers copied."
+                "${deletedMarkerEntries.size} deleted file markers copied$skippedSuffix."
             deletedMarkerEntries.isEmpty() && copiedWithContent == 1 && filesFromHistory == 1 ->
                 "1 file copied (from Git history)$skippedSuffix."
             deletedMarkerEntries.isEmpty() && filesFromHistory > 0 ->

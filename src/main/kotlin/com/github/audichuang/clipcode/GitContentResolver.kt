@@ -12,7 +12,7 @@ import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vcs.changes.ContentRevision
 import com.intellij.openapi.vcs.changes.CurrentContentRevision
 import com.intellij.openapi.vcs.history.VcsRevisionNumber
-import com.intellij.openapi.vcs.impl.ContentRevisionCache
+import com.intellij.openapi.vcs.changes.ByteBackedContentRevision
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import git4idea.GitContentRevision
@@ -236,7 +236,20 @@ class GitContentResolver(
             // without this guard a PNG reaches the payload as mojibake and Paste & Restore
             // writes that back over the real asset. The plain file copy path already skips
             // binaries (CopyFileContentAction.isBinaryFile), and so does the VS Code sibling.
-            if (revision != null && isBinaryRevision(revision)) null else revision?.content
+            when {
+                revision == null -> null
+                isBinaryRevision(revision) -> null
+                // Bytes when the revision has them: `revision.content` is ALREADY decoded
+                // with the file's charset, so a Big5 or UTF-16 blob comes back as perfect
+                // text that the wire cannot carry back — the receiver rewrites it as UTF-8
+                // and the original bytes are gone. Same strict rule as the disk path.
+                // GitContentRevision implements ByteBackedContentRevision; anything else
+                // keeps the old read and is still caught by the U+FFFD guard in
+                // GitClipboardPayloadBuilder.
+                revision is ByteBackedContentRevision ->
+                    revision.contentAsBytes?.let(Utf8Text::decodeOrNull)
+                else -> revision.content
+            }
         } catch (e: ProcessCanceledException) {
             throw e
         } catch (e: Exception) {
@@ -292,9 +305,13 @@ class GitContentResolver(
                 }
                 if (isBinary) return null
                 val relativePath = normalizedAbsolutePath.removePrefix("$normalizedRepositoryRoot/")
-                ContentRevisionCache.getAsString(GitIndexUtil.read(repository, ":$relativePath"), filePath, null)
+                // decodeOrNull, not ContentRevisionCache.getAsString: getAsString decodes
+                // the index blob with the file's charset (and strips a real BOM), so a
+                // staged Big5/UTF-16 file became clipboard text nothing can turn back into
+                // those bytes. The index hands us the bytes — check them.
+                Utf8Text.decodeOrNull(GitIndexUtil.read(repository, ":$relativePath"))
             } else {
-                GitContentRevision.createRevision(filePath, GitRevisionNumber.HEAD, project).content
+                readRevisionContent(GitContentRevision.createRevision(filePath, GitRevisionNumber.HEAD, project))
             }
         } catch (e: VcsException) {
             logger.warn("Failed to read Git content via Git API", e)

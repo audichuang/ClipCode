@@ -24,6 +24,7 @@ import kotlin.io.path.exists
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.assertContains
+import com.intellij.openapi.progress.EmptyProgressIndicator
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import com.intellij.openapi.vcs.VcsException
@@ -470,24 +471,70 @@ class CopyRestoreE2ETest : BasePlatformTestCase() {
         assertTrue(status.fetched, "Refresh must fetch even when the current branch has no upstream")
     }
 
-    fun testStagedUtf16ContentAndIndexRefresh() {
+    fun testStagedContentIsRereadFromTheIndexAndNonUtf8IsRejected() {
         initGitRepo()
         writeRepoFile("README.md", "base")
         commit("base")
         val file = File(repoRoot, "src/編碼 file.txt")
         file.parentFile.mkdirs()
-        fun stage(text: String) {
-            file.writeBytes(byteArrayOf(0xFF.toByte(), 0xFE.toByte()) + text.toByteArray(Charsets.UTF_16LE))
+        fun stage(bytes: ByteArray) {
+            file.writeBytes(bytes)
             runGit("add", "src/編碼 file.txt")
             refreshRepoRoot()
         }
-        stage("你好，暫存內容")
         val selection = GitSelectionCollector.Selection(emptyList(), emptyList(), emptySet(), setOf(
             GitSelectionCollector.GitStatusInfo(file.absolutePath, "ADDED", true)
         ), SelectionSource.LOCAL_CHANGES_OR_COMMIT_UI)
+
+        // Restaging must be visible: the index, not a cached first read.
+        stage("你好，暫存內容".toByteArray())
         assertEquals("你好，暫存內容", inBackground { resolver.resolve(project, selection) }.single().contentFromRevision)
-        stage("新的暫存內容")
+        stage("新的暫存內容".toByteArray())
         assertEquals("新的暫存內容", inBackground { resolver.resolve(project, selection) }.single().contentFromRevision)
+
+        // This test used to ASSERT that UTF-16 index bytes came back as text — proving the
+        // decode worked, and pinning the very behaviour the contract forbids. The index
+        // hands over bytes; bytes that are not UTF-8 cannot round-trip through a payload
+        // that carries no encoding, so they resolve to nothing and the copy reports a skip.
+        stage(byteArrayOf(0xFF.toByte(), 0xFE.toByte()) + "你好，暫存內容".toByteArray(Charsets.UTF_16LE))
+        val resolved = inBackground { resolver.resolve(project, selection) }.single()
+        assertTrue(
+            resolved.contentFromRevision == null,
+            "UTF-16 index bytes must not become payload text: ${resolved.contentFromRevision}"
+        )
+        val payload = GitClipboardPayloadBuilder.build(
+            contentEntries = listOf(resolved),
+            deletedMarkerEntries = emptyList(),
+            pathResolver = ClipboardPathResolver.fromRootPaths(listOf(repoRootPath)),
+            settings = CopyFileContentSettings.getInstance(project),
+            indicator = EmptyProgressIndicator()
+        )
+        assertFalse(payload.text.contains("你好，暫存內容"), "payload: ${payload.text}")
+        assertEquals("0 files copied (1 skipped: not UTF-8 text or unreadable).", payload.summary)
+    }
+
+    fun testCommittedNonUtf8ContentIsNotCopiedFromHistory() {
+        initGitRepo()
+        val file = File(repoRoot, "src/歷史.txt")
+        file.parentFile.mkdirs()
+        file.writeBytes(byteArrayOf(0xFF.toByte(), 0xFE.toByte()) + "歷史內容".toByteArray(Charsets.UTF_16LE))
+        refreshRepoRoot()
+        val revision = commit("utf-16 source")
+
+        // git4idea decodes a revision with the file's charset, so this arrived as flawless
+        // text with no byte left to check — and the receiver would have written it back as
+        // UTF-8 over the original file.
+        val resolved = inBackground {
+            resolver.resolve(project, GitSelectionCollector.Selection(
+                listOf(commitChange(revision, "src/歷史.txt")), emptyList(), emptySet(), emptySet(),
+                SelectionSource.GIT_LOG_OR_HISTORY
+            ))
+        }.single()
+
+        assertTrue(
+            resolved.contentFromRevision == null,
+            "UTF-16 history bytes must not become payload text: ${resolved.contentFromRevision}"
+        )
     }
 
     fun testStagedRenameAndDeletionUseCorrectRevision() {

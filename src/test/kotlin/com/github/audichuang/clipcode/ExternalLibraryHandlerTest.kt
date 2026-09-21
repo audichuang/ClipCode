@@ -111,6 +111,54 @@ class ExternalLibraryHandlerTest : BasePlatformTestCase() {
         assertNotNull(content)
     }
 
+    // === strict UTF-8, same rule as the ordinary copy path ===
+    // A library file used to be decoded leniently (`String(bytes, UTF_8)`) or with the
+    // file's own charset (`LoadTextUtil`), so Big5 arrived as `// \uFFFD\uFFFD` and UTF-16
+    // arrived as perfect text the wire cannot carry back. The payload has no encoding
+    // field: whatever is copied is rewritten as UTF-8 by the receiver.
+
+    private fun libraryFile(name: String, bytes: ByteArray) =
+        myFixture.addFileToProject(name, "placeholder").virtualFile.also { file ->
+            com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(project) {
+                file.setBinaryContent(bytes)
+            }
+        }
+
+    fun testReadContentRejectsBig5Source() {
+        val file = libraryFile("Legacy.java", "// \u4e2d\u6587".toByteArray(java.nio.charset.Charset.forName("Big5")))
+        assertNull(handler.readContent(file))
+    }
+
+    fun testReadContentRejectsUtf16Text() {
+        val file = libraryFile("index.js", "// \u4e2d\u6587".toByteArray(Charsets.UTF_16))
+        assertNull(handler.readContent(file))
+    }
+
+    fun testReadContentRejectsNulBytesInAWhitelistedExtension() {
+        val file = libraryFile("data.js", byteArrayOf(65, 0, 66))
+        assertNull(handler.readContent(file))
+    }
+
+    fun testReadContentKeepsAUtf8Bom() {
+        val text = "\uFEFFexport const answer = 42;"
+        val file = libraryFile("bom.js", text.toByteArray(Charsets.UTF_8))
+        // LoadTextUtil dropped the BOM here while the ordinary copy path kept it, so the
+        // same file copied from two places produced two different payloads.
+        assertEquals(text, handler.readContent(file))
+    }
+
+    fun testUndecompilableClassIsSkippedRatherThanCopiedAsAnErrorComment() {
+        // Real bytecode with no decompiler available. The old code returned
+        // "// Error: Could not retrieve source code for X" AS THE FILE'S CONTENT — counted
+        // as a copied file, and not one of the markers RestorePlan.isPlaceholderBody
+        // refuses to write over a real file.
+        val file = libraryFile(
+            "Example.class",
+            byteArrayOf(0xCA.toByte(), 0xFE.toByte(), 0xBA.toByte(), 0xBE.toByte(), 0, 0, 0, 0x41)
+        )
+        assertNull(handler.readContent(file))
+    }
+
     fun testGetCleanPathForRegularFileReturnsPresentableUrl() {
         val file = myFixture.addFileToProject("src/main/App.kt", "x").virtualFile
         val cleanPath = handler.getCleanPath(file)
