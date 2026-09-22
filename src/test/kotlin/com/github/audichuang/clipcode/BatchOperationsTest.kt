@@ -263,7 +263,8 @@ class BatchOperationsTest : BasePlatformTestCase() {
             val entries = GitContentResolver(Logger.getInstance(javaClass)).resolve(project, selection)
             println("BATCH history 200 round=$round: ${(System.nanoTime()-start)/1e6} ms")
             assertEquals(200, entries.size)
-            entries.forEach { assertEquals(expected[root.toPath().relativize(File(it.filePath).toPath()).toString()], it.contentFromRevision) }
+            // '/'-separated: the keys are, and Path.toString() is native (`history\\file 0.txt` on Windows).
+            entries.forEach { assertEquals(expected[root.toPath().relativize(File(it.filePath).toPath()).toString().replace('\\', '/')], it.contentFromRevision) }
         }
     }
 }
