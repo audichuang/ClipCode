@@ -555,7 +555,12 @@ class ClipboardPathResolver private constructor(
         if (segments.isEmpty()) {
             return ""
         }
-        if (segments.any { segment -> segment == ".." || segment.any { it in "<>:\"|?*" } }) {
+        // A control character (0x00-0x1F) is refused on EVERY platform, exactly like the
+        // Windows-illegal <>:"|?* beside it: Windows cannot create such a name and
+        // WindowsPathParser throws on it, so allowing it elsewhere made one payload restore
+        // differently per platform. U+0085/U+2028/U+2029 are legal on Windows and stay.
+        // TS mirror: pathResolver.ts sanitizeRelativePath.
+        if (segments.any { segment -> segment == ".." || segment.any { it in "<>:\"|?*" || it.code < 0x20 } }) {
             return null
         }
         return segments.joinToString("/")

@@ -13,7 +13,8 @@ The format itself, its byte-for-byte invariants, and the fixture-regeneration fl
 are **shared** with the sibling VS Code port (Snipcode) and live in the work-root
 `AGENTS.md`. Read that before changing anything about the wire format. From a lone
 clone of this repo, the executable copy of the contract is
-`src/test/resources/clipboard-contract.json` + `ContractFixturesTest`.
+`src/test/resources/clipboard-contract.json` + `ContractFixturesTest` — build, parse, token
+stats and (`pathCases`) path resolution of both writes and deletes.
 
 This side's implementation:
 
