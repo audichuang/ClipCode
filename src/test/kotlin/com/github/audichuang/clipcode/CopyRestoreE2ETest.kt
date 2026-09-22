@@ -332,7 +332,10 @@ class CopyRestoreE2ETest : BasePlatformTestCase() {
         runGit("add", "src/Stage.kt")
         writeRepoFile("src/Stage.kt", "working tree")
         val local = localChange("src/Stage.kt")
-        val path = File(repoRoot, "src/Stage.kt").absolutePath
+        // The collector passes FilePath.path, which is system-independent ('/'). A native
+        // Windows path here is a spelling the product never produces, and it defeated the
+        // de-duplication against the local change, so resolve returned the file twice.
+        val path = File(repoRoot, "src/Stage.kt").invariantSeparatorsPath
         val staged = localSelection(local).copy(gitStatusNodes = setOf(
             GitSelectionCollector.GitStatusInfo(path, "MODIFIED", isStaged = true)))
         val entries = resolver.resolve(project, staged)
