@@ -1,7 +1,12 @@
 package com.github.audichuang.clipcode
 
 import com.google.gson.Gson
+import com.google.gson.JsonElement
+import java.nio.file.Files
+import java.nio.file.Path
 import java.security.MessageDigest
+import kotlin.io.path.createDirectories
+import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -20,15 +25,25 @@ import kotlin.test.assertEquals
  */
 class ContractFixturesTest {
     private companion object {
-        const val EXPECTED_FIXTURES_SHA = "ea413ab8171060e7b47479990687a5a22f8fb810bc28b9ac5ea310a34fbe26d3"
+        const val EXPECTED_FIXTURES_SHA = "2d5908a5a247fcc564380a4c5ec1b8f188bcc50fae9d039aa0f8e200c37a9771"
         const val RESOURCE = "/clipboard-contract.json"
     }
 
     private data class Fixtures(
         val buildCases: List<BuildCase>,
         val parseCases: List<ParseCase>,
-        val tokenCases: List<TokenCase>
+        val tokenCases: List<TokenCase>,
+        val pathLayout: PathLayout,
+        val pathCases: List<PathCase>
     )
+    private data class PathLayout(
+        val roots: List<String>,
+        val dirs: List<String>,
+        val files: Map<String, String>,
+        val symlinks: Map<String, String>
+    )
+    /** `write` / `delete` are either {root, path} or "refused" | "missing" | "ambiguous". */
+    private data class PathCase(val input: String, val needsSymlink: Boolean?, val write: JsonElement, val delete: JsonElement)
     private data class BuildCase(val name: String, val kind: String, val options: FxOptions, val wire: String)
     private data class FxOptions(
         val headerFormat: String,
@@ -124,6 +139,68 @@ class ContractFixturesTest {
             }
             val expected = case.expected.map { it.copy(changeTypes = it.changeTypes.sorted()) }
             assertEquals(expected, actual, "parse mismatch: ${case.name}")
+        }
+    }
+
+    /**
+     * Both REAL resolvers must send every clipboard path to the same {root, path} — or refuse
+     * it for the same reason. The VS Code mirror (test/contract.test.ts) asserts these rows
+     * against the same frozen file, on the same layout.
+     */
+    @Test
+    fun `path direction resolves every clipboard path to the frozen cross-tool target`() {
+        val layout = fixtures.pathLayout
+        val parent = Files.createTempDirectory("clipcode-path-contract").toRealPath()
+        try {
+            layout.dirs.forEach { parent.resolve(it).createDirectories() }
+            layout.files.forEach { (file, text) -> parent.resolve(file).writeText(text) }
+            // A directory symlink needs privileges on Windows outside developer mode. Only the
+            // rows that depend on it are skipped, and loudly — never the whole table.
+            val symlinks = layout.symlinks.all { (link, target) ->
+                runCatching { Files.createSymbolicLink(parent.resolve(link), parent.resolve(target)) }.isSuccess
+            }
+            val roots = layout.roots.map { parent.resolve(it).toString() }
+            val resolver = ClipboardPathResolver.fromRootPaths(roots, roots.first())
+            fun target(absolutePath: String): String {
+                val relative = parent.relativize(Path.of(absolutePath)).map { it.toString() }
+                return "${relative.first()}:${relative.drop(1).joinToString("/")}"
+            }
+            fun expected(outcome: JsonElement): String =
+                if (outcome.isJsonPrimitive) outcome.asString
+                else outcome.asJsonObject.let { "${it["root"].asString}:${it["path"].asString}" }
+
+            val skipped = mutableListOf<String>()
+            val mismatches = fixtures.pathCases.mapNotNull { case ->
+                if (case.needsSymlink == true && !symlinks) {
+                    skipped += case.input
+                    return@mapNotNull null
+                }
+                val input = case.input.replace("@ROOT@", roots[0]).replace("@SIBLING@", roots[1])
+                // A throw is reported as a mismatch for THIS row, so one platform-specific
+                // failure does not hide every other row's result.
+                val actual = runCatching {
+                    val write = when (val r = resolver.resolveWriteTarget(input)) {
+                        is ClipboardPathResolver.WriteResolution.Resolved -> target(r.target.absolutePath)
+                        is ClipboardPathResolver.WriteResolution.Ambiguous -> "ambiguous"
+                        is ClipboardPathResolver.WriteResolution.Unresolved -> "refused"
+                    }
+                    val delete = when (val r = resolver.resolveDeleteTarget(input)) {
+                        is ClipboardPathResolver.DeleteResolution.Resolved -> target(r.target.absolutePath)
+                        is ClipboardPathResolver.DeleteResolution.Missing -> "missing"
+                        is ClipboardPathResolver.DeleteResolution.Ambiguous -> "ambiguous"
+                        is ClipboardPathResolver.DeleteResolution.Unresolved -> "refused"
+                    }
+                    write to delete
+                }.getOrElse { error -> "THROW ${error.javaClass.simpleName}: ${error.message}" to "-" }
+                val want = expected(case.write) to expected(case.delete)
+                if (actual == want) null else "${Gson().toJson(case.input)}: expected $want, got $actual"
+            }
+            if (skipped.isNotEmpty()) {
+                System.err.println("SKIPPED ${skipped.size} symlink row(s): this platform refused to create a directory symlink")
+            }
+            assertEquals(emptyList(), mismatches, "path mismatches (write, delete):\n" + mismatches.joinToString("\n"))
+        } finally {
+            parent.toFile().deleteRecursively()
         }
     }
 }

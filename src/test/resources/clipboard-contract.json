@@ -1054,5 +1054,516 @@
       "words": 3,
       "tokens": 3
     }
+  ],
+  "pathLayout": {
+    "roots": [
+      "project",
+      "backup"
+    ],
+    "dirs": [
+      "project",
+      "backup",
+      "outside",
+      "project/D"
+    ],
+    "files": {
+      "project/D/keep.txt": "keep"
+    },
+    "symlinks": {
+      "project/escaped": "outside"
+    }
+  },
+  "pathCases": [
+    {
+      "input": "D:\\Users\\author\\.m2\\repository\\library.jar!\\com\\example\\Library$Inner.java",
+      "write": {
+        "root": "project",
+        "path": "D/Users/author/.m2/repository/library.jar!/com/example/Library$Inner.java"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "/foreign/checkout/src/New.kt",
+      "write": {
+        "root": "project",
+        "path": "foreign/checkout/src/New.kt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "\\\\server\\share\\arbitrary\\New.txt",
+      "write": {
+        "root": "project",
+        "path": "server/share/arbitrary/New.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "/etc/passwd",
+      "write": {
+        "root": "project",
+        "path": "etc/passwd"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "D:/foreign/../secret.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "/foreign/../secret.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "D:/foreign/bad:name.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "/backup/backup/new.txt",
+      "write": {
+        "root": "project",
+        "path": "backup/backup/new.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "/unmapped/source.txt",
+      "write": {
+        "root": "project",
+        "path": "unmapped/source.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "D:/",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "D:\\",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "D:",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "/",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "//",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "D:relative-drive.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "D:/a\rb.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "D:/ab.txt",
+      "write": {
+        "root": "project",
+        "path": "D/ab.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "D:/a b.txt",
+      "write": {
+        "root": "project",
+        "path": "D/a b.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "D:/a b.txt",
+      "write": {
+        "root": "project",
+        "path": "D/a b.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "D:/a\nb.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "D:\\a\nb.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "D:\\a\rb.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "D:\\a b.txt",
+      "write": {
+        "root": "project",
+        "path": "D/a b.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "D:\\ab.txt",
+      "write": {
+        "root": "project",
+        "path": "D/ab.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "/a\rb.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "/ab.txt",
+      "write": {
+        "root": "project",
+        "path": "ab.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "/a b.txt",
+      "write": {
+        "root": "project",
+        "path": "a b.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "/a\tb.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "/a\u0000b.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "D:\\a\tb.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "d:/lower/x.txt",
+      "write": {
+        "root": "project",
+        "path": "d/lower/x.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "D://double//slash.txt",
+      "write": {
+        "root": "project",
+        "path": "D/double/slash.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "//double/leading.txt",
+      "write": {
+        "root": "project",
+        "path": "double/leading.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "/Users/bob/other/src/a.ts",
+      "write": {
+        "root": "project",
+        "path": "Users/bob/other/src/a.ts"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "C:/Users/bob/other/src/a.ts",
+      "write": {
+        "root": "project",
+        "path": "C/Users/bob/other/src/a.ts"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "/elsewhere/project/src/x.ts",
+      "write": {
+        "root": "project",
+        "path": "src/x.ts"
+      },
+      "delete": "missing"
+    },
+    {
+      "input": "/elsewhere/backup/y.ts",
+      "write": {
+        "root": "backup",
+        "path": "y.ts"
+      },
+      "delete": "missing"
+    },
+    {
+      "input": "D:/elsewhere/PROJECT/z.ts",
+      "write": {
+        "root": "project",
+        "path": "z.ts"
+      },
+      "delete": "missing"
+    },
+    {
+      "input": "D:/elsewhere/PROJECT/a\rb.ts",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "D:/elsewhere/PROJECT/ab.ts",
+      "write": {
+        "root": "project",
+        "path": "ab.ts"
+      },
+      "delete": "missing"
+    },
+    {
+      "input": "D:/elsewhere/PROJECT/a b.ts",
+      "write": {
+        "root": "project",
+        "path": "a b.ts"
+      },
+      "delete": "missing"
+    },
+    {
+      "input": "D:/elsewhere/PROJECT/a b.ts",
+      "write": {
+        "root": "project",
+        "path": "a b.ts"
+      },
+      "delete": "missing"
+    },
+    {
+      "input": "/x/./y.txt",
+      "write": {
+        "root": "project",
+        "path": "x/y.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "/dir/",
+      "write": {
+        "root": "project",
+        "path": "dir"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "  /spaced/path.txt  ",
+      "write": {
+        "root": "project",
+        "path": "spaced/path.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "\t/tabbed.txt",
+      "write": {
+        "root": "project",
+        "path": "tabbed.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "/a　b.txt",
+      "write": {
+        "root": "project",
+        "path": "a　b.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": " /nbsp.txt",
+      "write": {
+        "root": "project",
+        "path": " /nbsp.txt"
+      },
+      "delete": "missing"
+    },
+    {
+      "input": "﻿/bom.txt",
+      "write": {
+        "root": "project",
+        "path": "﻿/bom.txt"
+      },
+      "delete": "missing"
+    },
+    {
+      "input": "\u001c/fs-lead.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "/a.txt\u001c",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "D:/x/y\u001c",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "/seg/\u001c/z.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "/escaped/new.txt",
+      "needsSymlink": true,
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "/escaped/deeper/new.txt",
+      "needsSymlink": true,
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "/D/keep.txt",
+      "write": {
+        "root": "project",
+        "path": "D/keep.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "D:/keep.txt",
+      "write": {
+        "root": "project",
+        "path": "D/keep.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "relative/ok.txt",
+      "write": {
+        "root": "project",
+        "path": "relative/ok.txt"
+      },
+      "delete": "missing"
+    },
+    {
+      "input": "backup/rel.txt",
+      "write": {
+        "root": "backup",
+        "path": "rel.txt"
+      },
+      "delete": "missing"
+    },
+    {
+      "input": "../up.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "src/bad:name.ts",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "/a/b<c>.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "/q/what?.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "/😀/emoji.txt",
+      "write": {
+        "root": "project",
+        "path": "😀/emoji.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "D:/Ünïcode/файл.txt",
+      "write": {
+        "root": "project",
+        "path": "D/Ünïcode/файл.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "/foo\\bar.txt",
+      "write": {
+        "root": "project",
+        "path": "foo/bar.txt"
+      },
+      "delete": "refused"
+    },
+    {
+      "input": "@ROOT@/src/in-root.ts",
+      "write": {
+        "root": "project",
+        "path": "src/in-root.ts"
+      },
+      "delete": "missing"
+    },
+    {
+      "input": "@ROOT@/../outside/x.txt",
+      "write": "refused",
+      "delete": "refused"
+    },
+    {
+      "input": "@SIBLING@/z.txt",
+      "write": {
+        "root": "backup",
+        "path": "z.txt"
+      },
+      "delete": "missing"
+    },
+    {
+      "input": "@ROOT@",
+      "write": {
+        "root": "project",
+        "path": ""
+      },
+      "delete": "missing"
+    },
+    {
+      "input": "/project/src/lead-seg.ts",
+      "write": {
+        "root": "project",
+        "path": "src/lead-seg.ts"
+      },
+      "delete": "missing"
+    },
+    {
+      "input": "/backup/lead.ts",
+      "write": {
+        "root": "backup",
+        "path": "lead.ts"
+      },
+      "delete": "missing"
+    }
   ]
 }

@@ -610,18 +610,19 @@ class ClipboardPathResolverTest {
     }
 
     @Test
-    fun `a path segment of control characters is kept, not dropped`() {
+    fun `a path segment of control characters is refused, never dropped`() {
         val base = Files.createTempDirectory("clipcode-ctrl")
         val repo = base.resolve("repo").createDirectories()
         val resolver = ClipboardPathResolver.fromRootPaths(listOf(repo.toString()), repo.toString())
 
         // Kotlin's isBlank is Unicode-aware and the VS Code mirror only drops EMPTY
-        // segments, so this segment was discarded here and kept there — the two tools then
-        // wrote DIFFERENT files for one clipboard path.
-        val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(
+        // segments, so this segment was once discarded here and kept there — the two tools
+        // then wrote DIFFERENT files for one clipboard path. It must never collapse to
+        // `keep.txt`. Since control characters became illegal on every platform (Windows
+        // cannot create them), the segment is now refused outright, by both tools.
+        assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(
             resolver.resolveWriteTarget("\u001C/keep.txt")
         )
-        assertEquals("\u001C/keep.txt", resolved.target.relativePath)
     }
 
     @Test
@@ -636,11 +637,18 @@ class ClipboardPathResolverTest {
             root.systemIndependentPath()
         )
 
-        for (terminator in listOf("\r", "\u0085", "\u2028", "\u2029")) {
+        // U+0085/U+2028/U+2029 are legal file-name characters on every platform.
+        for (terminator in listOf("\u0085", "\u2028", "\u2029")) {
             val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(
                 resolver.resolveWriteTarget("D:/a${terminator}b.txt")
             )
             assertEquals("D/a${terminator}b.txt", resolved.target.relativePath)
+        }
+        // A control character is not, on Windows — so it is refused everywhere, by both tools.
+        for (control in listOf("\r", "\n", "\t", "\u001C")) {
+            assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(
+                resolver.resolveWriteTarget("D:/a${control}b.txt")
+            )
         }
     }
 
@@ -656,12 +664,15 @@ class ClipboardPathResolverTest {
             root.systemIndependentPath()
         )
 
-        for (terminator in listOf("\r", "\u0085", "\u2028", "\u2029")) {
+        for (terminator in listOf("\u0085", "\u2028", "\u2029")) {
             val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(
                 resolver.resolveWriteTarget("D:/elsewhere/PROJ/a${terminator}b.ts")
             )
             assertEquals("a${terminator}b.ts", resolved.target.relativePath)
         }
+        assertIs<ClipboardPathResolver.WriteResolution.Unresolved>(
+            resolver.resolveWriteTarget("D:/elsewhere/PROJ/a\rb.ts")
+        )
     }
 
     private fun Path.systemIndependentPath(): String = toString().replace('\\', '/')
