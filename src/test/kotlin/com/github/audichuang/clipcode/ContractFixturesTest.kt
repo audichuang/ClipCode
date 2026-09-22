@@ -25,7 +25,7 @@ import kotlin.test.assertEquals
  */
 class ContractFixturesTest {
     private companion object {
-        const val EXPECTED_FIXTURES_SHA = "2d5908a5a247fcc564380a4c5ec1b8f188bcc50fae9d039aa0f8e200c37a9771"
+        const val EXPECTED_FIXTURES_SHA = "df317eb7b412d4bd71222d71d4cd64a1652fbcac2d82468ec417e4ce95ec2468"
         const val RESOURCE = "/clipboard-contract.json"
     }
 
@@ -34,7 +34,28 @@ class ContractFixturesTest {
         val parseCases: List<ParseCase>,
         val tokenCases: List<TokenCase>,
         val pathLayout: PathLayout,
-        val pathCases: List<PathCase>
+        val pathCases: List<PathCase>,
+        val restoreLayout: RestoreLayout,
+        val restoreCases: List<RestoreCase>
+    )
+    private data class FileSpec(val text: String?, val base64: String?)
+    private data class RestoreLayout(
+        val roots: List<String>,
+        val dirs: List<String>,
+        val files: Map<String, FileSpec>,
+        val symlinks: Map<String, String>
+    )
+    private data class PlannedCreate(val root: String, val path: String, val relativePath: String, val content: String, val existed: Boolean)
+    private data class PlannedDelete(val root: String, val path: String, val relativePath: String)
+    private data class PlannedSkip(val rawPath: String, val relativePath: String?, val reason: String)
+    private data class RestoreCase(
+        val name: String,
+        val headerFormat: String,
+        val payload: String,
+        val needsSymlink: Boolean?,
+        val creates: List<PlannedCreate>,
+        val deletes: List<PlannedDelete>,
+        val skips: List<PlannedSkip>
     )
     private data class PathLayout(
         val roots: List<String>,
@@ -199,6 +220,63 @@ class ContractFixturesTest {
                 System.err.println("SKIPPED ${skipped.size} symlink row(s): this platform refused to create a directory symlink")
             }
             assertEquals(emptyList(), mismatches, "path mismatches (write, delete):\n" + mismatches.joinToString("\n"))
+        } finally {
+            parent.toFile().deleteRecursively()
+        }
+    }
+
+    /**
+     * A paste is interoperable only if both tools plan the SAME operations for one payload:
+     * which files are created (with what content, over an existing one or not), deleted, or
+     * skipped and why. The VS Code mirror (test/contract.test.ts) runs planRestore on the
+     * same frozen payloads and layout.
+     */
+    @Test
+    fun `restore direction plans the frozen cross-tool operations for every payload`() {
+        val layout = fixtures.restoreLayout
+        val parent = Files.createTempDirectory("clipcode-restore-contract").toRealPath()
+        try {
+            layout.dirs.forEach { parent.resolve(it).createDirectories() }
+            layout.files.forEach { (file, spec) ->
+                Files.write(parent.resolve(file), spec.base64?.let { java.util.Base64.getDecoder().decode(it) } ?: spec.text.orEmpty().toByteArray())
+            }
+            // A directory symlink needs privileges on Windows outside developer mode; only the
+            // cases that depend on it are skipped, and loudly.
+            val symlinks = layout.symlinks.all { (link, target) ->
+                runCatching { Files.createSymbolicLink(parent.resolve(link), parent.resolve(target)) }.isSuccess
+            }
+            val roots = layout.roots.map { parent.resolve(it).toString() }
+            val builder = RestorePlanBuilder(ClipboardPathResolver.fromRootPaths(roots, roots.first()))
+            val parser = ClipboardRestoreParser()
+            fun where(absolutePath: String): Pair<String, String> {
+                val relative = parent.relativize(Path.of(absolutePath)).map { it.toString() }
+                return relative.first() to relative.drop(1).joinToString("/")
+            }
+            fun reason(r: RestorePlan.SkipReason) = if (r == RestorePlan.SkipReason.AMBIGUOUS_TARGET) "AMBIGUOUS" else r.name
+
+            val mismatches = fixtures.restoreCases.mapNotNull { case ->
+                if (case.needsSymlink == true && !symlinks) {
+                    System.err.println("SKIPPED \"${case.name}\": this platform refused to create a directory symlink")
+                    return@mapNotNull null
+                }
+                val actual = runCatching {
+                    val plan = builder.build(parser.parse(case.payload, case.headerFormat))
+                    Triple(
+                        plan.createOperations.map { op ->
+                            val (root, path) = where(op.absolutePath)
+                            PlannedCreate(root, path, op.relativePath, op.content, op.existed)
+                        },
+                        plan.deleteOperations.map { op ->
+                            val (root, path) = where(op.absolutePath)
+                            PlannedDelete(root, path, op.relativePath)
+                        },
+                        plan.skippedOperations.map { op -> PlannedSkip(op.rawPath, op.relativePath, reason(op.reason)) }
+                    )
+                }.getOrElse { error -> return@mapNotNull "${case.name}: THROW ${error.javaClass.simpleName}: ${error.message}" }
+                val want = Triple(case.creates, case.deletes, case.skips)
+                if (actual == want) null else "${case.name}:\n  expected $want\n  got      $actual"
+            }
+            assertEquals(emptyList(), mismatches, "restore plan mismatches:\n" + mismatches.joinToString("\n"))
         } finally {
             parent.toFile().deleteRecursively()
         }
