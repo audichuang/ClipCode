@@ -79,6 +79,14 @@ intellijPlatform {
         """.trimIndent()
 
         changeNotes = """
+            <h2>Version 1.2.15 - The same paste result in both tools, on every platform</h2>
+            <ul>
+                <li><b>Fixed (Windows):</b> Paste &amp; Restore no longer asks &ldquo;Add file to Git?&rdquo; for every file it restores, nor asks about every file it deletes. Suppressing those prompts during a restore has never worked on Windows: the restore recorded native paths (<code>C:\x\a.kt</code>) and the check compared them against IntelliJ's system-independent ones (<code>C:/x/a.kt</code>).</li>
+                <li><b>Changed:</b> A path segment containing a control character (tab, CR, LF, U+001C&hellip;) is now refused on every platform, exactly like <code>&lt; &gt; : &quot; | ? *</code> already were. Windows cannot create such a name, so the same payload restored the file on macOS and Linux and failed on Windows. Only an interior control character is refused; leading and trailing whitespace is still trimmed first.</li>
+                <li><b>Fixed:</b> A Windows drive path whose file name contains U+0085, U+2028 or U+2029 was treated as a relative path, so Paste &amp; Restore dropped it and a relative path filter rule could match it, while the VS Code side treated it as absolute. The path check used a regular expression in which Java's <code>.</code> does not match those characters; the two tools now agree.</li>
+                <li><b>Upgrade both tools together.</b> Snipcode for VS Code 0.3.50 now keeps an absolute path that matches no root literally under the project, as this plugin has since 1.2.14, and applies the same control-character rule. The clipboard wire format is unchanged.</li>
+            </ul>
+
             <h2>Version 1.2.14 - Never put text on the clipboard that cannot come back</h2>
             <ul>
                 <li><b>Fixed:</b> Files under External Libraries (node_modules, JARs) skipped the strict UTF-8 rule the ordinary copy path has followed since 1.2.13. A Big5 source was copied as <code>// ????</code>, a UTF-16 one as text no tool can turn back into the original bytes, a real UTF-8 BOM was dropped, and NUL bytes passed whenever the extension was on the text whitelist. They are now skipped and counted in the copy notification, like everywhere else.</li>
