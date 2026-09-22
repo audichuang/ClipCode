@@ -1,0 +1,41 @@
+name: CI
+
+# Every push to main and every PR, on all three platforms. release.yml only runs on a v*
+# tag and never runs the test suite, so before this nothing ever ran `./gradlew build`
+# anywhere but a developer's machine. The shared contract fixture
+# (src/test/resources/clipboard-contract.json, byte-identical in the VS Code repo) must
+# pass on Windows, macOS and Linux — a payload is meant to restore identically on all of them.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build and run the full test suite
+        shell: bash
+        run: ./gradlew build
+      - name: Keep test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ matrix.os }}
+          path: build/reports/tests/
+          if-no-files-found: ignore
