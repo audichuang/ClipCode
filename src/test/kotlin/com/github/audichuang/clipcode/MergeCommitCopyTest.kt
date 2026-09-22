@@ -33,10 +33,17 @@ class MergeCommitCopyTest : BasePlatformTestCase() {
 
     override fun setUp() {
         super.setUp()
-        root = java.nio.file.Files.createTempDirectory("clipcode-merge-test").toFile()
+        // toRealPath: a Windows TEMP under a long user name is the 8.3 short form (RUNNER~1)
+        // while git reports the long one, so every path failed to relativise and stayed
+        // absolute. The real path (on macOS /private/var) is outside the test framework's
+        // allowed VFS roots, so it is allowed explicitly.
+        root = java.nio.file.Files.createTempDirectory("clipcode-merge-test").toRealPath().toFile()
+        com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess.allowRootAccess(testRootDisposable, root.path)
         // `git init -b` needs git >= 2.28 (Ubuntu 20.04 LTS ships 2.25.1); this is
         // equivalent and works everywhere.
         git("init")
+        // Local, so it overrides Git for Windows' SYSTEM core.autocrlf=true: without it git4idea (which does not get isolatedGitConfig) checks these LF fixtures out as CRLF and every content assertion fails on Windows only.
+        git("config", "core.autocrlf", "false")
         git("symbolic-ref", "HEAD", "refs/heads/trust")
         git("config", "user.name", "Test")
         git("config", "user.email", "test@example.invalid")

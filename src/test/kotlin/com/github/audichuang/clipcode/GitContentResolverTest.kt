@@ -327,6 +327,8 @@ class GitContentResolverTest : BasePlatformTestCase() {
             .invariantSeparatorsPath
 
         runGit("init")
+        // Local, so it overrides Git for Windows' SYSTEM core.autocrlf=true: without it git4idea (which does not get isolatedGitConfig) checks these LF fixtures out as CRLF and every content assertion fails on Windows only.
+        runGit("config", "core.autocrlf", "false")
         runGit("config", "user.email", "clipcode-test@example.com")
         runGit("config", "user.name", "ClipCode Test")
         runGit("add", relativePath)

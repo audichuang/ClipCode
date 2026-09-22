@@ -29,7 +29,15 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
       - uses: gradle/actions/setup-gradle@v4
+      # The copy actions put text on the AWT clipboard, which throws HeadlessException
+      # without a display — a CI artefact, since a real user always has one. A virtual
+      # display on Linux, exactly as the VS Code e2e job does; Windows and macOS runners
+      # already have a desktop session.
+      - name: Build and run the full test suite (Linux, virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ./gradlew build
       - name: Build and run the full test suite
+        if: runner.os != 'Linux'
         shell: bash
         run: ./gradlew build
       - name: Keep test reports

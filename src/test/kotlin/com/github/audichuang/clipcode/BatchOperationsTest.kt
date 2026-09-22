@@ -160,7 +160,14 @@ class BatchOperationsTest : BasePlatformTestCase() {
             assertEquals(text, 0, p.waitFor()); return text.trim()
         }
         git("init"); git("config", "user.email", "test@example.com"); git("config", "user.name", "Test")
+        // Local, so it overrides Git for Windows' SYSTEM core.autocrlf=true; the .gitattributes
+        // eol=crlf rule some of these tests set on purpose still applies.
+        git("config", "core.autocrlf", "false")
+        // Windows cannot create a name holding a control character (and restore now refuses
+        // one on every platform), so those two stay POSIX-only.
+        val windows = System.getProperty("os.name").startsWith("Windows")
         val names = listOf("with space.txt", "中文.txt", "tab\tname.txt", "line\nbreak.txt", "empty.txt", "utf16.txt")
+            .filterNot { name -> windows && name.any { it.code < 0x20 } }
         names.forEach { File(root, it).writeText(if (it == "empty.txt") "" else "hello 中文\nsecond line\n") }
         File(root, "utf16.txt").writeBytes(byteArrayOf(-1, -2) + "UTF16 中文\n".toByteArray(Charsets.UTF_16LE))
         File(root, ".gitattributes").writeText("*.txt text eol=crlf\nutf16.txt -text\n")
@@ -237,6 +244,9 @@ class BatchOperationsTest : BasePlatformTestCase() {
             return out.trim()
         }
         git("init"); git("config", "user.email", "test@example.com"); git("config", "user.name", "Test")
+        // Local, so it overrides Git for Windows' SYSTEM core.autocrlf=true; the .gitattributes
+        // eol=crlf rule some of these tests set on purpose still applies.
+        git("config", "core.autocrlf", "false")
         val expected = (0 until 200).associate { "history/file $it.txt" to "committed $it\n" }
         expected.forEach { (name, text) -> File(root, name).apply { parentFile.mkdirs(); writeText(text) } }
         git("add", "."); git("commit", "-m", "fixture")
