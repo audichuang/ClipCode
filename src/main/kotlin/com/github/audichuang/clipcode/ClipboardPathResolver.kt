@@ -124,8 +124,15 @@ class ClipboardPathResolver private constructor(
 
         private val DUPLICATE_SEPARATORS = Regex("/+")
         private val WINDOWS_DRIVE_ROOT = Regex("^[A-Za-z]:/$")
-        private val WINDOWS_STYLE_PATH = Regex("^[A-Za-z]:($|/.*)")
-        private val WINDOWS_ABSOLUTE_PATH = Regex("^[A-Za-z]:/.*")
+        // `[\s\S]`, never `.`: Java's `.` skips five line terminators (\n \r U+0085 U+2028
+        // U+2029) and JavaScript's skips four (not U+0085), while a lone \r survives the
+        // \r?\n line split into a header path. With `.` and a full-string match,
+        // `D:/a\rb.txt` was not absolute here and was absolute in VS Code, so one payload
+        // restored a file in one tool and nothing in the other — while the POSIX twin
+        // `/a\rb.txt` was absolute here all along. Same fix in CopyPathFormatter and
+        // PathRuleMatcher; the TS mirror is pathResolver.ts isWindowsStylePath.
+        private val WINDOWS_STYLE_PATH = Regex("^[A-Za-z]:($|/[\\s\\S]*)")
+        private val WINDOWS_ABSOLUTE_PATH = Regex("^[A-Za-z]:/[\\s\\S]*")
 
         fun fromProject(project: Project): ClipboardPathResolver {
             val projectBasePath = ProjectPathRoots.primaryRootPath(project)

@@ -35,4 +35,13 @@ class PathRuleMatcherTest {
         assertTrue(PathRuleMatcher.isAbsolutePath("C:/workspace/module-a"))
         assertFalse(PathRuleMatcher.isAbsolutePath("module-a/src/App.kt"))
     }
+
+    @Test
+    fun `isAbsolutePath keeps a drive path absolute when a name holds a line terminator`() {
+        // Java's `.` skips these; with `.*` and a full-string match the path read as relative,
+        // so a relative PATH rule could match a file VS Code (filterMatcher.ts) refused it for.
+        for (terminator in listOf("\r", "\u0085", "\u2028", "\u2029")) {
+            assertTrue(PathRuleMatcher.isAbsolutePath("C:/workspace/a${terminator}b.kt"))
+        }
+    }
 }

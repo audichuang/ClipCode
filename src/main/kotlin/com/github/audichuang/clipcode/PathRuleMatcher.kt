@@ -2,7 +2,8 @@ package com.github.audichuang.clipcode
 
 object PathRuleMatcher {
     private val DUPLICATE_SEPARATORS = Regex("/+")
-    private val WINDOWS_ABSOLUTE_PATH = Regex("^[A-Za-z]:/.*")
+    // `[\s\S]`, never `.` — see ClipboardPathResolver.WINDOWS_ABSOLUTE_PATH.
+    private val WINDOWS_ABSOLUTE_PATH = Regex("^[A-Za-z]:/[\\s\\S]*")
 
     fun matchesPath(path: String, rulePath: String): Boolean =
         isSameOrChild(normalizePath(path), normalizePath(rulePath))
