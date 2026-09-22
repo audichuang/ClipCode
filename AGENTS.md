@@ -14,7 +14,8 @@ are **shared** with the sibling VS Code port (Snipcode) and live in the work-roo
 `AGENTS.md`. Read that before changing anything about the wire format. From a lone
 clone of this repo, the executable copy of the contract is
 `src/test/resources/clipboard-contract.json` + `ContractFixturesTest` — build, parse, token
-stats and (`pathCases`) path resolution of both writes and deletes.
+stats, (`pathCases`) path resolution of both writes and deletes, and (`restoreCases`) the
+restore plan a payload produces.
 
 This side's implementation:
 

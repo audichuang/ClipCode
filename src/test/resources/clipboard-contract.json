@@ -1565,5 +1565,399 @@
       },
       "delete": "missing"
     }
+  ],
+  "restoreLayout": {
+    "roots": [
+      "project",
+      "backup"
+    ],
+    "dirs": [
+      "project/src",
+      "backup",
+      "outside"
+    ],
+    "files": {
+      "project/src/existing.ts": {
+        "text": "old\n"
+      },
+      "project/src/to-delete.ts": {
+        "text": "bye\n"
+      },
+      "project/latin1.txt": {
+        "base64": "Y2Fm6Qo="
+      },
+      "project/bom.txt": {
+        "base64": "77u/aGkK"
+      },
+      "backup/b.ts": {
+        "text": "b\n"
+      },
+      "outside/secret.txt": {
+        "text": "must never be deleted\n"
+      }
+    },
+    "symlinks": {
+      "project/escaped": "outside"
+    }
+  },
+  "restoreCases": [
+    {
+      "name": "new files, nested directories included",
+      "headerFormat": "// file: $FILE_PATH",
+      "payload": "// file: src/new/A.ts\nexport const a = 1;\n\n// file: README.md\n# hi",
+      "creates": [
+        {
+          "root": "project",
+          "path": "src/new/A.ts",
+          "relativePath": "src/new/A.ts",
+          "content": "export const a = 1;",
+          "existed": false
+        },
+        {
+          "root": "project",
+          "path": "README.md",
+          "relativePath": "README.md",
+          "content": "# hi",
+          "existed": false
+        }
+      ],
+      "deletes": [],
+      "skips": []
+    },
+    {
+      "name": "overwriting a file that exists reports existed",
+      "headerFormat": "// file: $FILE_PATH",
+      "payload": "// file: src/existing.ts\nnew content",
+      "creates": [
+        {
+          "root": "project",
+          "path": "src/existing.ts",
+          "relativePath": "src/existing.ts",
+          "content": "new content",
+          "existed": true
+        }
+      ],
+      "deletes": [],
+      "skips": []
+    },
+    {
+      "name": "[DELETED] removes an existing file and skips one that is already gone",
+      "headerFormat": "// file: $FILE_PATH",
+      "payload": "// file: [DELETED] src/to-delete.ts\nbye\n\n// file: [DELETED] src/ghost.ts\ngone",
+      "creates": [],
+      "deletes": [
+        {
+          "root": "project",
+          "path": "src/to-delete.ts",
+          "relativePath": "src/to-delete.ts"
+        }
+      ],
+      "skips": [
+        {
+          "rawPath": "src/ghost.ts",
+          "relativePath": "src/ghost.ts",
+          "reason": "ALREADY_ABSENT"
+        }
+      ]
+    },
+    {
+      "name": "placeholder bodies are never written, over an existing file or a new one",
+      "headerFormat": "// file: $FILE_PATH",
+      "payload": "// file: src/existing.ts\n// File skipped: size exceeds limit\n\n// file: src/new-unreadable.ts\n// Unable to read file content\n\n// file: src/new-error.ts\n// Error reading file content",
+      "creates": [],
+      "deletes": [],
+      "skips": [
+        {
+          "rawPath": "src/existing.ts",
+          "relativePath": null,
+          "reason": "PLACEHOLDER_BODY"
+        },
+        {
+          "rawPath": "src/new-unreadable.ts",
+          "relativePath": null,
+          "reason": "PLACEHOLDER_BODY"
+        },
+        {
+          "rawPath": "src/new-error.ts",
+          "relativePath": null,
+          "reason": "PLACEHOLDER_BODY"
+        }
+      ]
+    },
+    {
+      "name": "the placeholder guard reads only the first line of the body",
+      "headerFormat": "// file: $FILE_PATH",
+      "payload": "// file: src/existing.ts\n// File skipped: size exceeds limit\ntrailing footer noise",
+      "creates": [],
+      "deletes": [],
+      "skips": [
+        {
+          "rawPath": "src/existing.ts",
+          "relativePath": null,
+          "reason": "PLACEHOLDER_BODY"
+        }
+      ]
+    },
+    {
+      "name": "a non-UTF-8 target is never overwritten; a UTF-8 one with a BOM is",
+      "headerFormat": "// file: $FILE_PATH",
+      "payload": "// file: latin1.txt\ncafé\n\n// file: bom.txt\n﻿hello",
+      "creates": [
+        {
+          "root": "project",
+          "path": "bom.txt",
+          "relativePath": "bom.txt",
+          "content": "﻿hello",
+          "existed": true
+        }
+      ],
+      "deletes": [],
+      "skips": [
+        {
+          "rawPath": "latin1.txt",
+          "relativePath": "latin1.txt",
+          "reason": "NON_UTF8_TARGET"
+        }
+      ]
+    },
+    {
+      "name": "a path escaping through a symlink is refused, for a write and for a delete",
+      "headerFormat": "// file: $FILE_PATH",
+      "needsSymlink": true,
+      "payload": "// file: escaped/x.txt\nx\n\n// file: [DELETED] escaped/secret.txt\ngone",
+      "creates": [],
+      "deletes": [],
+      "skips": [
+        {
+          "rawPath": "escaped/x.txt",
+          "relativePath": null,
+          "reason": "UNRESOLVED_PATH"
+        },
+        {
+          "rawPath": "escaped/secret.txt",
+          "relativePath": null,
+          "reason": "UNRESOLVED_PATH"
+        }
+      ]
+    },
+    {
+      "name": "an absolute path matching no root is kept literally under the primary root",
+      "headerFormat": "// file: $FILE_PATH",
+      "payload": "// file: /Users/bob/other/src/a.ts\nx\n\n// file: D:\\work\\lib\\b.ts\ny",
+      "creates": [
+        {
+          "root": "project",
+          "path": "Users/bob/other/src/a.ts",
+          "relativePath": "Users/bob/other/src/a.ts",
+          "content": "x",
+          "existed": false
+        },
+        {
+          "root": "project",
+          "path": "D/work/lib/b.ts",
+          "relativePath": "D/work/lib/b.ts",
+          "content": "y",
+          "existed": false
+        }
+      ],
+      "deletes": [],
+      "skips": []
+    },
+    {
+      "name": "a sibling root label targets that root",
+      "headerFormat": "// file: $FILE_PATH",
+      "payload": "// file: backup/c.ts\nc\n\n// file: backup/b.ts\nb2",
+      "creates": [
+        {
+          "root": "backup",
+          "path": "c.ts",
+          "relativePath": "c.ts",
+          "content": "c",
+          "existed": false
+        },
+        {
+          "root": "backup",
+          "path": "b.ts",
+          "relativePath": "b.ts",
+          "content": "b2",
+          "existed": true
+        }
+      ],
+      "deletes": [],
+      "skips": []
+    },
+    {
+      "name": "traversal, Windows-illegal characters and control characters are refused",
+      "headerFormat": "// file: $FILE_PATH",
+      "payload": "// file: ../escape.txt\nx\n\n// file: src/bad:name.ts\nx\n\n// file: src/a\u001cb.ts\nx\n\n// file: src/tab\tname.ts\nx",
+      "creates": [],
+      "deletes": [],
+      "skips": [
+        {
+          "rawPath": "../escape.txt",
+          "relativePath": null,
+          "reason": "UNRESOLVED_PATH"
+        },
+        {
+          "rawPath": "src/bad:name.ts",
+          "relativePath": null,
+          "reason": "UNRESOLVED_PATH"
+        },
+        {
+          "rawPath": "src/a\u001cb.ts",
+          "relativePath": null,
+          "reason": "UNRESOLVED_PATH"
+        },
+        {
+          "rawPath": "src/tab\tname.ts",
+          "relativePath": null,
+          "reason": "UNRESOLVED_PATH"
+        }
+      ]
+    },
+    {
+      "name": "backslash header paths are ordinary separators",
+      "headerFormat": "// file: $FILE_PATH",
+      "payload": "// file: src\\win\\A.ts\nwin",
+      "creates": [
+        {
+          "root": "project",
+          "path": "src/win/A.ts",
+          "relativePath": "src/win/A.ts",
+          "content": "win",
+          "existed": false
+        }
+      ],
+      "deletes": [],
+      "skips": []
+    },
+    {
+      "name": "labels are stripped from the target path",
+      "headerFormat": "// file: $FILE_PATH",
+      "payload": "// file: [NEW] src/n.ts\nn\n\n// file: [MODIFIED] src/existing.ts\nm\n\n// file: [MOVED] src/moved.ts\nmv",
+      "creates": [
+        {
+          "root": "project",
+          "path": "src/n.ts",
+          "relativePath": "src/n.ts",
+          "content": "n",
+          "existed": false
+        },
+        {
+          "root": "project",
+          "path": "src/existing.ts",
+          "relativePath": "src/existing.ts",
+          "content": "m",
+          "existed": true
+        },
+        {
+          "root": "project",
+          "path": "src/moved.ts",
+          "relativePath": "src/moved.ts",
+          "content": "mv",
+          "existed": false
+        }
+      ],
+      "deletes": [],
+      "skips": []
+    },
+    {
+      "name": "CRLF line endings, a BOM and an empty file",
+      "headerFormat": "// file: $FILE_PATH",
+      "payload": "// file: src/crlf.ts\r\nline1\r\nline2\r\n\r\n// file: src/bom.ts\n﻿bom\n\n// file: src/empty.ts\n",
+      "creates": [
+        {
+          "root": "project",
+          "path": "src/crlf.ts",
+          "relativePath": "src/crlf.ts",
+          "content": "line1\nline2",
+          "existed": false
+        },
+        {
+          "root": "project",
+          "path": "src/bom.ts",
+          "relativePath": "src/bom.ts",
+          "content": "﻿bom",
+          "existed": false
+        },
+        {
+          "root": "project",
+          "path": "src/empty.ts",
+          "relativePath": "src/empty.ts",
+          "content": "",
+          "existed": false
+        }
+      ],
+      "deletes": [],
+      "skips": []
+    },
+    {
+      "name": "the same path twice is planned twice, in order",
+      "headerFormat": "// file: $FILE_PATH",
+      "payload": "// file: src/dup.ts\nfirst\n\n// file: src/dup.ts\nsecond",
+      "creates": [
+        {
+          "root": "project",
+          "path": "src/dup.ts",
+          "relativePath": "src/dup.ts",
+          "content": "first",
+          "existed": false
+        },
+        {
+          "root": "project",
+          "path": "src/dup.ts",
+          "relativePath": "src/dup.ts",
+          "content": "second",
+          "existed": false
+        }
+      ],
+      "deletes": [],
+      "skips": []
+    },
+    {
+      "name": "a header-shaped content line round-trips, clipcode-root and the end marker are not files",
+      "headerFormat": "// file: $FILE_PATH",
+      "payload": "// clipcode-root: project\nPRE\n// file: src/escaped.ts\nconst a = 1;\n//clipcode-esc: // file: not/a/header.ts\nconst b = 2;\n\n// file: src/last.ts\nlast\n\n// clipcode-end\nPOST",
+      "creates": [
+        {
+          "root": "project",
+          "path": "src/escaped.ts",
+          "relativePath": "src/escaped.ts",
+          "content": "const a = 1;\n// file: not/a/header.ts\nconst b = 2;",
+          "existed": false
+        },
+        {
+          "root": "project",
+          "path": "src/last.ts",
+          "relativePath": "src/last.ts",
+          "content": "last",
+          "existed": false
+        }
+      ],
+      "deletes": [],
+      "skips": []
+    },
+    {
+      "name": "another header format",
+      "headerFormat": "# $FILE_PATH",
+      "payload": "# src/py.py\nprint(1)\n\n# [DELETED] src/to-delete.ts\nx",
+      "creates": [
+        {
+          "root": "project",
+          "path": "src/py.py",
+          "relativePath": "src/py.py",
+          "content": "print(1)",
+          "existed": false
+        }
+      ],
+      "deletes": [
+        {
+          "root": "project",
+          "path": "src/to-delete.ts",
+          "relativePath": "src/to-delete.ts"
+        }
+      ],
+      "skips": []
+    }
   ]
 }
