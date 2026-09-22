@@ -624,6 +624,46 @@ class ClipboardPathResolverTest {
         assertEquals("\u001C/keep.txt", resolved.target.relativePath)
     }
 
+    @Test
+    fun `resolveWriteTarget keeps a drive path literal when a name holds a line terminator`() {
+        // `^[A-Za-z]:/.*` with a full-string match said "not absolute" for these, because
+        // Java's `.` skips them — so the path was dropped here while VS Code wrote it, and
+        // while the POSIX twin `/a\rb.txt` was written here too. A lone \r survives the
+        // \r?\n header split, so this is reachable from a real payload.
+        val root = Files.createTempDirectory("clipcode-literal-line-terminator")
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(root.systemIndependentPath()),
+            root.systemIndependentPath()
+        )
+
+        for (terminator in listOf("\r", "\u0085", "\u2028", "\u2029")) {
+            val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(
+                resolver.resolveWriteTarget("D:/a${terminator}b.txt")
+            )
+            assertEquals("D/a${terminator}b.txt", resolved.target.relativePath)
+        }
+    }
+
+    @Test
+    fun `resolveWriteTarget treats a drive path with a line terminator as Windows style`() {
+        // With `.` in WINDOWS_STYLE_PATH this path was not Windows-style, so the cross-machine
+        // suffix compared `PROJ` to the root `proj` case-sensitively and missed it. VS Code's
+        // `.` differed on U+0085 alone, so the tools already disagreed there.
+        val parent = Files.createTempDirectory("clipcode-suffix-line-terminator")
+        val root = parent.resolve("proj").createDirectories()
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(root.systemIndependentPath()),
+            root.systemIndependentPath()
+        )
+
+        for (terminator in listOf("\r", "\u0085", "\u2028", "\u2029")) {
+            val resolved = assertIs<ClipboardPathResolver.WriteResolution.Resolved>(
+                resolver.resolveWriteTarget("D:/elsewhere/PROJ/a${terminator}b.ts")
+            )
+            assertEquals("a${terminator}b.ts", resolved.target.relativePath)
+        }
+    }
+
     private fun Path.systemIndependentPath(): String = toString().replace('\\', '/')
 
     @Test

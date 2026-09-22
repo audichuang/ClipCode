@@ -1,7 +1,8 @@
 package com.github.audichuang.clipcode
 
 object CopyPathFormatter {
-    private val WINDOWS_ABSOLUTE_PATH = Regex("^[A-Za-z]:/.*")
+    // `[\s\S]`, never `.` — see ClipboardPathResolver.WINDOWS_ABSOLUTE_PATH.
+    private val WINDOWS_ABSOLUTE_PATH = Regex("^[A-Za-z]:/[\\s\\S]*")
 
     fun displayPath(pathResolver: ClipboardPathResolver, absolutePath: String): String =
         pathResolver.toClipboardPath(absolutePath)

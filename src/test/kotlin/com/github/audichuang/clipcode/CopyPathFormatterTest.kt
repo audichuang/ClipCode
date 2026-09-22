@@ -5,6 +5,7 @@ import java.nio.file.Path
 import kotlin.io.path.createDirectories
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 class CopyPathFormatterTest {
     @Test
@@ -62,6 +63,22 @@ class CopyPathFormatterTest {
                 "library.jar!/com/acme/Lib.java"
             )
         )
+    }
+
+    @Test
+    fun `relativeFilterPath has no relative identity for an outside drive path with a line terminator`() {
+        // An outside file has no relative identity, so a relative PATH rule must not match
+        // it. With `.` in the absolute check, `D:/a\u2028b.kt` read as relative and was
+        // handed to the filter as if it were one.
+        val projectRoot = Files.createTempDirectory("clipcode-copy-path-line-terminator")
+        val resolver = ClipboardPathResolver.fromRootPaths(
+            listOf(projectRoot.systemIndependentPath()),
+            projectRoot.systemIndependentPath()
+        )
+
+        for (terminator in listOf("\r", "\u0085", "\u2028", "\u2029")) {
+            assertNull(CopyPathFormatter.relativeFilterPath(resolver, "D:/outside/a${terminator}b.kt"))
+        }
     }
 
     private fun Path.systemIndependentPath(): String = toString().replace('\\', '/')

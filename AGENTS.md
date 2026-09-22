@@ -58,6 +58,12 @@ Kotlin-side pins for the shared invariants:
   `content`, not in `skippedReason`, so they used to do both. Shared with the VS Code side —
   see the work-root `AGENTS.md` before changing either half.
 - `$FILE_PATH` substitution uses `String.replace` (literal, not regex).
+- Path-shape regexes never use `.` — `[\s\S]` for "any character". Java's `.` skips five
+  line terminators (U+0085 included) and JavaScript's four, while a lone `\r` survives the
+  `\r?\n` header split; with `.` and `matches()`, `D:/a\rb.txt` was not absolute here and
+  was in VS Code, so one payload restored a file in one tool only. Applies to
+  `ClipboardPathResolver` `WINDOWS_STYLE_PATH` / `WINDOWS_ABSOLUTE_PATH`, `CopyPathFormatter`
+  and `PathRuleMatcher`; TS mirror `pathResolver.ts isWindowsStylePath`.
 - Parsing splits on `splitLines` — a `\r?\n` regex, **never** `String.lines()`.
 - The copy notification's four statistics (characters / lines / words / tokens) are
   a cross-tool contract too — see the work-root `AGENTS.md`. They are derived from
