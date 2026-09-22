@@ -58,9 +58,16 @@ class RestoreExecutor(
             try {
                 val batch = Runnable {
                     val end = minOf(cursor + 32, total)
+                    // System-independent, because RestoreVcsIgnoreProvider matches FilePath.path,
+                    // which always uses '/'. The plan's absolutePath is NATIVE, so on Windows
+                    // `C:\x\a.kt` never equalled `C:/x/a.kt`: every restored file still raised
+                    // the "add to Git?" prompt and every delete the removal one — invisible on
+                    // macOS and Linux, where the two spellings coincide.
                     val paths = (cursor until end).mapTo(hashSetOf()) { index ->
-                        plan.createOperations.getOrNull(index)?.absolutePath
-                            ?: plan.deleteOperations[index - plan.createOperations.size].absolutePath
+                        com.intellij.openapi.util.io.FileUtil.toSystemIndependentName(
+                            plan.createOperations.getOrNull(index)?.absolutePath
+                                ?: plan.deleteOperations[index - plan.createOperations.size].absolutePath
+                        )
                     }
                     val previous = project.getUserData(RestoreVcsIgnoreProvider.PATHS)
                     project.putUserData(RestoreVcsIgnoreProvider.PATHS, paths)
