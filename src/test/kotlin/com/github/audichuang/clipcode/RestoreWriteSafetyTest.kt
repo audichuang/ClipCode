@@ -216,6 +216,43 @@ class RestoreWriteSafetyTest : BasePlatformTestCase() {
     }
 
     @Test
+    fun testTempFileIsBorn0600AndTheReplacedLinkGetsTheNewFileMode() {
+        assumeTrue("POSIX permission bits only", posix)
+        val root = Files.createTempDirectory("clipcode-t1-mode").toRealPath()
+        try {
+            val real = root.resolve("real.bin").also { it.writeBytes(byteArrayOf(1, 2, 3)) }
+            val link = root.resolve("a.png")
+            symlinkOrSkip(link, real)
+            // Folder 0755 so a default new file (0666 less the umask) is wider than 0600.
+            Files.setPosixFilePermissions(root, java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x"))
+            val expectedFinal = root.resolve("probe-expected").let { probe ->
+                Files.createFile(probe)
+                Files.getPosixFilePermissions(probe).also { Files.delete(probe) }
+            }
+            val ownerOnly = setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)
+            val atCreation = mutableListOf<Pair<Set<PosixFilePermission>, Long>>()
+            val beforeRename = mutableListOf<Pair<Set<PosixFilePermission>, List<Byte>>>()
+            val executor = RestoreExecutor(
+                project,
+                linkReplaceWriteHook = { target ->
+                    val temp = target.resolveSibling(target.parent.toFile().list()!!.single { it.startsWith(".clipcode-write.") })
+                    beforeRename += Files.getPosixFilePermissions(temp) to temp.readBytes().toList()
+                },
+                tempCreatedHook = { temp -> atCreation += Files.getPosixFilePermissions(temp) to Files.size(temp) }
+            )
+            val (_, result) = run(root, listOf(nonTextEntry("a.png", newBytes)), overwrite = true, executor = executor)
+            assertTrue(result.errors.isEmpty(), result.errors.toString())
+            assertEquals(listOf(ownerOnly to 0L), atCreation, "the temp file is created 0600 and empty")
+            assertEquals(listOf(ownerOnly to newBytes.toList()), beforeRename, "the bytes go in while the temp file is 0600")
+            assertReplacedLink(link, newBytes)
+            assertEquals(expectedFinal, Files.getPosixFilePermissions(link), "a new file's mode in that folder")
+            assertNoTempLeft(root)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun testSymlinkInAnUnwritableFolderIsLeftInPlace() {
         assumeTrue("POSIX folder permissions only", posix)
         val root = Files.createTempDirectory("clipcode-r3-ro").toRealPath()

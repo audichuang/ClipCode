@@ -15,13 +15,16 @@ import com.intellij.openapi.vfs.VirtualFile
 
 class RestoreExecutor internal constructor(
     private val project: Project,
+    /** Test seam: runs with the temporary file right after it is created, before any byte goes in. */
+    private val tempCreatedHook: (java.nio.file.Path) -> Unit = {},
     /**
      * Test seam: runs while a symlink at the target is being replaced, after the new bytes are in
-     * the temporary file and before the rename. Throwing here stands in for a failed write.
+     * the temporary file and before the rename. Throwing here stands in for a failed write. Kept
+     * last so a trailing lambda (`RestoreExecutor(project) { throw ... }`) binds here.
      */
-    private val linkReplaceWriteHook: (java.nio.file.Path) -> Unit
+    private val linkReplaceWriteHook: (java.nio.file.Path) -> Unit = {}
 ) {
-    constructor(project: Project) : this(project, {})
+    constructor(project: Project) : this(project, {}, {})
 
     data class ExecutionResult(
         val createdCount: Int,
@@ -310,23 +313,29 @@ class RestoreExecutor internal constructor(
     }
 
     /**
-     * Writes [bytes] to a fresh file in [target]'s folder and renames it over [target]. The
-     * temporary file is created with the mode a new file gets in that folder (0666 less the umask
-     * on POSIX), held at 0600 while the bytes go in, and set back before the rename. It is removed
-     * when anything fails, so the entry at [target] is untouched unless the rename happens.
+     * Writes [bytes] to a fresh file in [target]'s folder and renames it over [target]. On POSIX
+     * the temporary file is created 0600 in the same call that creates it, so no other process can
+     * open it at a wider mode; it gets the mode a new file gets in that folder (0666 less the umask,
+     * read off an empty probe file that is deleted at once) only after the bytes are in, right
+     * before the rename. It is removed when anything fails, so the entry at [target] is untouched
+     * unless the rename happens.
      */
     private fun writeByRename(target: java.nio.file.Path, bytes: ByteArray) {
+        val newFileMode = newFileModeIn(target.parent)
         val temp = target.resolveSibling(".clipcode-write.${UUID.randomUUID()}")
-        java.nio.file.Files.newByteChannel(temp, java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE).close()
+        val createAttributes: Array<java.nio.file.attribute.FileAttribute<*>> = if (newFileMode == null) emptyArray() else arrayOf(
+            java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+                setOf(java.nio.file.attribute.PosixFilePermission.OWNER_READ, java.nio.file.attribute.PosixFilePermission.OWNER_WRITE)
+            )
+        )
+        val channel = java.nio.channels.FileChannel.open(
+            temp,
+            setOf(java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE),
+            *createAttributes
+        )
         try {
-            val newFileMode = FileWriteAccess.Nio.posixPermissions(temp)
-            if (newFileMode != null) {
-                java.nio.file.Files.setPosixFilePermissions(
-                    temp,
-                    setOf(java.nio.file.attribute.PosixFilePermission.OWNER_READ, java.nio.file.attribute.PosixFilePermission.OWNER_WRITE)
-                )
-            }
-            java.nio.channels.FileChannel.open(temp, java.nio.file.StandardOpenOption.WRITE).use { channel ->
+            channel.use {
+                tempCreatedHook(temp)
                 val buffer = java.nio.ByteBuffer.wrap(bytes)
                 while (buffer.hasRemaining()) channel.write(buffer)
                 channel.force(true)
@@ -337,6 +346,22 @@ class RestoreExecutor internal constructor(
         } catch (e: Throwable) {
             java.nio.file.Files.deleteIfExists(temp)
             throw e
+        }
+    }
+
+    /**
+     * The mode a new file gets in [folder] (0666 less the umask), or null when the store has no
+     * POSIX permissions. Read off an empty probe file, so no payload byte ever sits in a file at
+     * that mode before it is final.
+     */
+    private fun newFileModeIn(folder: java.nio.file.Path): Set<java.nio.file.attribute.PosixFilePermission>? {
+        if (!java.nio.file.Files.getFileStore(folder).supportsFileAttributeView("posix")) return null
+        val probe = folder.resolve(".clipcode-write.${UUID.randomUUID()}")
+        java.nio.file.Files.createFile(probe)
+        try {
+            return java.nio.file.Files.getPosixFilePermissions(probe)
+        } finally {
+            java.nio.file.Files.deleteIfExists(probe)
         }
     }
 
