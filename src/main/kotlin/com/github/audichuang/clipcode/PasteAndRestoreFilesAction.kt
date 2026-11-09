@@ -483,7 +483,7 @@ internal fun skipReasonText(reason: RestorePlan.SkipReason): String = when (reas
     RestorePlan.SkipReason.CORRUPT_NON_TEXT -> "Corrupt non-text file"
     RestorePlan.SkipReason.TARGET_NOT_FILE -> "The target is a folder"
     RestorePlan.SkipReason.PARENT_NOT_FOLDER -> "A file is in the way of its parent folder"
-    RestorePlan.SkipReason.TARGET_COLLISION -> "Another entry maps to the same file (letter case)"
+    RestorePlan.SkipReason.TARGET_COLLISION -> "Another entry writes the same file"
     else -> reason.name
 }
 

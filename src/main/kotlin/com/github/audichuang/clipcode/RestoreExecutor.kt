@@ -95,6 +95,21 @@ class RestoreExecutor(
                                                 cursor++
                                                 continue
                                             }
+                                            // A symlink at the target is never written through: with
+                                            // overwrite consent the LINK is replaced by a regular file,
+                                            // without it the row is skipped (mirror of OpenIDEA's
+                                            // temp-file + rename write).
+                                            var replacedLink = false
+                                            if (create != null && isSymlink(create.absolutePath)) {
+                                                if (skipExisting || !overwriteExisting || linkTargetIsDirectory(create.absolutePath)) {
+                                                    skippedExistingCount++
+                                                    cursor++
+                                                    continue
+                                                }
+                                                removeSymlink(create.absolutePath)
+                                                replacedLink = true
+                                            }
+                                            val createdBefore = createdCount
                                             if (create?.nonTextBytes != null) {
                                                 when (writeNonText(create, create.nonTextBytes, overwriteExisting, skipExisting)) {
                                                     NonTextOutcome.CREATED -> createdCount++
@@ -135,6 +150,11 @@ class RestoreExecutor(
                                                     target.delete(this@RestoreExecutor)
                                                     deletedCount++
                                                 }
+                                            }
+                                            if (replacedLink && createdCount > createdBefore) {
+                                                // The link was an existing entry: report it as overwritten.
+                                                createdCount--
+                                                overwrittenCount++
                                             }
                                         } catch (e: ProcessCanceledException) {
                                             throw e
@@ -231,7 +251,7 @@ class RestoreExecutor(
         if (file.charset != java.nio.charset.StandardCharsets.UTF_8) {
             file.charset = java.nio.charset.StandardCharsets.UTF_8
         }
-        if (document != null && '\r' !in content && file.detectedLineSeparator?.contains('\r') != true) {
+        if (document != null && file.isWritable && '\r' !in content && file.detectedLineSeparator?.contains('\r') != true) {
             document.setText(content)
             manager.saveDocument(document)
         } else {
@@ -252,7 +272,47 @@ class RestoreExecutor(
         }
     }
 
+    private fun isSymlink(path: String): Boolean = java.nio.file.Files.isSymbolicLink(java.nio.file.Path.of(path))
+
+    private fun linkTargetIsDirectory(path: String): Boolean = java.nio.file.Files.isDirectory(java.nio.file.Path.of(path))
+
+    /** Deletes the link itself (never its target), through the VFS so the change is undoable. */
+    private fun removeSymlink(path: String) {
+        val link = findFile(path)
+        if (link != null) link.delete(this) else java.nio.file.Files.deleteIfExists(java.nio.file.Path.of(path))
+        if (isSymlink(path)) java.nio.file.Files.deleteIfExists(java.nio.file.Path.of(path))
+        LocalFileSystem.getInstance().refreshAndFindFileByPath(java.nio.file.Path.of(path).parent.toString())?.refresh(false, false)
+    }
+
+    /**
+     * A read-only target follows the overwrite option like any other existing file: the write
+     * window makes it writable, then the original mode is put back. The VFS refuses to write a
+     * file the OS marks read-only, so without this an overwrite consent became a failure.
+     */
+    private fun <T> withWritable(file: VirtualFile, write: () -> T): T {
+        val path = java.nio.file.Path.of(file.path)
+        if (java.nio.file.Files.isWritable(path)) return write()
+        val posix = java.nio.file.Files.getFileStore(path).supportsFileAttributeView("posix")
+        val saved = if (posix) java.nio.file.Files.getPosixFilePermissions(path) else null
+        if (saved != null) {
+            java.nio.file.Files.setPosixFilePermissions(path, saved + java.nio.file.attribute.PosixFilePermission.OWNER_WRITE)
+        } else {
+            path.toFile().setWritable(true)
+        }
+        file.refresh(false, false)
+        try {
+            return write()
+        } finally {
+            if (saved != null) java.nio.file.Files.setPosixFilePermissions(path, saved) else path.toFile().setReadOnly()
+            file.refresh(false, false)
+        }
+    }
+
     private fun writeRaw(file: VirtualFile, write: () -> Unit) {
+        withWritable(file) { writeRawUnguarded(file, write) }
+    }
+
+    private fun writeRawUnguarded(file: VirtualFile, write: () -> Unit) {
         val document = com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().getCachedDocument(file)
         if (document == null) write()
         else com.intellij.openapi.command.undo.UndoUtil.disableUndoIn(document) { write() }

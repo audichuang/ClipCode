@@ -102,11 +102,14 @@ class RestorePlanBuilder(
                             return@forEach
                         }
                         // Raw bytes are written as is: there is no encoding to preserve.
-                        if (nonTextBytes == null && Utf8Text.mustNotOverwrite(target.absolutePath)) {
+                        val isLink = java.nio.file.Files.isSymbolicLink(path)
+                        // A symlink is replaced, not read through: the encoding of what it points at
+                        // says nothing about what will be written in its place.
+                        if (nonTextBytes == null && !isLink && Utf8Text.mustNotOverwrite(target.absolutePath)) {
                             skip(RestorePlan.SkipReason.NON_UTF8_TARGET)
                             return@forEach
                         }
-                        val existed = target.existed || java.nio.file.Files.exists(path)
+                        val existed = target.existed || java.nio.file.Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)
                         createOperations.add(
                             RestorePlan.CreateOperation(
                                 relativePath = target.relativePath,
@@ -115,7 +118,7 @@ class RestorePlanBuilder(
                                 content = if (nonTextBytes != null) "" else entry.content,
                                 existed = existed,
                                 nonTextBytes = nonTextBytes,
-                                identical = nonTextBytes != null && existed && holdsBytes(path, nonTextBytes)
+                                identical = nonTextBytes != null && existed && !isLink && holdsBytes(path, nonTextBytes)
                             )
                         )
                     }
@@ -155,27 +158,32 @@ class RestorePlanBuilder(
     }
 
     /**
-     * Two entries that map to the same file only by letter case (`IMG.png` / `img.png`) are
-     * the same file on a case-insensitive file system: writing both would silently let the
-     * second replace the first. Every colliding op is dropped and skipped. Whether the file
-     * system folds case is probed on the op's own root, never assumed from the OS. Exact
-     * duplicates (same string) keep their create-then-overwrite behaviour.
+     * Two entries that map to the same file only by letter case (`IMG.png` / `img.png`), or on
+     * macOS only by Unicode normalization (`caf\u00e9` NFC / NFD), are the same file on that
+     * file system: writing both would silently let the second replace the first. Every colliding
+     * op is dropped and skipped. Whether the file system folds case or normalization is probed on
+     * the op's own root, never assumed from the OS. Exact duplicates (same string) keep their
+     * create-then-overwrite behaviour.
      */
     private fun removeCaseCollisions(
         creates: MutableList<RestorePlan.CreateOperation>,
         skipped: MutableList<RestorePlan.SkippedOperation>
     ) {
-        val groups = creates.groupBy { it.absolutePath.lowercase(java.util.Locale.ROOT) }
+        // Candidates: equal under the widest folding (NFC + lower case) yet spelled differently.
+        val groups = creates.groupBy { foldKey(it.absolutePath, nfc = true, lower = true) }
             .values.filter { group -> group.map { it.absolutePath }.distinct().size > 1 }
         if (groups.isEmpty()) return
-        val insensitive = HashMap<String, Boolean>()
+        val folding = HashMap<String, Pair<Boolean, Boolean>>()
         val colliding = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<RestorePlan.CreateOperation, Boolean>())
         groups.forEach { group ->
-            val hit = group.filter { op ->
-                insensitive.getOrPut(op.rootPath) { isCaseInsensitiveFs(java.nio.file.Path.of(op.rootPath)) }
-            }
-            // Distinct spellings only collide when every one of them is on a folding root.
-            if (hit.size == group.size) colliding.addAll(group)
+            // Each op is keyed by what ITS root folds; only spellings that really meet collide.
+            group.groupBy { op ->
+                val (lower, nfc) = folding.getOrPut(op.rootPath) {
+                    val root = java.nio.file.Path.of(op.rootPath)
+                    isCaseInsensitiveFs(root) to foldsNormalization(root)
+                }
+                foldKey(op.absolutePath, nfc = nfc, lower = lower)
+            }.values.filter { it.map { op -> op.absolutePath }.distinct().size > 1 }.forEach { colliding.addAll(it) }
         }
         if (colliding.isEmpty()) return
         // Skip rows keep payload order, so replay the original list order.
@@ -189,6 +197,35 @@ class RestorePlanBuilder(
             )
         }
         creates.removeAll { it in colliding }
+    }
+
+    private fun foldKey(path: String, nfc: Boolean, lower: Boolean): String {
+        var key = path
+        if (nfc) key = java.text.Normalizer.normalize(key, java.text.Normalizer.Form.NFC)
+        if (lower) key = key.lowercase(java.util.Locale.ROOT)
+        return key
+    }
+
+    /**
+     * Whether the file system holding [root] resolves an NFC and an NFD spelling of one name to
+     * the same file (APFS and HFS+ do). Probes with a real file; falls back to "the OS is macOS"
+     * only when the probe cannot be made.
+     */
+    private fun foldsNormalization(root: java.nio.file.Path): Boolean {
+        val id = "${ProcessHandle.current().pid()}-${System.nanoTime()}"
+        val nfc = java.text.Normalizer.normalize("clipcode-nfc-probe-\u00e9-$id", java.text.Normalizer.Form.NFC)
+        val nfd = java.text.Normalizer.normalize(nfc, java.text.Normalizer.Form.NFD)
+        val probe = root.resolve(nfc)
+        return try {
+            java.nio.file.Files.createFile(probe)
+            try {
+                java.nio.file.Files.exists(root.resolve(nfd))
+            } finally {
+                java.nio.file.Files.deleteIfExists(probe)
+            }
+        } catch (_: java.io.IOException) {
+            System.getProperty("os.name").orEmpty().lowercase(java.util.Locale.ROOT).contains("mac")
+        }
     }
 
     /**

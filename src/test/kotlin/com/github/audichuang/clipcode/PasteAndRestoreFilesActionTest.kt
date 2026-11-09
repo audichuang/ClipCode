@@ -249,7 +249,7 @@ class PasteAndRestoreFilesActionTest : BasePlatformTestCase() {
         assertContains(summary, "Corrupt non-text file: 1")
         assertContains(summary, "The target is a folder: 1")
         assertContains(summary, "A file is in the way of its parent folder: 1")
-        assertContains(summary, "Another entry maps to the same file (letter case): 1")
+        assertContains(summary, "Another entry writes the same file: 1")
         RestorePlan.SkipReason.values().forEach {
             assertFalse(skipDetailText(it).contains("_"), "raw enum name leaked for $it")
         }
