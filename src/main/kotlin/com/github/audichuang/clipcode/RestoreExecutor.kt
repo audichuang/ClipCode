@@ -22,7 +22,9 @@ class RestoreExecutor(
         val skippedExistingCount: Int,
         val deletedCount: Int,
         val errors: List<String>,
-        val cancelled: Boolean = false
+        val cancelled: Boolean = false,
+        /** Non-text targets that already held the decoded bytes: not written. */
+        val unchangedCount: Int = 0
     )
 
     /**
@@ -35,7 +37,7 @@ class RestoreExecutor(
         !ClipboardPathResolver.escapesRoots(plan.roots, absolutePath)
 
     fun collectExistingCreatePaths(plan: RestorePlan): List<String> =
-        plan.createOperations.filter { it.existed }.map { it.relativePath }
+        plan.createOperations.filter { it.existed && !it.identical }.map { it.relativePath }
 
     fun execute(
         plan: RestorePlan,
@@ -47,6 +49,7 @@ class RestoreExecutor(
         var overwrittenCount = 0
         var skippedExistingCount = 0
         var deletedCount = 0
+        var unchangedCount = 0
         val errors = mutableListOf<String>()
 
         val total = plan.createOperations.size + plan.deleteOperations.size
@@ -92,7 +95,14 @@ class RestoreExecutor(
                                                 cursor++
                                                 continue
                                             }
-                                            if (create != null) {
+                                            if (create?.nonTextBytes != null) {
+                                                when (writeNonText(create, create.nonTextBytes, overwriteExisting, skipExisting)) {
+                                                    NonTextOutcome.CREATED -> createdCount++
+                                                    NonTextOutcome.OVERWRITTEN -> overwrittenCount++
+                                                    NonTextOutcome.UNCHANGED -> unchangedCount++
+                                                    NonTextOutcome.SKIPPED_EXISTING -> skippedExistingCount++
+                                                }
+                                            } else if (create != null) {
                                                 val existingFile = findFile(create.absolutePath)
                                                 when {
                                                     existingFile != null && existingFile.isDirectory -> skippedExistingCount++
@@ -129,7 +139,7 @@ class RestoreExecutor(
                                         } catch (e: ProcessCanceledException) {
                                             throw e
                                         } catch (e: Exception) {
-                                            errors.add("${create?.relativePath ?: delete?.relativePath}: ${e.message}")
+                                            errors.add("${create?.relativePath ?: delete?.relativePath}: ${userErrorText(e)}")
                                         }
                                         cursor++
                                         if (System.nanoTime() - start >= 8_000_000) break
@@ -154,8 +164,45 @@ class RestoreExecutor(
             skippedExistingCount = skippedExistingCount,
             deletedCount = deletedCount,
             errors = errors,
-            cancelled = cancelled
+            cancelled = cancelled,
+            unchangedCount = unchangedCount
         )
+    }
+
+    private enum class NonTextOutcome { CREATED, OVERWRITTEN, UNCHANGED, SKIPPED_EXISTING }
+
+    /**
+     * Writes decoded non-text bytes. Never goes through a Document or the UTF-8 charset switch
+     * (there is no text to encode), and never applies the non-UTF-8 overwrite guard (the bytes
+     * are written as is). The target is re-read right before writing: the plan's "identical"
+     * verdict is from before the dialogs.
+     */
+    private fun writeNonText(
+        create: RestorePlan.CreateOperation,
+        bytes: ByteArray,
+        overwriteExisting: Boolean,
+        skipExisting: Boolean
+    ): NonTextOutcome {
+        val existing = findFile(create.absolutePath)
+        if (existing == null) {
+            val file = createFile(create.rootPath, create.relativePath)
+            file.setBinaryContent(bytes)
+            return NonTextOutcome.CREATED
+        }
+        if (existing.isDirectory) return NonTextOutcome.SKIPPED_EXISTING
+        if (existing.length == bytes.size.toLong() && existing.contentsToByteArray().contentEquals(bytes)) {
+            return NonTextOutcome.UNCHANGED
+        }
+        if (skipExisting || !overwriteExisting) return NonTextOutcome.SKIPPED_EXISTING
+        val before = existing.contentsToByteArray()
+        writeRaw(existing) { existing.setBinaryContent(bytes) }
+        com.intellij.openapi.command.undo.UndoManager.getInstance(project).undoableActionPerformed(
+            object : com.intellij.openapi.command.undo.BasicUndoableAction(existing) {
+                override fun undo() { writeRaw(existing) { existing.setBinaryContent(before) } }
+                override fun redo() { writeRaw(existing) { existing.setBinaryContent(bytes) } }
+            }
+        )
+        return NonTextOutcome.OVERWRITTEN
     }
 
     /**
@@ -250,5 +297,22 @@ class RestoreVcsIgnoreProvider : com.intellij.openapi.vcs.VcsFileListenerIgnored
 
     companion object {
         internal val PATHS = com.intellij.openapi.util.Key.create<Set<String>>("clipcode.restore.vcs.paths")
+    }
+}
+
+/**
+ * User-facing text for a write failure, in place of the raw OS message (which reads like
+ * "Permission denied (os error 13)" or leaks absolute paths).
+ */
+internal fun userErrorText(e: Throwable): String {
+    val message = e.message.orEmpty()
+    return when {
+        e is java.nio.file.AccessDeniedException || message.contains("Permission denied", ignoreCase = true) ->
+            "Folder is not writable"
+        e is java.nio.file.NoSuchFileException -> "File or folder not found"
+        e is java.nio.file.FileAlreadyExistsException -> "A file or folder already exists at that path"
+        e is java.nio.file.NotDirectoryException || message.contains("Not a directory", ignoreCase = true) ->
+            "A file is in the way of its parent folder"
+        else -> "Could not apply the change"
     }
 }

@@ -51,34 +51,71 @@ class RestorePlanBuilder(
                         )
                     }
                 }
-            } else if (isPlaceholderBody(entry.content)) {
-                skippedOperations.add(
-                    RestorePlan.SkippedOperation(
-                        rawPath = entry.path,
-                        relativePath = null,
-                        reason = RestorePlan.SkipReason.PLACEHOLDER_BODY
-                    )
-                )
             } else {
+                // Before the generic placeholder guard: a non-text placeholder starts like any
+                // other placeholder, which is what makes an older reader skip it. A text file
+                // whose first line merely looks like one arrives with escapedPlaceholder set
+                // and is restored as the text it is.
+                val parsed = if (entry.escapedPlaceholder) null else NonText.parseBody(entry.content)
+                if (parsed is NonText.DecodeResult.Corrupt) {
+                    skippedOperations.add(
+                        RestorePlan.SkippedOperation(
+                            rawPath = entry.path,
+                            relativePath = null,
+                            reason = RestorePlan.SkipReason.CORRUPT_NON_TEXT
+                        )
+                    )
+                    return@forEach
+                }
+                val nonTextBytes = (parsed as? NonText.DecodeResult.Ok)?.bytes
+                if (nonTextBytes == null && !entry.escapedPlaceholder && isPlaceholderBody(entry.content)) {
+                    skippedOperations.add(
+                        RestorePlan.SkippedOperation(
+                            rawPath = entry.path,
+                            relativePath = null,
+                            reason = RestorePlan.SkipReason.PLACEHOLDER_BODY
+                        )
+                    )
+                    return@forEach
+                }
                 when (val resolution = pathResolver.resolveWriteTarget(entry.path)) {
                     is ClipboardPathResolver.WriteResolution.Resolved -> {
-                        if (Utf8Text.mustNotOverwrite(resolution.target.absolutePath)) {
+                        val target = resolution.target
+                        val path = java.nio.file.Path.of(target.absolutePath)
+                        fun skip(reason: RestorePlan.SkipReason) {
                             skippedOperations.add(
                                 RestorePlan.SkippedOperation(
                                     rawPath = entry.path,
-                                    relativePath = resolution.target.relativePath,
-                                    reason = RestorePlan.SkipReason.NON_UTF8_TARGET
+                                    relativePath = target.relativePath,
+                                    reason = reason
                                 )
                             )
+                        }
+                        // A directory (or another non-file) at the target skips this row only.
+                        if (java.nio.file.Files.exists(path) && !java.nio.file.Files.isRegularFile(path)) {
+                            skip(RestorePlan.SkipReason.TARGET_NOT_FILE)
                             return@forEach
                         }
+                        // A file where a parent folder must be: nothing can be created below it.
+                        if (parentIsFile(path)) {
+                            skip(RestorePlan.SkipReason.PARENT_NOT_FOLDER)
+                            return@forEach
+                        }
+                        // Raw bytes are written as is: there is no encoding to preserve.
+                        if (nonTextBytes == null && Utf8Text.mustNotOverwrite(target.absolutePath)) {
+                            skip(RestorePlan.SkipReason.NON_UTF8_TARGET)
+                            return@forEach
+                        }
+                        val existed = target.existed || java.nio.file.Files.exists(path)
                         createOperations.add(
                             RestorePlan.CreateOperation(
-                                relativePath = resolution.target.relativePath,
-                                absolutePath = resolution.target.absolutePath,
-                                rootPath = resolution.target.rootPath,
-                                content = entry.content,
-                                existed = resolution.target.existed
+                                relativePath = target.relativePath,
+                                absolutePath = target.absolutePath,
+                                rootPath = target.rootPath,
+                                content = if (nonTextBytes != null) "" else entry.content,
+                                existed = existed,
+                                nonTextBytes = nonTextBytes,
+                                identical = nonTextBytes != null && existed && holdsBytes(path, nonTextBytes)
                             )
                         )
                     }
@@ -107,12 +144,116 @@ class RestorePlanBuilder(
             }
         }
 
+        removeCaseCollisions(createOperations, skippedOperations)
+
         return RestorePlan(
             createOperations = createOperations,
             deleteOperations = deleteOperations,
             skippedOperations = skippedOperations,
             roots = pathResolver.roots()
         )
+    }
+
+    /**
+     * Two entries that map to the same file only by letter case (`IMG.png` / `img.png`) are
+     * the same file on a case-insensitive file system: writing both would silently let the
+     * second replace the first. Every colliding op is dropped and skipped. Whether the file
+     * system folds case is probed on the op's own root, never assumed from the OS. Exact
+     * duplicates (same string) keep their create-then-overwrite behaviour.
+     */
+    private fun removeCaseCollisions(
+        creates: MutableList<RestorePlan.CreateOperation>,
+        skipped: MutableList<RestorePlan.SkippedOperation>
+    ) {
+        val groups = creates.groupBy { it.absolutePath.lowercase(java.util.Locale.ROOT) }
+            .values.filter { group -> group.map { it.absolutePath }.distinct().size > 1 }
+        if (groups.isEmpty()) return
+        val insensitive = HashMap<String, Boolean>()
+        val colliding = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<RestorePlan.CreateOperation, Boolean>())
+        groups.forEach { group ->
+            val hit = group.filter { op ->
+                insensitive.getOrPut(op.rootPath) { isCaseInsensitiveFs(java.nio.file.Path.of(op.rootPath)) }
+            }
+            // Distinct spellings only collide when every one of them is on a folding root.
+            if (hit.size == group.size) colliding.addAll(group)
+        }
+        if (colliding.isEmpty()) return
+        // Skip rows keep payload order, so replay the original list order.
+        creates.filter { it in colliding }.forEach {
+            skipped.add(
+                RestorePlan.SkippedOperation(
+                    rawPath = it.relativePath,
+                    relativePath = it.relativePath,
+                    reason = RestorePlan.SkipReason.TARGET_COLLISION
+                )
+            )
+        }
+        creates.removeAll { it in colliding }
+    }
+
+    /**
+     * Whether the file system holding [root] treats names that differ only by ASCII letter case
+     * as one file. Looks at an existing entry first; otherwise makes (and removes) a probe file.
+     * Falls back to the platform default only when neither is possible.
+     */
+    private fun isCaseInsensitiveFs(root: java.nio.file.Path): Boolean {
+        fun swap(name: String): String? {
+            if (name.none { it in 'a'..'z' || it in 'A'..'Z' }) return null
+            return name.map { c ->
+                when (c) {
+                    in 'a'..'z' -> c.uppercaseChar()
+                    in 'A'..'Z' -> c.lowercaseChar()
+                    else -> c
+                }
+            }.joinToString("")
+        }
+        fun sameFile(a: java.nio.file.Path, b: java.nio.file.Path): Boolean? = try {
+            if (!java.nio.file.Files.exists(b, java.nio.file.LinkOption.NOFOLLOW_LINKS)) false
+            else java.nio.file.Files.isSameFile(a, b)
+        } catch (_: java.io.IOException) {
+            null
+        }
+        try {
+            java.nio.file.Files.newDirectoryStream(root).use { entries ->
+                for (entry in entries) {
+                    val swapped = swap(entry.fileName.toString()) ?: continue
+                    sameFile(entry, root.resolve(swapped))?.let { return it }
+                }
+            }
+            val id = "${ProcessHandle.current().pid()}-${System.nanoTime()}"
+            val probe = root.resolve(".clipcode-case-probe-$id")
+            java.nio.file.Files.createFile(probe)
+            try {
+                return sameFile(probe, root.resolve(".CLIPCODE-CASE-PROBE-$id")) ?: platformFoldsCase()
+            } finally {
+                java.nio.file.Files.deleteIfExists(probe)
+            }
+        } catch (_: java.io.IOException) {
+            return platformFoldsCase()
+        }
+    }
+
+    private fun platformFoldsCase(): Boolean {
+        val os = System.getProperty("os.name").orEmpty().lowercase(java.util.Locale.ROOT)
+        return os.contains("win") || os.contains("mac")
+    }
+
+    /** Nearest existing ancestor is not a directory: a file lies where a parent folder is needed. */
+    private fun parentIsFile(path: java.nio.file.Path): Boolean {
+        var ancestor = path.parent
+        while (ancestor != null) {
+            if (java.nio.file.Files.exists(ancestor)) return !java.nio.file.Files.isDirectory(ancestor)
+            ancestor = ancestor.parent
+        }
+        return false
+    }
+
+    private fun holdsBytes(path: java.nio.file.Path, bytes: ByteArray): Boolean = try {
+        java.nio.file.Files.isRegularFile(path) &&
+            java.nio.file.Files.size(path) == bytes.size.toLong() &&
+            java.nio.file.Files.readAllBytes(path).contentEquals(bytes)
+    } catch (_: java.io.IOException) {
+        false
     }
 
     /**
@@ -159,8 +300,13 @@ data class RestorePlan(
         val relativePath: String,
         val absolutePath: String,
         val rootPath: String,
+        /** Empty for a non-text op: the Base64 never travels in here. */
         val content: String,
-        val existed: Boolean
+        val existed: Boolean,
+        /** The decoded bytes of a non-text file, written as is; null for a text op. */
+        val nonTextBytes: ByteArray? = null,
+        /** Non-text only: the target already holds exactly these bytes (needs no write or permission). */
+        val identical: Boolean = false
     )
 
     data class DeleteOperation(
@@ -185,6 +331,18 @@ data class RestorePlan(
          * The file on disk is not UTF-8. Writing UTF-8 over it would change its encoding
          * silently — the wire carries none, so we cannot put back what was there.
          */
-        NON_UTF8_TARGET
+        NON_UTF8_TARGET,
+
+        /** A non-text entry whose Base64 does not decode, or whose size or SHA-256 does not match. */
+        CORRUPT_NON_TEXT,
+
+        /** The target path is a folder (or another non-regular file). */
+        TARGET_NOT_FILE,
+
+        /** An existing file lies where a parent folder is needed. */
+        PARENT_NOT_FOLDER,
+
+        /** Two entries map to the same file on a case-insensitive file system. */
+        TARGET_COLLISION
     }
 }

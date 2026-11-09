@@ -272,13 +272,14 @@ class PasteAndRestoreFilesAction : AnAction() {
 
     private fun buildConfirmationMessage(plan: RestorePlan): String {
         val sections = mutableListOf<String>()
-        val (willOverwrite, willCreate) = plan.createOperations.partition { it.existed }
+        val (existing, willCreate) = plan.createOperations.partition { it.existed }
+        val (unchanged, willOverwrite) = existing.partition { it.identical }
 
         if (willCreate.isNotEmpty()) {
             sections.add(
                 "Files to CREATE (new) (${willCreate.size}):\n" +
                     previewPathsWithTargets(
-                        willCreate.map { it.relativePath to it.absolutePath },
+                        willCreate.map { previewLabel(it) to it.absolutePath },
                         "+"
                     )
             )
@@ -288,8 +289,18 @@ class PasteAndRestoreFilesAction : AnAction() {
             sections.add(
                 "Files to OVERWRITE (existing) (${willOverwrite.size}):\n" +
                     previewPathsWithTargets(
-                        willOverwrite.map { it.relativePath to it.absolutePath },
+                        willOverwrite.map { previewLabel(it) to it.absolutePath },
                         "~"
+                    )
+            )
+        }
+
+        if (unchanged.isNotEmpty()) {
+            sections.add(
+                "UNCHANGED (identical) (${unchanged.size}):\n" +
+                    previewPathsWithTargets(
+                        unchanged.map { previewLabel(it) to it.absolutePath },
+                        "="
                     )
             )
         }
@@ -337,6 +348,15 @@ class PasteAndRestoreFilesAction : AnAction() {
         }
         grouped[RestorePlan.SkipReason.NON_UTF8_TARGET]?.let { items ->
             summaryLines.add("  - the file on disk is not UTF-8: ${items.size}")
+        }
+        // The new reasons share their wording with the result notification (skipReasonText).
+        listOf(
+            RestorePlan.SkipReason.CORRUPT_NON_TEXT,
+            RestorePlan.SkipReason.TARGET_NOT_FILE,
+            RestorePlan.SkipReason.PARENT_NOT_FOLDER,
+            RestorePlan.SkipReason.TARGET_COLLISION
+        ).forEach { reason ->
+            grouped[reason]?.let { items -> summaryLines.add("  - ${skipReasonText(reason)}: ${items.size}") }
         }
 
         return summaryLines.joinToString("\n")
@@ -400,6 +420,9 @@ class PasteAndRestoreFilesAction : AnAction() {
         if (executionResult.skippedExistingCount > 0) {
             resultParts.add("Skipped ${executionResult.skippedExistingCount} existing file(s)")
         }
+        if (executionResult.unchangedCount > 0) {
+            resultParts.add("Unchanged ${executionResult.unchangedCount} file(s)")
+        }
         if (executionResult.deletedCount > 0) {
             resultParts.add("Deleted ${executionResult.deletedCount} file(s)")
         }
@@ -412,25 +435,15 @@ class PasteAndRestoreFilesAction : AnAction() {
             )
         }
 
+        // A row that failed while writing is skipped too, not only reported in the body.
+        val skippedTotal = skippedOperations.size + executionResult.errors.size
         if (skippedOperations.isNotEmpty()) {
             val warningDetails = skippedOperations.take(5).joinToString("<br>") { skipped ->
-                val path = skipped.relativePath ?: skipped.rawPath
-                when (skipped.reason) {
-                    RestorePlan.SkipReason.ALREADY_ABSENT ->
-                        "$path: already absent in target project"
-                    RestorePlan.SkipReason.UNRESOLVED_PATH ->
-                        "$path: path unresolved"
-                    RestorePlan.SkipReason.AMBIGUOUS_TARGET ->
-                        "$path: ambiguous target, skipped for safety"
-                    RestorePlan.SkipReason.PLACEHOLDER_BODY ->
-                        "$path: the clipboard holds only a placeholder, not the file's content"
-                    RestorePlan.SkipReason.NON_UTF8_TARGET ->
-                        "$path: the file on disk is not UTF-8; writing would change its encoding"
-                }
+                "${skipped.relativePath ?: skipped.rawPath}: ${skipDetailText(skipped.reason)}"
             }
             val more = if (skippedOperations.size > 5) "<br>..." else ""
             CopyFileContentAction.showNotification(
-                "<html><b>Skipped ${skippedOperations.size} operation(s):</b><br>$warningDetails$more</html>",
+                "<html><b>Skipped $skippedTotal operation(s):</b><br>$warningDetails$more</html>",
                 NotificationType.WARNING,
                 project
             )
@@ -440,7 +453,7 @@ class PasteAndRestoreFilesAction : AnAction() {
             val errorDetails = executionResult.errors.take(5).joinToString("<br>")
             val more = if (executionResult.errors.size > 5) "<br>..." else ""
             CopyFileContentAction.showNotification(
-                "<html><b>Failed ${executionResult.errors.size} operation(s):</b><br>$errorDetails$more</html>",
+                "<html><b>Skipped $skippedTotal operation(s), ${executionResult.errors.size} failed while writing:</b><br>$errorDetails$more</html>",
                 NotificationType.ERROR,
                 project
             )
@@ -457,4 +470,36 @@ class PasteAndRestoreFilesAction : AnAction() {
         SKIP_EXISTING,
         CANCEL
     }
+}
+
+/** "path  (non-text file · 4.0 KB)" for a non-text row, the plain path otherwise. Never any Base64. */
+internal fun previewLabel(op: RestorePlan.CreateOperation): String {
+    val bytes = op.nonTextBytes ?: return op.relativePath
+    return "${op.relativePath}  (non-text file \u00B7 ${formatByteSize(bytes.size.toLong())})"
+}
+
+/** 83 B, 4.0 KB, 2.1 MB. */
+internal fun formatByteSize(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024L * 1024 -> String.format(java.util.Locale.ROOT, "%.1f KB", bytes / 1024.0)
+    else -> String.format(java.util.Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024.0))
+}
+
+/** Short user text for the skipped summary of the new reasons. */
+internal fun skipReasonText(reason: RestorePlan.SkipReason): String = when (reason) {
+    RestorePlan.SkipReason.CORRUPT_NON_TEXT -> "Corrupt non-text file"
+    RestorePlan.SkipReason.TARGET_NOT_FILE -> "The target is a folder"
+    RestorePlan.SkipReason.PARENT_NOT_FOLDER -> "A file is in the way of its parent folder"
+    RestorePlan.SkipReason.TARGET_COLLISION -> "Another entry maps to the same file (letter case)"
+    else -> reason.name
+}
+
+/** Per-row text of the result notification. */
+internal fun skipDetailText(reason: RestorePlan.SkipReason): String = when (reason) {
+    RestorePlan.SkipReason.ALREADY_ABSENT -> "already absent in target project"
+    RestorePlan.SkipReason.UNRESOLVED_PATH -> "path unresolved"
+    RestorePlan.SkipReason.AMBIGUOUS_TARGET -> "ambiguous target, skipped for safety"
+    RestorePlan.SkipReason.PLACEHOLDER_BODY -> "the clipboard holds only a placeholder, not the file's content"
+    RestorePlan.SkipReason.NON_UTF8_TARGET -> "the file on disk is not UTF-8; writing would change its encoding"
+    else -> skipReasonText(reason)
 }
