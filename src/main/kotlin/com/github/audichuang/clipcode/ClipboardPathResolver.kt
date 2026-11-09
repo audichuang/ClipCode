@@ -59,13 +59,28 @@ class ClipboardPathResolver private constructor(
          * verdict is a verdict on the layout that existed THEN; the user has clicked through
          * modal dialogs since, and a directory can have become a link in between.
          */
-        fun escapesRoots(rootPaths: List<String>, absolutePath: String): Boolean {
-            val real = containmentTarget(Path.of(absolutePath)) ?: return true
-            return rootPaths.none { rootPath ->
-                val root = runCatching { Path.of(rootPath) }.getOrNull() ?: return@none false
-                val rootReal = containmentTarget(root) ?: return@none false
-                real == rootReal || real.startsWith(rootReal)
-            }
+        fun escapesRoots(rootPaths: List<String>, absolutePath: String): Boolean =
+            escapesRealRoots(realRootsOf(rootPaths.mapNotNull { runCatching { Path.of(it) }.getOrNull() }), absolutePath)
+
+        /** The real location of every root that can be established; one that cannot is no root to land in. */
+        private fun realRootsOf(roots: List<Path>): List<Path> = roots.mapNotNull { containmentTarget(it) }
+
+        private fun escapesRealRoots(realRoots: List<Path>, absolutePath: String): Boolean {
+            val path = runCatching { Path.of(absolutePath) }.getOrNull() ?: return true
+            val real = containmentTarget(path) ?: return true
+            return realRoots.none { rootReal -> real == rootReal || real.startsWith(rootReal) }
+        }
+
+        /**
+         * [path] with `\` read as a separator when the path has a drive letter (no POSIX absolute path starts
+         * with one). Elsewhere `\` is a character of a name and is kept, so the portability rule can still
+         * refuse it. A native Windows path (`C:\work\repo\src\a.txt`, what `File.absolutePath` gives) is
+         * then judged as the header carries it, `src/a.txt`, instead of as one name holding `\`. Decided by
+         * the path's shape, never by the host OS, so a string gives the same answer on every platform.
+         */
+        internal fun slashSeparated(path: String): String {
+            val slashed = path.replace('\\', '/')
+            return if (slashed.matches(WINDOWS_STYLE_PATH)) slashed else path
         }
 
         /**
@@ -337,18 +352,51 @@ class ClipboardPathResolver private constructor(
      * `/`, trims a trailing space and falls back to the absolute path on a control character, so the
      * very names the check must catch never reach its output.
      */
-    fun rawRelativePath(absolutePath: String): String? {
-        val absoluteKey = pathLookupKey(absolutePath)
+    fun rawRelativePath(absolutePath: String): String? = rawUnderRoot(absolutePath)?.second
+
+    /**
+     * The un-sanitised counterpart of the header path [toClipboardPath] gives [absolutePath]: the raw path
+     * under its root ([rawRelativePath]) behind the root's label when the root is an external one with an
+     * unambiguous label, since that label is written into the header too. Null when the header is the
+     * absolute path instead: under no root, or under an external root without a usable label. This is what
+     * the portability rule ([PortableName]) checks, so a newline in a label cannot forge a header line.
+     */
+    fun rawClipboardPath(absolutePath: String): String? {
+        val (root, raw) = rawUnderRoot(absolutePath) ?: return null
+        return when {
+            root == primaryRoot -> raw
+            root.clipboardLabel == null || root.hasAmbiguousLabel -> null
+            else -> root.toClipboardPath(raw)
+        }
+    }
+
+    private fun rawUnderRoot(absolutePath: String): Pair<RootEntry, String>? {
+        val path = slashSeparated(absolutePath)
+        val absoluteKey = pathLookupKey(path)
         val candidates = listOfNotNull(primaryRoot) + orderedRoots.filter { it != primaryRoot }
         for (root in candidates) {
             val normalizedRoot = normalizePathString(root.path.toString())
             val rootKey = pathLookupKey(normalizedRoot)
-            if (absoluteKey == rootKey) return ""
-            if (absoluteKey.startsWith("$rootKey/") && absolutePath.length > normalizedRoot.length) {
-                return absolutePath.substring(normalizedRoot.length + 1)
+            if (absoluteKey == rootKey) return root to ""
+            if (absoluteKey.startsWith("$rootKey/") && path.length > normalizedRoot.length) {
+                return root to path.substring(normalizedRoot.length + 1)
             }
         }
         return null
+    }
+
+    private val realRoots: List<Path> by lazy { realRootsOf(orderedRoots.map { it.path }) }
+
+    /**
+     * X7: reading [absolutePath] would carry content from outside every copy root. Asked of a symlink (its
+     * target), and of anything spelled under a root, which may still be reached through a symlinked folder
+     * on the way (`vendor -> ~/private`, then `vendor/secrets.env`): the real path decides, every link on
+     * it resolved. A regular file spelled outside every root (an open tab elsewhere) is not asked: it keeps
+     * today's absolute-path header. The roots' real paths are resolved once per resolver.
+     */
+    fun readsOutsideEveryRoot(absolutePath: String, isSymlink: Boolean): Boolean {
+        if (!isSymlink && rawUnderRoot(absolutePath) == null) return false
+        return escapesRealRoots(realRoots, absolutePath)
     }
 
     /** Containment is enforced once, on the way out, so no branch can bypass it. */

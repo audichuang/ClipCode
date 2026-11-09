@@ -230,11 +230,16 @@ class CopyGitFilesContentActionTest : BasePlatformTestCase() {
 
     fun testNonTextExcludeChoiceOfALoneNonTextFileCopiesNothing() {
         Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection("untouched"), null)
+        val messages = collectNotifications()
         val chooser = RecordingChooser(NonTextChoice.EXCLUDE)
         copyWithChooser(chooser, listOf(nonTextVfEntry()))
+        // The Exclude rebuild is a second Task.Backgroundable; flush the EDT so its onSuccess has run.
+        com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
         assertEquals(1, chooser.summaries.size)
         // X3: the lone non-text file is skipped under Exclude, so nothing is copied and the clipboard stays.
         assertEquals("untouched", clipboardText())
+        val notice = messages.singleOrNull { it.contains("<b>Nothing to copy</b>") } ?: error("$messages")
+        assertContains(notice, "img/logo.png")
     }
 
     fun testNonTextCancelChoiceCopiesNothing() {
@@ -350,6 +355,19 @@ class CopyGitFilesContentActionTest : BasePlatformTestCase() {
 
             override fun rebuildTree() = Unit
         }
+    }
+
+    private fun collectNotifications(): MutableList<String> {
+        val messages: MutableList<String> = java.util.concurrent.CopyOnWriteArrayList()
+        project.messageBus.connect(testRootDisposable).subscribe(
+            com.intellij.notification.Notifications.TOPIC,
+            object : com.intellij.notification.Notifications {
+                override fun notify(notification: com.intellij.notification.Notification) {
+                    messages.add(notification.content)
+                }
+            }
+        )
+        return messages
     }
 
     private fun clipboardText(): String =

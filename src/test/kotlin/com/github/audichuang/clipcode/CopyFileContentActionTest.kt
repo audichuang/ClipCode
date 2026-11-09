@@ -1190,6 +1190,54 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         }
     }
 
+    /**
+     * X7 / R5: a file or folder reached through a symlinked folder that points outside every copy root
+     * (`vendor -> ~/private`) is outside the roots too, although neither is a link itself. Selected
+     * directly (Project view, open tabs) it used to be read and copied as `vendor/secrets.env`. The file is
+     * named as Unreadable, the folder as a Symlinked folder, in both modes; the rest is copied.
+     */
+    @Test
+    fun testItemReachedThroughALinkedFolderOutsideEveryRootIsNotRead() {
+        val outside = Files.createTempDirectory("clipcode-outside-parent")
+        val root = projectDiskDir()
+        try {
+            val private = outside.resolve("private").createDirectories()
+            Files.writeString(private.resolve("secrets.env"), "VENDOR-SECRET")
+            Files.writeString(private.resolve("sub").createDirectories().resolve("deep.txt"), "DEEP-SECRET")
+            Files.writeString(root.resolve("ok.txt"), "FINE-CONTENT")
+            val linked = runCatching { Files.createSymbolicLink(root.resolve("vendor"), private) }.isSuccess
+            if (posix) assertTrue(linked, "test setup: the symlink must exist on POSIX")
+            assumeTrue("Windows refuses to create a symlink without the privilege", linked)
+            val dir = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root) ?: error("no vfs dir")
+            VfsUtil.markDirtyAndRefresh(false, true, true, dir)
+            val secret = dir.findFileByRelativePath("vendor/secrets.env") ?: error("no vfs for vendor/secrets.env")
+            val sub = dir.findFileByRelativePath("vendor/sub") ?: error("no vfs for vendor/sub")
+            val ok = dir.findChild("ok.txt") ?: error("no vfs for ok.txt")
+            CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
+
+            for (choice in listOf(NonTextChoice.INCLUDE, NonTextChoice.EXCLUDE)) {
+                val messages = collectNotifications()
+                CopyFileContentAction(RecordingChooser(choice)).performCopyFilesContent(project, arrayOf(secret, sub, ok))
+                com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+                val text = clipboardText()
+                assertContains(text, "FINE-CONTENT")
+                assertFalse(text.contains("VENDOR-SECRET"), "$choice: $text")
+                assertFalse(text.contains("DEEP-SECRET"), "$choice: $text")
+                assertFalse(text.contains("vendor/"), "$choice: $text")
+                val notice = messages.firstOrNull { it.contains("files copied") || it.contains("file copied") }
+                    ?: error("$choice: $messages")
+                // Long names are shortened in the middle; the ends stay.
+                assertContains(notice, "1 skipped: not UTF-8 text or unreadable.")
+                assertContains(notice, "/secrets.env")
+                assertContains(notice, "Symlinked folder: 1")
+                assertContains(notice, "/sub")
+            }
+        } finally {
+            root.toFile().deleteRecursively()
+            outside.toFile().deleteRecursively()
+        }
+    }
+
     // === D2: names that are not portable and symlinked folders are skipped and named ===
 
     private val posix = !System.getProperty("os.name").startsWith("Windows")
@@ -1379,13 +1427,24 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
             assertEquals(2, dir.children.size, "test setup: VFS must list the newline name")
             CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
             for (choice in listOf(NonTextChoice.INCLUDE, NonTextChoice.EXCLUDE)) {
+                // A sentinel per copy: X3 leaves the clipboard alone when everything is skipped, so a stale
+                // clipboard from the previous pass would otherwise be what the Exclude half reads.
+                Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection("sentinel-$choice"), null)
                 val messages = collectNotifications()
                 CopyFileContentAction(RecordingChooser(choice)).performCopyFilesContent(project, arrayOf(dir))
+                com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
                 val text = clipboardText()
                 assertFalse(text.contains("[DELETED]"), "$choice: $text")
                 assertFalse(text.contains("victim"), "$choice: $text")
                 val notice = messages.firstOrNull { it.contains("Name not portable: 1") } ?: error("$choice: $messages")
                 assertContains(notice, "a\\x0afile: [DELETED] victim.txt")
+                if (choice == NonTextChoice.INCLUDE) {
+                    assertContains(text, "base64 follows")
+                } else {
+                    // Exclude: img.png is left out and the newline name is skipped, so nothing is copied.
+                    assertEquals("sentinel-$choice", text)
+                    assertContains(notice, "<b>Nothing to copy</b>")
+                }
             }
         } finally {
             root.toFile().deleteRecursively()

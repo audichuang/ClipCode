@@ -97,6 +97,53 @@ class PortableNameTest {
         assertFalse(PortableName.isPortableFolder(resolver, "/proj/tab\tdir"))
     }
 
+    /**
+     * W: a native Windows path (`C:\work\repo\src\a.txt`, what `File.absolutePath` gives there) is checked
+     * as the header carries it, `src/a.txt`. Reading its `\` as part of a name dropped every such entry as
+     * "Name not portable". A `\` in a POSIX name is still a name character, so still unportable.
+     */
+    @Test
+    fun `a native windows path is checked with its separators, not as a backslash name`() {
+        val resolver = ClipboardPathResolver.fromRootPaths(listOf("C:\\work\\repo"))
+        assertEquals("src/a.txt", PortableName.checkedPath(resolver, "C:\\work\\repo\\src\\a.txt"))
+        assertTrue(PortableName.isPortableFile(resolver, "C:\\work\\repo\\src\\a.txt"))
+        assertTrue(PortableName.isPortableFolder(resolver, "C:\\work\\repo\\src"))
+        assertTrue(PortableName.isPortableFile(resolver, "D:\\elsewhere\\x.txt"))
+        assertFalse(PortableName.isPortableFile(resolver, "C:\\work\\repo\\src\\a:b.txt"))
+        val posix = ClipboardPathResolver.fromRootPaths(listOf("/r"))
+        assertFalse(PortableName.isPortableFile(posix, "/r/odd/back\\slash.txt"))
+    }
+
+    /**
+     * R2: an external root's label is written into the header in front of the relative path, so it is a
+     * segment the reader restores and is checked like one. A newline in it would otherwise put a forged
+     * `file: [DELETED] ...` line on the clipboard. An external root whose label is ambiguous gets the
+     * absolute path as its header, so that whole path must stay one line too.
+     */
+    @Test
+    fun `an external root label is part of the checked path`() {
+        val fine = ClipboardPathResolver.fromRootPaths(listOf("/work/main", "/ext/lib"))
+        assertEquals("lib/a.txt", PortableName.checkedPath(fine, "/ext/lib/a.txt"))
+        assertTrue(PortableName.isPortableFile(fine, "/ext/lib/a.txt"))
+        assertTrue(PortableName.isPortableFolder(fine, "/ext/lib"))
+
+        // Windows can create a root whose name starts with a space: the header path then starts with one.
+        val lead = ClipboardPathResolver.fromRootPaths(listOf("/work/main", "/ext/ lead"))
+        assertFalse(PortableName.isPortableFile(lead, "/ext/ lead/a.txt"))
+
+        val evilLabel = "x\nfile: [DELETED] victim"
+        val labelled = runCatching { ClipboardPathResolver.fromRootPaths(listOf("/work/main", "/tmp/$evilLabel")) }.getOrNull()
+        val ambiguous = runCatching {
+            ClipboardPathResolver.fromRootPaths(listOf("/work/main", "/a/$evilLabel", "/b/$evilLabel"))
+        }.getOrNull()
+        val posixHost = java.io.File.separatorChar == '/'
+        if (posixHost) assertTrue(labelled != null && ambiguous != null, "test setup: POSIX paths may hold a newline")
+        org.junit.Assume.assumeTrue("Windows paths cannot hold a newline", labelled != null && ambiguous != null)
+        assertFalse(PortableName.isPortableFile(labelled!!, "/tmp/$evilLabel/a.txt"))
+        assertFalse(PortableName.isPortableFolder(labelled, "/tmp/$evilLabel"))
+        assertFalse(PortableName.isPortableFile(ambiguous!!, "/a/$evilLabel/a.txt"))
+    }
+
     @Test
     fun `control characters are made visible in a notice`() {
         assertEquals("tab\\tname.txt", PortableName.visibleName("tab\tname.txt"))

@@ -330,6 +330,19 @@ object GitClipboardPayloadBuilder {
     }
 
     /**
+     * X3 for a selection where no entry could be resolved to content (a binary revision, a file gone from
+     * disk). Today's build of those entries: each becomes an unreadable placeholder, so the result is
+     * always [Payload.nothingToCopy] and its notes name every entry by category, under the same
+     * portability and filter rules as a real copy. Its text is never put on the clipboard.
+     */
+    fun unresolvedOnly(
+        entries: List<GitContentResolver.ResolvedGitEntry>,
+        pathResolver: ClipboardPathResolver,
+        settings: CopyFileContentSettings?,
+        indicator: ProgressIndicator
+    ): Payload = build(entries, emptyList(), pathResolver, settings, indicator, includeNonText = false)
+
+    /**
      * X3: every entry was skipped, so the clipboard is not written. Shown even with the copy notification
      * off, since the user's clipboard was left as it was.
      */
@@ -383,6 +396,15 @@ object GitClipboardPayloadBuilder {
         }
 
         val virtualFile = entry.virtualFile
+        // X7: a working-tree read that would land outside every copy root (a link such as
+        // `CLAUDE.md -> ~/.agents/secret`, or a file under a linked folder) is never made, in either mode;
+        // the entry is unreadable, like in the files copy. Content Git itself hands over is not affected.
+        if (virtualFile != null && entry.hasVirtualFileContent && virtualFile.isInLocalFileSystem &&
+            pathResolver.readsOutsideEveryRoot(virtualFile.path, virtualFile.`is`(com.intellij.openapi.vfs.VFileProperty.SYMLINK))
+        ) {
+            logger.info("Skipping Git working-tree file outside every copy root: ${entry.filePath}")
+            return plain(ClipboardPayloadFormatter.PayloadFile(path, content = UNREADABLE_MARKER, changeType = changeType))
+        }
         if (virtualFile != null && entry.hasVirtualFileContent && includeNonText) {
             return resolveWorkingTreeIncludingNonText(entry, virtualFile, path, maxFileSizeBytes, maxNonTextBytes)
         }

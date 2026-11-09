@@ -181,7 +181,7 @@ class ClipCodePrPanel(
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Copying ClipCode PR diff…", true) {
             private var includeBuild: GitClipboardPayloadBuilder.Payload? = null
             private var rebuildEntries: Pair<List<GitContentResolver.ResolvedGitEntry>, List<GitContentResolver.ResolvedGitEntry>>? = null
-            private var noChangesToCopy = false
+            private var nothingResolved: GitClipboardPayloadBuilder.Payload? = null
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
@@ -199,7 +199,8 @@ class ClipCodePrPanel(
                         entries.filter { it.changeType == ChangeTypeLabel.DELETED && !it.hasContent }
                 }
                 if (content.isEmpty() && deleted.isEmpty()) {
-                    noChangesToCopy = true
+                    // X3: nothing could be read (a binary revision, say); named by category, clipboard untouched.
+                    nothingResolved = GitClipboardPayloadBuilder.unresolvedOnly(entries, pathResolver, settings, indicator)
                     return
                 }
                 indicator.checkCanceled()
@@ -222,8 +223,8 @@ class ClipCodePrPanel(
                 if (project.isDisposed) return
                 updateCopyEnabled()
 
-                if (noChangesToCopy) {
-                    CopyFileContentAction.showNotification("No changes to copy.", NotificationType.WARNING, project)
+                nothingResolved?.let {
+                    GitClipboardPayloadBuilder.showNothingToCopy(project, it)
                     return
                 }
 
