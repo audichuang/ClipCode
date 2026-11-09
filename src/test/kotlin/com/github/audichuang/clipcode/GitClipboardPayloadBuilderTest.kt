@@ -347,6 +347,35 @@ class GitClipboardPayloadBuilderTest : BasePlatformTestCase() {
         assertTrue(payload.summary.contains("File limit 1 reached."), payload.summary)
     }
 
+    /** D1: counting stops at 1000 left-out files; the 1001st marks the number as "1000+". */
+    fun testLimitLeftOutCountIsCappedAt1000Plus() {
+        val first = textEntry("cap/a0.kt", "val a = 0")
+        val rest = (1..1001).map { textEntry("cap/a$it.kt", "val a = $it") }
+
+        val payload = withFileCountLimit(1) { buildWith(listOf(first) + rest, includeNonText = true) }
+
+        assertEquals(1000, payload.limitLeftOut)
+        assertTrue(payload.limitLeftOutCapped)
+        assertTrue(payload.summary.contains("The file-count limit left out 1000+ files."), payload.summary)
+        assertTrue(payload.toSummary(null).limitLeftOutCapped)
+    }
+
+    fun testLimitLeftOutExactly1000IsNotCapped() {
+        val first = textEntry("cap2/a0.kt", "val a = 0")
+        val rest = (1..1000).map { textEntry("cap2/a$it.kt", "val a = $it") }
+
+        val payload = withFileCountLimit(1) { buildWith(listOf(first) + rest, includeNonText = true) }
+
+        assertEquals(1000, payload.limitLeftOut)
+        assertFalse(payload.limitLeftOutCapped)
+        assertTrue(payload.summary.contains("The file-count limit left out 1000 files."), payload.summary)
+    }
+
+    fun testWithLimitLeftOutRendersCappedAs1000Plus() {
+        val p = GitClipboardPayloadBuilder.Payload("t", "2 files copied.")
+        assertEquals("2 files copied. The file-count limit left out 1000+ files.", p.withLimitLeftOut(1000, true).summary)
+    }
+
     fun testRevisionContentIsNeverCarriedAsNonText() {
         val file = vfEntry("img/rev.png", pngBytes(3)).virtualFile
         val entry = GitContentResolver.ResolvedGitEntry(ChangeTypeLabel.MODIFIED, file!!.path, file, contentFromRevision = "revision text")

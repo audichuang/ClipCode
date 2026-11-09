@@ -643,6 +643,100 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertEquals(30, field("fileCount"))
         assertEquals(true, field("fileLimitReached"))
         assertEquals(170, field("limitLeftOut"))
+        assertEquals(false, field("limitLeftOutCapped"))
+    }
+
+    private class CountingIndicator(
+        private val delegate: com.intellij.openapi.progress.ProgressIndicator = com.intellij.openapi.progress.EmptyProgressIndicator()
+    ) : com.intellij.openapi.progress.ProgressIndicator by delegate {
+        var checks = 0
+        override fun checkCanceled() {
+            checks++
+            delegate.checkCanceled()
+        }
+    }
+
+    private fun buildIncludePayload(dir: VirtualFile, indicator: com.intellij.openapi.progress.ProgressIndicator): Any {
+        val settings = CopyFileContentSettings.getInstance(project)!!
+        val method = CopyFileContentAction::class.java.getDeclaredMethod(
+            "buildCopyPayload",
+            com.intellij.openapi.project.Project::class.java, Array<VirtualFile>::class.java,
+            CopyFileContentSettings::class.java, kotlin.jvm.functions.Function2::class.java,
+            com.intellij.openapi.progress.ProgressIndicator::class.java, Boolean::class.javaPrimitiveType
+        ).apply { isAccessible = true }
+        return method.invoke(CopyFileContentAction(), project, arrayOf(dir), settings, null, indicator, true)!!
+    }
+
+    private fun Any.field(name: String) = javaClass.getDeclaredField(name).apply { isAccessible = true }.get(this)
+
+    /** D1: the walk ends once 1000 files are counted past the limit and one more exists. */
+    fun testLeftOutCountStopsTheWalkAt1000Plus() {
+        val settings = CopyFileContentSettings.getInstance(project)!!
+        settings.state.setMaxFileCount = true
+        settings.state.fileCountLimit = 30
+        (1..1200).forEach { myFixture.addFileToProject("cap/t%04d.kt".format(it), "text-$it") }
+        val dir = myFixture.findFileInTempDir("cap") ?: error("dir not found")
+        val indicator = CountingIndicator()
+
+        val result = buildIncludePayload(dir, indicator)
+
+        assertEquals(30, result.field("fileCount"))
+        assertEquals(1000, result.field("limitLeftOut"))
+        assertEquals(true, result.field("limitLeftOutCapped"))
+        // One checkCanceled per visited file: a full walk would be at least 1200.
+        assertTrue(indicator.checks < 1100, "walk visited too much: ${indicator.checks}")
+    }
+
+    fun testExactly1000LeftOutIsNotCapped() {
+        val settings = CopyFileContentSettings.getInstance(project)!!
+        settings.state.setMaxFileCount = true
+        settings.state.fileCountLimit = 30
+        (1..1030).forEach { myFixture.addFileToProject("cap1030/t%04d.kt".format(it), "text-$it") }
+        val dir = myFixture.findFileInTempDir("cap1030") ?: error("dir not found")
+
+        val result = buildIncludePayload(dir, com.intellij.openapi.progress.EmptyProgressIndicator())
+
+        assertEquals(1000, result.field("limitLeftOut"))
+        assertEquals(false, result.field("limitLeftOutCapped"))
+    }
+
+    /** 1031 text files, limit 30: no dialog, the notice says 1000+ and the payload is the first 30 files. */
+    fun testNoDialogNoticeSays1000PlusWhenCapped() {
+        val state = CopyFileContentSettings.getInstance(project)!!.state
+        state.setMaxFileCount = true
+        state.fileCountLimit = 30
+        val messages = collectNotifications()
+        (1..1031).forEach { myFixture.addFileToProject("cap31/t%04d.kt".format(it), "text-$it") }
+        val dir = myFixture.findFileInTempDir("cap31") ?: error("dir not found")
+        val chooser = RecordingChooser(NonTextChoice.INCLUDE)
+
+        CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(dir))
+
+        assertTrue(chooser.summaries.isEmpty())
+        val warning = messages.firstOrNull { it.contains("File Limit Reached") } ?: error("$messages")
+        assertContains(warning, "The file-count limit left out 1000+ files.")
+        assertFalse(warning.contains("1000 files"), warning)
+        assertEquals(30, clipboardText().split("// file: ").size - 1)
+    }
+
+    /** Dialog case: non-text carried and more than 1000 text files left out: the summary and notice say 1000+. */
+    fun testDialogAndNoticeShow1000PlusWhenCapped() {
+        val state = CopyFileContentSettings.getInstance(project)!!.state
+        state.setMaxFileCount = true
+        state.fileCountLimit = 30
+        state.showCopyNotification = true
+        val messages = collectNotifications()
+        val images = (1..3).map { binaryFile("capd/i$it.png", pngBytes(it)) }
+        (1..1100).forEach { myFixture.addFileToProject("capd/t%04d.kt".format(it), "text-$it") }
+        val dir = myFixture.findFileInTempDir("capd") ?: error("dir not found")
+        val chooser = RecordingChooser(NonTextChoice.INCLUDE)
+
+        CopyFileContentAction(chooser).performCopyFilesContent(project, (images + dir).toTypedArray())
+
+        val summary = chooser.summaries.single()
+        assertEquals(1000, summary.limitLeftOut)
+        assertTrue(summary.limitLeftOutCapped)
+        assertTrue(messages.any { it.contains("left out 1000+ files") }, "$messages")
     }
 
     /** The no-dialog notice names unreadable items from the walk whose payload went on the clipboard. */

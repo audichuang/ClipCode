@@ -160,7 +160,7 @@ class CopyFileContentAction(
                     // today. Only the left-out count is taken from the Include walk: no non-text file took
                     // a file-count slot, so it stopped at the same place, and today's walk does not count
                     // past the limit. Unreadable items come from the walk whose payload is copied.
-                    copyWithoutNonText(project, filesToCopy, settings, customHeaderGenerator, include.limitLeftOut)
+                    copyWithoutNonText(project, filesToCopy, settings, customHeaderGenerator, include.limitLeftOut, include.limitLeftOutCapped)
                     return
                 }
                 when (nonTextChooser.choose(project, include.toSummary(settings))) {
@@ -169,7 +169,7 @@ class CopyFileContentAction(
                         showCopyNotifications(project, settings, include)
                     }
                     NonTextChoice.EXCLUDE ->
-                        copyWithoutNonText(project, filesToCopy, settings, customHeaderGenerator, null)
+                        copyWithoutNonText(project, filesToCopy, settings, customHeaderGenerator, null, false)
                     NonTextChoice.CANCEL -> Unit
                 }
             }
@@ -182,7 +182,8 @@ class CopyFileContentAction(
         filesToCopy: Array<VirtualFile>,
         settings: CopyFileContentSettings,
         customHeaderGenerator: ((VirtualFile, String) -> String)?,
-        knownLimitLeftOut: Int?
+        knownLimitLeftOut: Int?,
+        knownLimitLeftOutCapped: Boolean
     ) {
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Copying file content…", true) {
             private var payload: CopyPayload? = null
@@ -196,7 +197,7 @@ class CopyFileContentAction(
                 if (project.isDisposed) return
                 val result = payload ?: return
                 copyToClipboard(result.text)
-                showCopyNotifications(project, settings, result.copy(limitLeftOut = knownLimitLeftOut))
+                showCopyNotifications(project, settings, result.copy(limitLeftOut = knownLimitLeftOut, limitLeftOutCapped = knownLimitLeftOutCapped))
             }
         })
     }
@@ -291,6 +292,7 @@ class CopyFileContentAction(
             nonTextOverLimit = session.nonTextOverLimit,
             unreadOverLimit = session.unreadOverLimit,
             limitLeftOut = if (session.countingOnly) session.limitLeftOut else null,
+            limitLeftOutCapped = session.countingOnly && session.limitLeftOutCapped,
             unreadablePaths = session.unreadablePaths.toList(),
             utf8Bytes = if (session.nonTextCarried.isNotEmpty()) NonTextCopy.utf8Length(text) else 0L
         )
@@ -300,10 +302,12 @@ class CopyFileContentAction(
      * Today's file-count check, shared by the top-level loop and [processDirectory]. Exclude stops
      * walking (true) exactly as before. Include keeps walking in counting-only mode so the number of
      * files the limit left out is exact — the dialog and, when there is no dialog, the completion
-     * notice both report it. Nothing past the limit is read or written.
+     * notice both report it. Nothing past the limit is read or written. Counting ends (true) once
+     * [NonTextCopy.LEFT_OUT_COUNT_CAP] files are counted and one more exists: the rest of the tree is
+     * never walked just to count.
      */
     private fun stopForFileLimit(session: CopySession, settings: CopyFileContentSettings): Boolean {
-        if (session.countingOnly) return false
+        if (session.countingOnly) return session.limitLeftOutCapped
         if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
             session.fileLimitReached = true
             if (!session.includeNonText) return true
@@ -319,7 +323,7 @@ class CopyFileContentAction(
         result: CopyPayload
     ) {
         if (result.fileLimitReached) {
-            val leftOut = result.limitLeftOut?.takeIf { it > 0 }?.let { " ${NonTextCopy.limitLeftOutSentence(it)}." } ?: ""
+            val leftOut = result.limitLeftOut?.takeIf { it > 0 }?.let { " ${NonTextCopy.limitLeftOutSentence(it, result.limitLeftOutCapped)}." } ?: ""
             val fileLimitWarningMessage = """
                 <html>
                 <b>File Limit Reached:</b> The file limit of ${settings.state.fileCountLimit} files was reached.$leftOut
@@ -373,6 +377,8 @@ class CopyFileContentAction(
         val unreadOverLimit: Int = 0,
         /** Files the file-count limit left out; null when not counted (the walk stopped at the limit). */
         val limitLeftOut: Int? = null,
+        /** True when [limitLeftOut] stopped at the count cap: the real number is larger. */
+        val limitLeftOutCapped: Boolean = false,
         val unreadablePaths: List<String> = emptyList(),
         /** UTF-8 length of [text]; computed on the background thread, only when non-text files were carried. */
         val utf8Bytes: Long = 0
@@ -383,6 +389,7 @@ class CopyFileContentAction(
             nonTextOverLimit = nonTextOverLimit,
             unreadOverLimit = unreadOverLimit,
             limitLeftOut = limitLeftOut ?: 0,
+            limitLeftOutCapped = limitLeftOutCapped,
             nonTextLimitBytes = settings.state.maxNonTextFileSizeKB * 1024L,
             headerFormat = settings.state.headerFormat
         )
@@ -470,7 +477,12 @@ class CopyFileContentAction(
 
         // Include mode past the file-count limit: count what the limit left out, read nothing.
         if (session.countingOnly) {
-            session.limitLeftOut++
+            if (session.limitLeftOut >= NonTextCopy.LEFT_OUT_COUNT_CAP) {
+                // One more file exists past the cap: stop counting; the callers end the walk.
+                session.limitLeftOutCapped = true
+            } else {
+                session.limitLeftOut++
+            }
             return ""
         }
         // External-library files keep today's behaviour in both modes.
@@ -869,6 +881,7 @@ class CopyFileContentAction(
         /** Include mode past the file-count limit: files are only counted into [limitLeftOut]. */
         var countingOnly: Boolean = false,
         var limitLeftOut: Int = 0,
+        var limitLeftOutCapped: Boolean = false,
         val nonTextCarried: MutableList<NonTextCopySummary.Item> = mutableListOf(),
         var nonTextOverLimit: Int = 0,
         var unreadOverLimit: Int = 0,
