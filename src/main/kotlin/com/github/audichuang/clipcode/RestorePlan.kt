@@ -158,19 +158,22 @@ class RestorePlanBuilder(
     }
 
     /**
-     * Two entries that map to the same file only by letter case (`IMG.png` / `img.png`), or on
-     * macOS only by Unicode normalization (`caf\u00e9` NFC / NFD), are the same file on that
-     * file system: writing both would silently let the second replace the first. Every colliding
-     * op is dropped and skipped. Whether the file system folds case or normalization is probed on
-     * the op's own root, never assumed from the OS. Exact duplicates (same string) keep their
+     * Two entries that map to the same file only by letter case (`IMG.png` / `img.png`), on
+     * macOS only by Unicode normalization (`caf\u00e9` NFC / NFD), or through a symlinked parent
+     * folder (`real/x.png` / `link/x.png` with `link -> real`) are the same file on that file
+     * system: writing both would silently let the second replace the first. Every colliding op is
+     * dropped and skipped. Whether the file system folds case or normalization is probed on the
+     * op's own root, never assumed from the OS. Exact duplicates (same string) keep their
      * create-then-overwrite behaviour.
      */
     private fun removeCaseCollisions(
         creates: MutableList<RestorePlan.CreateOperation>,
         skipped: MutableList<RestorePlan.SkippedOperation>
     ) {
+        val identities = HashMap<String, String>()
+        fun identity(op: RestorePlan.CreateOperation) = identities.getOrPut(op.absolutePath) { targetIdentity(op.absolutePath) }
         // Candidates: equal under the widest folding (NFC + lower case) yet spelled differently.
-        val groups = creates.groupBy { foldKey(it.absolutePath, nfc = true, lower = true) }
+        val groups = creates.groupBy { foldKey(identity(it), nfc = true, lower = true) }
             .values.filter { group -> group.map { it.absolutePath }.distinct().size > 1 }
         if (groups.isEmpty()) return
         val folding = HashMap<String, Pair<Boolean, Boolean>>()
@@ -182,7 +185,7 @@ class RestorePlanBuilder(
                     val root = java.nio.file.Path.of(op.rootPath)
                     isCaseInsensitiveFs(root) to foldsNormalization(root)
                 }
-                foldKey(op.absolutePath, nfc = nfc, lower = lower)
+                foldKey(identity(op), nfc = nfc, lower = lower)
             }.values.filter { it.map { op -> op.absolutePath }.distinct().size > 1 }.forEach { colliding.addAll(it) }
         }
         if (colliding.isEmpty()) return
@@ -197,6 +200,34 @@ class RestorePlanBuilder(
             )
         }
         creates.removeAll { it in colliding }
+    }
+
+    /**
+     * The file [absolutePath] really names: its nearest existing ancestor folder resolved through
+     * symlinks, with the missing folders and the file name put back. The file itself is not resolved:
+     * a link AT the target is replaced, never written through. Mirror of OpenIDEA
+     * `canonical_target_identity`, minus that last step. The path as given when nothing resolves.
+     */
+    private fun targetIdentity(absolutePath: String): String {
+        val path = try {
+            java.nio.file.Path.of(absolutePath)
+        } catch (_: java.nio.file.InvalidPathException) {
+            return absolutePath
+        }
+        val name = path.fileName ?: return absolutePath
+        var existing = path.parent ?: return absolutePath
+        val missing = ArrayDeque<String>()
+        while (!java.nio.file.Files.exists(existing)) {
+            missing.addFirst(existing.fileName?.toString() ?: return absolutePath)
+            existing = existing.parent ?: return absolutePath
+        }
+        var real = try {
+            existing.toRealPath()
+        } catch (_: java.io.IOException) {
+            return absolutePath
+        }
+        missing.forEach { real = real.resolve(it) }
+        return real.resolve(name.toString()).toString()
     }
 
     private fun foldKey(path: String, nfc: Boolean, lower: Boolean): String {

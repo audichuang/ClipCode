@@ -252,6 +252,79 @@ class RestoreWriteSafetyTest : BasePlatformTestCase() {
         }
     }
 
+    /**
+     * Spec case 33: a brand-new file created by paste (no target existed), text and non-text, in the root and
+     * in a folder the paste creates, gets the mode a new file gets in its folder: compared with a probe file
+     * created in the same folder.
+     */
+    @Test
+    fun testNewFileCreatedByPasteGetsTheNewFileModeOfItsFolder() {
+        assumeTrue("POSIX permission bits only", posix)
+        val root = Files.createTempDirectory("clipcode-33-mode").toRealPath()
+        try {
+            Files.setPosixFilePermissions(root, java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x"))
+            val (plan, result) = run(
+                root,
+                listOf(
+                    ClipboardRestoreParser.ParsedClipboardEntry("new.txt", "hello"),
+                    nonTextEntry("new.png", newBytes),
+                    ClipboardRestoreParser.ParsedClipboardEntry("sub/deep.txt", "deep"),
+                    nonTextEntry("sub/deep.png", newBytes)
+                ),
+                overwrite = false
+            )
+            assertTrue(plan.createOperations.none { it.existed })
+            assertTrue(result.errors.isEmpty(), result.errors.toString())
+            assertEquals(4, result.createdCount)
+            for (rel in listOf("new.txt", "new.png", "sub/deep.txt", "sub/deep.png")) {
+                val file = root.resolve(rel)
+                val probe = file.resolveSibling("probe-${file.fileName}")
+                Files.createFile(probe)
+                val expected = Files.getPosixFilePermissions(probe)
+                Files.delete(probe)
+                assertEquals(expected, Files.getPosixFilePermissions(file), "$rel: a new file's mode in its folder")
+            }
+            assertEquals("hello", root.resolve("new.txt").readText())
+            assertEquals(newBytes.toList(), root.resolve("sub/deep.png").readBytes().toList())
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    /**
+     * Spec case 34: `real/x.png` and `link/x.png` where `link` is a symlink to `real` inside the root. Both
+     * rows are skipped with the collision reason (user text "Another entry writes the same file"); nothing is
+     * written to `real/x.png`, and the other entry is restored.
+     */
+    @Test
+    fun testCollisionThroughASymlinkedParentSkipsBothRows() {
+        val root = Files.createTempDirectory("clipcode-34-linkparent").toRealPath()
+        try {
+            val real = root.resolve("real").also { Files.createDirectory(it) }
+            symlinkOrSkip(root.resolve("link"), real)
+            val (plan, result) = run(
+                root,
+                listOf(
+                    nonTextEntry("real/x.png", byteArrayOf(1, 1)),
+                    nonTextEntry("link/x.png", byteArrayOf(2, 2)),
+                    ClipboardRestoreParser.ParsedClipboardEntry("other.txt", "ok")
+                ),
+                overwrite = true
+            )
+            assertEquals(
+                listOf("real/x.png" to RestorePlan.SkipReason.TARGET_COLLISION, "link/x.png" to RestorePlan.SkipReason.TARGET_COLLISION),
+                plan.skippedOperations.map { it.relativePath to it.reason }
+            )
+            assertEquals(listOf("Another entry writes the same file"), plan.skippedOperations.map { skipReasonText(it.reason) }.distinct())
+            assertTrue(result.errors.isEmpty(), result.errors.toString())
+            assertEquals(1, result.createdCount)
+            assertFalse(Files.exists(real.resolve("x.png")), "neither colliding entry is written")
+            assertEquals("ok", root.resolve("other.txt").readText())
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     @Test
     fun testSymlinkInAnUnwritableFolderIsLeftInPlace() {
         assumeTrue("POSIX folder permissions only", posix)
