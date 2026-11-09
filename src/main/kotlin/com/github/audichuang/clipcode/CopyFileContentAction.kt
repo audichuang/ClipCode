@@ -257,7 +257,18 @@ class CopyFileContentAction(
             indicator.checkCanceled()
             if (stopForFileLimit(session, settings)) break
 
-            val isDirectory = ApplicationManager.getApplication().runReadAction<Boolean> { file.isDirectory }
+            val (isDirectory, isSymlinkedFolder) = ApplicationManager.getApplication().runReadAction<Pair<Boolean, Boolean>> {
+                file.isDirectory to (file.isDirectory && file.`is`(com.intellij.openapi.vfs.VFileProperty.SYMLINK))
+            }
+            // Decision D2 / spec case 22: a symlinked folder is never followed, even when it IS the
+            // selection (alone or among others). A project root reached through its own spelling is
+            // not such a link. A dangling link is not a directory: processFile names it Unreadable.
+            if (isSymlinkedFolder && session.pathResolver.rawRelativePath(file.path) != "") {
+                if (!session.countingOnly) {
+                    session.skipNotes.note(SkipCategory.SYMLINKED_FOLDER, CopyPathFormatter.displayPath(session.pathResolver, file.path))
+                }
+                continue
+            }
             if (isDirectory) {
                 processDirectory(file, fileContents, session, settings, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
             } else {
@@ -286,14 +297,13 @@ class CopyFileContentAction(
             text = text,
             fileCount = session.fileCount,
             skippedFileSizeCount = session.skippedFileSizeCount,
-            skippedUnreadableCount = session.skippedUnreadableCount,
+            skipNotes = session.skipNotes,
             fileLimitReached = session.fileLimitReached,
             nonTextCarried = session.nonTextCarried.toList(),
             nonTextOverLimit = session.nonTextOverLimit,
             unreadOverLimit = session.unreadOverLimit,
             limitLeftOut = if (session.countingOnly) session.limitLeftOut else null,
             limitLeftOutCapped = session.countingOnly && session.limitLeftOutCapped,
-            unreadablePaths = session.unreadablePaths.toList(),
             utf8Bytes = if (session.nonTextCarried.isNotEmpty()) NonTextCopy.utf8Length(text) else 0L
         )
     }
@@ -344,16 +354,16 @@ class CopyFileContentAction(
         }
         // Reported, never silent — the VS Code half says the same sentence. After Include the
         // non-text files are carried, so what is skipped is called "Unreadable" instead. Otherwise
-        // today's sentence carries the count and the paths follow, one per line (the same first-N
-        // and "and N more" lines as after Include, minus their "Unreadable: N" count line).
+        // today's sentence carries the unreadable count and its paths follow, one per line. Either
+        // way the symlinked folders and unportable names follow as their own blocks (decision D2).
+        val notes = result.skipNotes
+        val unreadable = notes.count(SkipCategory.UNREADABLE)
         val unreadableMessage = when {
-            result.nonTextCarried.isNotEmpty() -> noticeLinesHtml(
-                NonTextCopy.includeNoticeLines(result.nonTextCarried.size, result.skippedUnreadableCount, result.unreadablePaths)
-            )
-            result.skippedUnreadableCount > 0 ->
-                " ${result.skippedUnreadableCount} skipped: not UTF-8 text or unreadable." +
-                    noticeLinesHtml(NonTextCopy.unreadableLines(result.skippedUnreadableCount, result.unreadablePaths).drop(1))
-            else -> ""
+            result.nonTextCarried.isNotEmpty() ->
+                noticeLinesHtml(NonTextCopy.includeNoticeLines(result.nonTextCarried.size, notes))
+            else ->
+                (if (unreadable > 0) " $unreadable skipped: not UTF-8 text or unreadable." else "") +
+                    noticeLinesHtml(NonTextCopy.excludeNoticeLines(notes))
         }
 
         showPayloadNotification("", result.text, project)
@@ -369,7 +379,8 @@ class CopyFileContentAction(
         val text: String,
         val fileCount: Int,
         val skippedFileSizeCount: Int,
-        val skippedUnreadableCount: Int,
+        /** Unreadable items, symlinked folders and unportable names: counted and named in the notice. */
+        val skipNotes: SkipNotes,
         val fileLimitReached: Boolean,
         /** Include only: carried non-text files in payload order. */
         val nonTextCarried: List<NonTextCopySummary.Item> = emptyList(),
@@ -379,7 +390,6 @@ class CopyFileContentAction(
         val limitLeftOut: Int? = null,
         /** True when [limitLeftOut] stopped at the count cap: the real number is larger. */
         val limitLeftOutCapped: Boolean = false,
-        val unreadablePaths: List<String> = emptyList(),
         /** UTF-8 length of [text]; computed on the background thread, only when non-text files were carried. */
         val utf8Bytes: Long = 0
     ) {
@@ -483,6 +493,14 @@ class CopyFileContentAction(
             } else {
                 session.limitLeftOut++
             }
+            return ""
+        }
+        // Decision D2: a name a header cannot carry unchanged is skipped and named, in every mode, before
+        // anything is read. A newline in a name would otherwise put a second, forged header line on the
+        // clipboard. External-library files keep today's path (their header is not the on-disk path).
+        if (!isExternalLibrary && !PortableName.isPortableRelativePath(PortableName.checkedPath(session.pathResolver, file.path))) {
+            session.noteUnportable(file.path)
+            logger.info("Skipping file: ${file.name} - name not portable")
             return ""
         }
         // External-library files keep today's behaviour in both modes.
@@ -666,24 +684,35 @@ class CopyFileContentAction(
             if (!directoryPassesFilters(directory, session)) null
             else (directory.canonicalPath ?: directory.path) to directory.children.map { it to it.isDirectory }
         } ?: return
+        // Decision D2: a folder whose name is not portable is named once and not walked, so none of its
+        // files is copied (the spec allows this instead of naming each file). Past the file-count limit
+        // nothing is named, as for unlistable folders.
+        if (!PortableName.isPortableFolderPath(PortableName.checkedPath(session.pathResolver, directory.path))) {
+            if (!session.countingOnly) session.noteUnportable(directory.path)
+            logger.info("Skipping directory: ${directory.name} - name not portable")
+            return
+        }
         // A folder that cannot be listed shows as empty in VFS; name it in either mode. Only the
         // notice changes — nothing is added to the payload.
         if (!session.countingOnly && snapshot.second.isEmpty()) {
             noteIfUnlistable(directory, session)
         }
+        if (!session.countingOnly) noteNamesHiddenByVfs(directory, snapshot.second.map { it.first.name }.toSet(), session)
         // Track only current ancestors: normal package aliases keep their selected paths.
         if (!session.directoryAncestors.add(snapshot.first)) return
         try {
             for ((childFile, childIsDirectory) in snapshot.second) {
                 if (stopForFileLimit(session, settings)) break
                 if (childIsDirectory) {
-                    // Not through a link. Ancestor-cycle tracking stops a loop but still
-                    // admits every non-cyclic alias across cross-linked siblings, so a
-                    // pnpm/Bazel tree multiplies into a path count that grows like a sum of
-                    // falling factorials — and with a file-count limit the copy fills up
-                    // with aliases of the same few files. The real directories are reached
-                    // on their own; VS Code walks a link only when it IS the selection.
-                    if (childFile.`is`(com.intellij.openapi.vfs.VFileProperty.SYMLINK)) continue
+                    // Never through a link (decision D2): it is counted and named as a symlinked
+                    // folder. Following links also multiplied a pnpm/Bazel tree into aliases of the
+                    // same few files; the real directories are reached on their own.
+                    if (childFile.`is`(com.intellij.openapi.vfs.VFileProperty.SYMLINK)) {
+                        if (!session.countingOnly) {
+                            session.skipNotes.note(SkipCategory.SYMLINKED_FOLDER, CopyPathFormatter.displayPath(session.pathResolver, childFile.path))
+                        }
+                        continue
+                    }
                     processDirectory(childFile, fileContents, session, settings, addExtraLine, customHeaderGenerator)
                 } else {
                     processFile(childFile, fileContents, session, settings, addExtraLine, customHeaderGenerator)
@@ -692,6 +721,30 @@ class CopyFileContentAction(
         } finally {
             session.directoryAncestors.remove(snapshot.first)
         }
+    }
+
+    /**
+     * The IntelliJ VFS never lists a child whose name holds a backslash (it is a separator there), so
+     * such a file or folder could never be copied, but it was left out silently. Decision D2 names it:
+     * the directory is listed once more on disk and every name the VFS hid that fails the portability
+     * rule is named under "Name not portable" (a folder once, not walked). A hidden name that IS
+     * portable is only an unrefreshed VFS and stays out of the notice. One extra readdir per folder.
+     */
+    private fun noteNamesHiddenByVfs(directory: VirtualFile, listed: Set<String>, session: CopySession) {
+        val nioPath = ApplicationManager.getApplication().runReadAction<java.nio.file.Path?> {
+            directory.fileSystem.getNioPath(directory)
+        } ?: return
+        val onDisk = try {
+            java.nio.file.Files.newDirectoryStream(nioPath).use { stream -> stream.map { it.fileName.toString() } }
+        } catch (e: ProcessCanceledException) {
+            throw e
+        } catch (e: Exception) {
+            // An unlistable folder is already named Unreadable by noteIfUnlistable.
+            return
+        }
+        onDisk.sorted()
+            .filter { it !in listed && !PortableName.isPortableFolderPath(it) }
+            .forEach { session.noteUnportable("${directory.path}/$it") }
     }
 
     private fun noteIfUnlistable(directory: VirtualFile, session: CopySession) {
@@ -868,11 +921,11 @@ class CopyFileContentAction(
         val patternCache: MutableMap<String, Regex> = mutableMapOf(),
         var fileCount: Int = 0,
         var skippedFileSizeCount: Int = 0,
-        // Files whose bytes are not UTF-8 (or could not be read at all). They are dropped
-        // on purpose — the wire carries no encoding, so they cannot round-trip — but a
-        // drop the user is never told about is indistinguishable from the file not being
-        // there. Mirror of copy.ts CopyState.skippedUnreadableCount.
-        var skippedUnreadableCount: Int = 0,
+        // Files whose bytes are not UTF-8 (or could not be read at all), symlinked folders and
+        // unportable names. They are dropped on purpose, but a drop the user is never told about
+        // is indistinguishable from the file not being there. Mirror of copy.ts
+        // CopyState.skippedUnreadableCount.
+        val skipNotes: SkipNotes = SkipNotes(),
         var fileLimitReached: Boolean = false,
         // Include mode (spec non-text-files.md): non-text files are carried as Base64. False is
         // today's copy, byte for byte.
@@ -884,17 +937,13 @@ class CopyFileContentAction(
         var limitLeftOutCapped: Boolean = false,
         val nonTextCarried: MutableList<NonTextCopySummary.Item> = mutableListOf(),
         var nonTextOverLimit: Int = 0,
-        var unreadOverLimit: Int = 0,
-        val unreadablePaths: MutableList<String> = mutableListOf()
+        var unreadOverLimit: Int = 0
     ) {
-        /**
-         * The only way to count an unreadable item: the count and the named paths move together, so
-         * the Include notice never says "Unreadable: 2" while listing one path.
-         */
-        fun noteUnreadable(path: String) {
-            skippedUnreadableCount++
-            unreadablePaths.add(path)
-        }
+        fun noteUnreadable(path: String) = skipNotes.note(SkipCategory.UNREADABLE, path)
+
+        /** Named with its real path under the root (backslash, tab and all), or the absolute path outside every root. */
+        fun noteUnportable(absolutePath: String) =
+            skipNotes.note(SkipCategory.NAME_NOT_PORTABLE, pathResolver.rawRelativePath(absolutePath) ?: absolutePath)
     }
 
     @IdeBoundCode

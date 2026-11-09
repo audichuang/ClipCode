@@ -48,7 +48,9 @@ object GitClipboardPayloadBuilder {
         /** True when [limitLeftOut] stopped at the count cap: the real number is larger. */
         val limitLeftOutCapped: Boolean = false,
         /** UTF-8 length of [text]; only computed when non-text files were carried. */
-        val utf8Bytes: Long = 0
+        val utf8Bytes: Long = 0,
+        /** Include only: the unreadable entries the summary counts, by name. Empty for today's build. */
+        val skipNotes: SkipNotes = SkipNotes()
     ) {
         fun toSummary(settings: CopyFileContentSettings?) = NonTextCopySummary(
             carried = nonTextCarried,
@@ -60,6 +62,12 @@ object GitClipboardPayloadBuilder {
             nonTextLimitBytes = nonTextLimitBytes(settings),
             headerFormat = settings?.state?.headerFormat ?: "// file: \$FILE_PATH"
         )
+
+        /** The completion notice body: the summary, then (Include only) the unreadable entries by name. */
+        fun noticeHtml(): String =
+            "<b>$summary</b><br>" + SkipCategory.entries
+                .flatMap { NonTextCopy.skipLines(it, skipNotes.count(it), skipNotes.names(it)) }
+                .joinToString("") { com.intellij.openapi.util.text.StringUtil.escapeXmlEntities(it) + "<br>" }
 
         /** Adds the left-out sentence to a notice whose payload came from today's (Exclude) build. */
         fun withLimitLeftOut(n: Int?, capped: Boolean = false): Payload =
@@ -143,6 +151,7 @@ object GitClipboardPayloadBuilder {
         var unreadOverLimit = 0
         var limitLeftOut = 0
         var limitLeftOutCapped = false
+        val skipNotes = SkipNotes()
 
         val payloadFiles = mutableListOf<ClipboardPayloadFormatter.PayloadFile>()
         var skippedSizeCount = 0
@@ -224,7 +233,12 @@ object GitClipboardPayloadBuilder {
                     if (outcome.unreadOverLimit) unreadOverLimit++
                     if (outcome.nonTextOverLimit) nonTextOverLimit++
                 }
-                isPlaceholder(resolved.content) -> skippedUnreadableCount++
+                isPlaceholder(resolved.content) -> {
+                    skippedUnreadableCount++
+                    // Spec "What is carried": the notice names what it could not read. Today's build
+                    // keeps today's notice, the count alone.
+                    if (includeNonText) skipNotes.note(SkipCategory.UNREADABLE, resolved.path)
+                }
                 else -> {
                     copiedContent.add(entry)
                     copiedCount++
@@ -272,7 +286,8 @@ object GitClipboardPayloadBuilder {
             unreadOverLimit = unreadOverLimit,
             limitLeftOut = if (includeNonText) limitLeftOut else null,
             limitLeftOutCapped = includeNonText && limitLeftOutCapped,
-            utf8Bytes = if (nonTextCarried.isNotEmpty()) NonTextCopy.utf8Length(text) else 0L
+            utf8Bytes = if (nonTextCarried.isNotEmpty()) NonTextCopy.utf8Length(text) else 0L,
+            skipNotes = skipNotes
         )
     }
 

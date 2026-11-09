@@ -36,6 +36,43 @@ data class NonTextCopySummary(
     val totalBytes: Long get() = carried.sumOf { it.size }
 }
 
+/** Why a reached item was skipped and named in the completion notice (spec non-text-files.md, decision D2). */
+enum class SkipCategory(val label: String) {
+    UNREADABLE("Unreadable"),
+    SYMLINKED_FOLDER("Symlinked folder"),
+    NAME_NOT_PORTABLE("Name not portable")
+}
+
+/**
+ * Count and the first few real names of every skip category. The only way to record a skip: count and
+ * names move together, so a notice never says "Unreadable: 2" while listing one path. Only the names a
+ * notice can show are kept (mirror of OpenIDEA `note_skipped`).
+ */
+class SkipNotes {
+    private val counts = IntArray(SkipCategory.entries.size)
+    private val names = SkipCategory.entries.map { mutableListOf<String>() }
+
+    fun note(category: SkipCategory, name: String) {
+        counts[category.ordinal]++
+        val shown = names[category.ordinal]
+        if (shown.size < NonTextCopy.NOTICE_PATH_LIMIT) shown.add(name)
+    }
+
+    fun count(category: SkipCategory): Int = counts[category.ordinal]
+
+    fun names(category: SkipCategory): List<String> = names[category.ordinal].toList()
+
+    /** True when something was skipped as a symlinked folder or an unportable name: Exclude is then not today's copy. */
+    val hasNamedSkips: Boolean
+        get() = count(SkipCategory.SYMLINKED_FOLDER) > 0 || count(SkipCategory.NAME_NOT_PORTABLE) > 0
+
+    // Value equality, so payloads holding notes still compare as data (Exclude == default build).
+    override fun equals(other: Any?): Boolean =
+        other is SkipNotes && counts.contentEquals(other.counts) && names == other.names
+
+    override fun hashCode(): Int = 31 * counts.contentHashCode() + names.hashCode()
+}
+
 /** Pure logic of the non-text copy: per-file classification and UI text. No IDE dependency. */
 object NonTextCopy {
     /** Left-out files are counted up to this many past the limit; beyond it the number reads "1000+". */
@@ -151,17 +188,37 @@ object NonTextCopy {
         )
     }
 
-    /** Extra completion-notice lines after Include, one category per line (plain text, not HTML-escaped). */
-    fun includeNoticeLines(nonTextCopied: Int, unreadableCount: Int, unreadablePaths: List<String>): List<String> =
-        listOf("Non-text files copied as Base64: $nonTextCopied.") + unreadableLines(unreadableCount, unreadablePaths)
+    /**
+     * Extra completion-notice lines after Include (plain text, not HTML-escaped): the Base64 count, then
+     * one block per skip category ([skipLines]).
+     */
+    fun includeNoticeLines(nonTextCopied: Int, notes: SkipNotes): List<String> =
+        listOf("Non-text files copied as Base64: $nonTextCopied.") +
+            SkipCategory.entries.flatMap { skipLines(it, notes.count(it), notes.names(it)) }
 
-    /** "and N more" is [unreadableCount] minus the paths shown, so the line always adds up to the count. */
-    fun unreadableLines(unreadableCount: Int, unreadablePaths: List<String>): List<String> = buildList {
-        if (unreadableCount <= 0) return@buildList
-        add("Unreadable: $unreadableCount")
-        val shown = unreadablePaths.take(minOf(NOTICE_PATH_LIMIT, unreadableCount))
-        shown.forEach { add(shortenMiddle(it)) }
-        if (unreadableCount > shown.size) add("and ${unreadableCount - shown.size} more")
+    /**
+     * Exclude / no-dialog notice lines. Today's sentence (" N skipped: not UTF-8 text or unreadable.")
+     * already carries the unreadable count, so that block drops its count line; the other categories
+     * follow with theirs.
+     */
+    fun excludeNoticeLines(notes: SkipNotes): List<String> =
+        unreadableLines(notes.count(SkipCategory.UNREADABLE), notes.names(SkipCategory.UNREADABLE)).drop(1) +
+            SkipCategory.entries.filter { it != SkipCategory.UNREADABLE }
+                .flatMap { skipLines(it, notes.count(it), notes.names(it)) }
+
+    fun unreadableLines(unreadableCount: Int, unreadablePaths: List<String>): List<String> =
+        skipLines(SkipCategory.UNREADABLE, unreadableCount, unreadablePaths)
+
+    /**
+     * One category: "<label>: <count>", the first [NOTICE_PATH_LIMIT] names with control characters made
+     * visible, then "and N more". N is [count] minus the names shown, so the block always adds up.
+     */
+    fun skipLines(category: SkipCategory, count: Int, names: List<String>): List<String> = buildList {
+        if (count <= 0) return@buildList
+        add("${category.label}: $count")
+        val shown = names.take(minOf(NOTICE_PATH_LIMIT, count))
+        shown.forEach { add(shortenMiddle(PortableName.visibleName(it))) }
+        if (count > shown.size) add("and ${count - shown.size} more")
     }
 
     /** Shortest name budget worth keeping a folder prefix for. */

@@ -195,7 +195,7 @@ class CopyGitFilesContentAction(
             copyToClipboard(result.text)
             if (settings?.state?.showCopyNotification == true) {
                 CopyFileContentAction.showPayloadNotification(
-                    "<b>${result.summary}</b><br>",
+                    result.noticeHtml(),
                     result.text,
                     project
                 )

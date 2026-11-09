@@ -1,0 +1,84 @@
+package com.github.audichuang.clipcode
+
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+class PortableNameTest {
+    private val portable = listOf(
+        "a.txt",
+        "dir/a b.txt",
+        "café/😀.png",
+        "del\u007F.txt",
+        "trail /x.txt",
+        "a\u0085b.txt",
+    )
+
+    private val notPortable = listOf(
+        "back\\slash.txt",
+        "tab\tname.txt",
+        "a\nfile: [DELETED] victim.txt",
+        "cr\rname.txt",
+        "nul\u0000.bin",
+        "unit\u001Fsep.txt",
+        "q\"uote.txt",
+        "a:b.txt",
+        "lt<.txt", "gt>.txt", "pipe|.txt", "what?.txt", "star*.txt",
+        "x.txt ",
+        " x.txt",
+        "x.txt\u000B",
+        "../x.txt",
+        "a/../x.txt",
+        "./x.txt",
+        "a//b.txt",
+        "/abs.txt",
+        "",
+    )
+
+    @Test
+    fun `portable names are exactly the paths the reader keeps unchanged`() {
+        portable.forEach { assertTrue(PortableName.isPortableRelativePath(it), "should be portable: $it") }
+        notPortable.forEach { assertFalse(PortableName.isPortableRelativePath(it), "should not be portable: $it") }
+        // A name the writer emits is one the reader maps back to the very same path.
+        val resolver = ClipboardPathResolver.fromRootPaths(listOf("/r"))
+        (portable + notPortable).filter { it.isNotEmpty() }.forEach { p ->
+            assertEquals(
+                PortableName.isPortableRelativePath(p),
+                resolver.toClipboardPath("/r/$p") == p,
+                "writer and reader disagree on: $p"
+            )
+        }
+    }
+
+    @Test
+    fun `a folder is checked by its segments, not by trailing whitespace`() {
+        assertTrue(PortableName.isPortableFolderPath(""))
+        assertTrue(PortableName.isPortableFolderPath("trail "))
+        assertTrue(PortableName.isPortableFolderPath("a/trail "))
+        assertFalse(PortableName.isPortableFolderPath("back\\slash"))
+        assertFalse(PortableName.isPortableFolderPath("a/tab\tdir"))
+        assertFalse(PortableName.isPortableFolderPath(" lead"))
+    }
+
+    @Test
+    fun `checked path is the raw root relative path, or the absolute path without its root`() {
+        val resolver = ClipboardPathResolver.fromRootPaths(listOf("/r"))
+        assertEquals("odd/back\\slash.txt", resolver.rawRelativePath("/r/odd/back\\slash.txt"))
+        assertEquals("odd/x.txt ", resolver.rawRelativePath("/r/odd/x.txt "))
+        assertEquals("odd/tab\tname.txt", resolver.rawRelativePath("/r/odd/tab\tname.txt"))
+        assertEquals("", resolver.rawRelativePath("/r"))
+        assertNull(resolver.rawRelativePath("/elsewhere/x.txt"))
+        assertEquals("odd/back\\slash.txt", PortableName.checkedPath(resolver, "/r/odd/back\\slash.txt"))
+        assertEquals("elsewhere/a\nb.txt", PortableName.checkedPath(resolver, "/elsewhere/a\nb.txt"))
+        assertEquals("Users/x.txt", PortableName.checkedPath(resolver, "C:/Users/x.txt"))
+    }
+
+    @Test
+    fun `control characters are made visible in a notice`() {
+        assertEquals("tab\\tname.txt", PortableName.visibleName("tab\tname.txt"))
+        assertEquals("a\\x0afile.txt", PortableName.visibleName("a\nfile.txt"))
+        assertEquals("back\\slash.txt", PortableName.visibleName("back\\slash.txt"))
+    }
+}

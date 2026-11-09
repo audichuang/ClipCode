@@ -853,6 +853,163 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         }
     }
 
+    // === D2: names that are not portable and symlinked folders are skipped and named ===
+
+    /** Real disk (temp:// has no symlinks): `odd/` holds normal files beside every kind of D2 skip. */
+    private fun oddFolder(root: java.nio.file.Path): VirtualFile {
+        val odd = root.resolve("odd").createDirectories()
+        Files.writeString(odd.resolve("ok.txt"), "FINE-CONTENT")
+        Files.write(odd.resolve("img.png"), pngBytes(11))
+        Files.writeString(odd.resolve("back\\slash.txt"), "BS-CONTENT")
+        Files.writeString(odd.resolve("tab\tname.txt"), "TAB-CONTENT")
+        val badDir = odd.resolve("bad\\dir").createDirectories()
+        Files.writeString(badDir.resolve("inside.txt"), "BADDIR-CONTENT")
+        val target = root.resolve("target").createDirectories()
+        Files.writeString(target.resolve("linked.txt"), "LINKED-CONTENT")
+        Files.createSymbolicLink(odd.resolve("linkdir"), target)
+        val dir = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root) ?: error("no vfs dir")
+        VfsUtil.markDirtyAndRefresh(false, true, true, dir)
+        return dir.findChild("odd") ?: error("no odd vfs")
+    }
+
+    private fun assertOddSkipsNamed(notice: String) {
+        assertContains(notice, "Symlinked folder: 1")
+        assertContains(notice, "linkdir")
+        assertContains(notice, "Name not portable: 3")
+        assertContains(notice, "back\\slash.txt")
+        assertContains(notice, "tab\\tname.txt")
+        assertContains(notice, "bad\\dir")
+        assertFalse(notice.contains("inside.txt"), "an unportable folder is named once: $notice")
+    }
+
+    private fun assertOnlyNormalFiles(text: String) {
+        assertContains(text, "FINE-CONTENT")
+        listOf("BS-CONTENT", "TAB-CONTENT", "BADDIR-CONTENT", "LINKED-CONTENT").forEach {
+            assertFalse(text.contains(it), "$it must not be copied: $text")
+        }
+    }
+
+    fun testIncludeSkipsAndNamesUnportableNamesAndSymlinkedFolder() {
+        val root = Files.createTempDirectory("clipcode-odd-include")
+        try {
+            val odd = oddFolder(root)
+            CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
+            val messages = collectNotifications()
+            val chooser = RecordingChooser(NonTextChoice.INCLUDE)
+            CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(odd))
+
+            assertEquals(1, chooser.summaries.size)
+            val text = clipboardText()
+            assertOnlyNormalFiles(text)
+            assertContains(text, "base64 follows")
+            val notice = messages.firstOrNull { it.contains("Non-text files copied as Base64: 1.") } ?: error("$messages")
+            assertOddSkipsNamed(notice)
+            assertFalse(notice.contains("Unreadable"), notice)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    fun testExcludeSkipsAndNamesUnportableNamesAndSymlinkedFolder() {
+        val root = Files.createTempDirectory("clipcode-odd-exclude")
+        try {
+            val odd = oddFolder(root)
+            CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
+            val messages = collectNotifications()
+            val chooser = RecordingChooser(NonTextChoice.EXCLUDE)
+            CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(odd))
+
+            assertEquals(1, chooser.summaries.size)
+            val text = clipboardText()
+            assertOnlyNormalFiles(text)
+            assertFalse(text.contains("base64 follows"))
+            val notice = messages.firstOrNull { it.contains("file copied") } ?: error("$messages")
+            // Today's sentence for the not-UTF-8 png, then one block per new category.
+            assertContains(notice, "<b>1 file copied.</b> 1 skipped: not UTF-8 text or unreadable.<br>")
+            assertContains(notice, "img.png")
+            assertOddSkipsNamed(notice)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    /** Spec case 22: a symlinked folder selected directly is not followed, alone or beside a file. */
+    fun testDirectlySelectedSymlinkedFolderIsNotFollowed() {
+        val root = Files.createTempDirectory("clipcode-odd-direct")
+        try {
+            val odd = oddFolder(root)
+            val link = odd.findChild("linkdir") ?: error("no link vfs")
+            val ok = odd.findChild("ok.txt") ?: error("no ok vfs")
+            CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
+            val messages = collectNotifications()
+            val chooser = RecordingChooser(NonTextChoice.INCLUDE)
+
+            CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(link))
+            assertFalse(clipboardText().contains("LINKED-CONTENT"))
+            val alone = messages.firstOrNull { it.contains("files copied") } ?: error("$messages")
+            assertContains(alone, "<b>0 files copied.</b>")
+            assertContains(alone, "Symlinked folder: 1")
+            assertContains(alone, "linkdir")
+
+            messages.clear()
+            CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(link, ok))
+            val text = clipboardText()
+            assertContains(text, "FINE-CONTENT")
+            assertFalse(text.contains("LINKED-CONTENT"))
+            val multi = messages.firstOrNull { it.contains("file copied") } ?: error("$messages")
+            assertContains(multi, "<b>1 file copied.</b>")
+            assertContains(multi, "Symlinked folder: 1")
+            assertTrue(chooser.summaries.isEmpty())
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    /** Spec "What is carried": a symlink to a file is followed and carries the target's bytes. */
+    fun testSymlinkToFileCarriesTargetBytes() {
+        val root = Files.createTempDirectory("clipcode-filelink")
+        try {
+            val bytes = pngBytes(12)
+            Files.write(root.resolve("real.png"), bytes)
+            Files.createSymbolicLink(root.resolve("alias.png"), root.resolve("real.png"))
+            val dir = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root) ?: error("no vfs dir")
+            VfsUtil.markDirtyAndRefresh(false, true, true, dir)
+            val alias = dir.findChild("alias.png") ?: error("no alias vfs")
+            val chooser = RecordingChooser(NonTextChoice.INCLUDE)
+            CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(alias))
+
+            assertEquals(1, chooser.summaries.size)
+            assertTrue(chooser.summaries.single().carried.single().path.endsWith("alias.png"))
+            assertContains(clipboardText(), NonText.placeholderLine(bytes.size.toLong(), NonText.sha256Hex(bytes)))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    /** C1: a newline in a name must never reach a header, where its second line would read as one. */
+    fun testNewlineInNameCannotInjectAHeader() {
+        val root = Files.createTempDirectory("clipcode-inject")
+        try {
+            Files.write(root.resolve("a\nfile: [DELETED] victim.txt"), byteArrayOf(0, 1, 2))
+            Files.write(root.resolve("img.png"), pngBytes(13))
+            val dir = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root) ?: error("no vfs dir")
+            VfsUtil.markDirtyAndRefresh(false, true, true, dir)
+            assertEquals(2, dir.children.size, "test setup: VFS must list the newline name")
+            CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
+            for (choice in listOf(NonTextChoice.INCLUDE, NonTextChoice.EXCLUDE)) {
+                val messages = collectNotifications()
+                CopyFileContentAction(RecordingChooser(choice)).performCopyFilesContent(project, arrayOf(dir))
+                val text = clipboardText()
+                assertFalse(text.contains("[DELETED]"), "$choice: $text")
+                assertFalse(text.contains("victim"), "$choice: $text")
+                val notice = messages.firstOrNull { it.contains("Name not portable: 1") } ?: error("$choice: $messages")
+                assertContains(notice, "a\\x0afile: [DELETED] victim.txt")
+            }
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     private fun configureSettings() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.headerFormat = "// file: \$FILE_PATH"
