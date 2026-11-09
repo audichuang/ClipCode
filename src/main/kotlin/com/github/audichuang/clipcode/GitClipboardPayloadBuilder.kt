@@ -4,6 +4,9 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
+import com.intellij.openapi.project.Project
 
 /**
  * 把 [GitContentResolver.ResolvedGitEntry] 清單組成剪貼簿文字。
@@ -29,17 +32,113 @@ object GitClipboardPayloadBuilder {
     private fun isPlaceholder(content: String?): Boolean =
         content == UNREADABLE_MARKER || content == READ_ERROR_MARKER
 
-    data class Payload(val text: String, val summary: String)
+    /**
+     * The non-text fields are filled only by an Include build ([build] with includeNonText = true); they
+     * are the data the non-text dialog shows, derived from this very result (spec non-text-files.md).
+     */
+    data class Payload(
+        val text: String,
+        val summary: String,
+        /** Carried non-text files in payload order: clipboard path and raw size. */
+        val nonTextCarried: List<NonTextCopySummary.Item> = emptyList(),
+        val nonTextOverLimit: Int = 0,
+        val unreadOverLimit: Int = 0,
+        /** Files that passed the filters but the file-count limit left out; null when not computed (Exclude). */
+        val limitLeftOut: Int? = null,
+        /** UTF-8 length of [text]; only computed when non-text files were carried. */
+        val utf8Bytes: Long = 0
+    ) {
+        fun toSummary(settings: CopyFileContentSettings?) = NonTextCopySummary(
+            carried = nonTextCarried,
+            estimatedPayloadBytes = utf8Bytes,
+            nonTextOverLimit = nonTextOverLimit,
+            unreadOverLimit = unreadOverLimit,
+            limitLeftOut = limitLeftOut ?: 0,
+            nonTextLimitBytes = nonTextLimitBytes(settings),
+            headerFormat = settings?.state?.headerFormat ?: "// file: \$FILE_PATH"
+        )
 
+        /** Adds the left-out sentence to a notice whose payload came from today's (Exclude) build. */
+        fun withLimitLeftOut(n: Int?): Payload =
+            if (n == null || n <= 0) this else copy(summary = "$summary ${NonTextCopy.limitLeftOutSentence(n)}.")
+    }
+
+    private fun nonTextLimitBytes(settings: CopyFileContentSettings?): Long =
+        settings?.state?.maxNonTextFileSizeKB?.times(1024L) ?: (2048L * 1024L)
+
+    /** Outcome of resolving one entry; the flags feed the dialog's over-limit counts. */
+    private class Resolved(
+        val file: ClipboardPayloadFormatter.PayloadFile,
+        val unreadOverLimit: Boolean = false,
+        val nonTextOverLimit: Boolean = false
+    )
+
+    /**
+     * Include first, then ask (shared by the Git copy action and the PR panel). [include] is an Include
+     * build. With no non-text file in it nothing is asked and [rebuildToday] (today's build,
+     * includeNonText = false) is delivered, so the result stays byte-identical to before. Otherwise the
+     * dialog decides: Include delivers [include], Exclude delivers [rebuildToday], Cancel copies nothing.
+     * [rebuildToday] runs on a background thread; [deliver] runs on the EDT.
+     */
+    @IdeBoundCode
+    fun chooseAndDeliver(
+        project: Project,
+        settings: CopyFileContentSettings?,
+        include: Payload,
+        chooser: NonTextChooser,
+        rebuildToday: (ProgressIndicator) -> Payload,
+        deliver: (Payload) -> Unit
+    ) {
+        fun rebuild(leftOut: Int?) {
+            ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Building Git clipboard payload…", true) {
+                private var payload: Payload? = null
+
+                override fun run(indicator: ProgressIndicator) {
+                    indicator.isIndeterminate = true
+                    payload = rebuildToday(indicator)
+                }
+
+                override fun onSuccess() {
+                    if (project.isDisposed) return
+                    payload?.let { deliver(it.withLimitLeftOut(leftOut)) }
+                }
+            })
+        }
+        if (include.nonTextCarried.isEmpty()) {
+            // Same reasoning as CopyFileContentAction: today's build always runs; no non-text file took a
+            // file-count slot, so the Include walk's left-out count describes this copy too.
+            rebuild(include.limitLeftOut)
+            return
+        }
+        when (chooser.choose(project, include.toSummary(settings))) {
+            NonTextChoice.INCLUDE -> deliver(include)
+            NonTextChoice.EXCLUDE -> rebuild(null)
+            NonTextChoice.CANCEL -> Unit
+        }
+    }
+
+    /**
+     * [includeNonText] = false is today's build, byte for byte. True reads a working-tree file, classifies
+     * it like the files copy (T3) and carries a non-text file within its limit as Base64; Git revision /
+     * staged (index) content is NOT carried: git4idea / GitBatchContentReader decode it to a String, so a
+     * non-text revision stays today's "unable to read" placeholder (out of scope for this change).
+     */
+    @JvmOverloads
     fun build(
         contentEntries: List<GitContentResolver.ResolvedGitEntry>,
         deletedMarkerEntries: List<GitContentResolver.ResolvedGitEntry>,
         pathResolver: ClipboardPathResolver,
         settings: CopyFileContentSettings?,
-        indicator: ProgressIndicator
+        indicator: ProgressIndicator,
+        includeNonText: Boolean = false
     ): Payload {
         val headerFormat = settings?.state?.headerFormat ?: "// file: \$FILE_PATH"
         val maxFileSizeBytes = settings?.state?.maxFileSizeKB?.times(1024L) ?: (500L * 1024L)
+        val maxNonTextBytes = nonTextLimitBytes(settings)
+        val nonTextCarried = mutableListOf<NonTextCopySummary.Item>()
+        var nonTextOverLimit = 0
+        var unreadOverLimit = 0
+        var limitLeftOut = 0
 
         val payloadFiles = mutableListOf<ClipboardPayloadFormatter.PayloadFile>()
         var skippedSizeCount = 0
@@ -69,11 +168,7 @@ object GitClipboardPayloadBuilder {
         // copied, and a real file behind it never reached the clipboard.
         fun copiedSoFar(): Int = copiedCount
 
-        fun accepted(filePath: String): Boolean {
-            if (copiedSoFar() >= countLimit) {
-                fileLimitReached = true
-                return false
-            }
+        fun passesFilters(filePath: String): Boolean {
             if (!useFilters) return true
             return CopyFilterMatcher.passes(
                 fileName = filePath.substringAfterLast('/').substringAfterLast('\\'),
@@ -85,6 +180,17 @@ object GitClipboardPayloadBuilder {
                 excludeRules = excludeRules,
                 cache = patternCache
             )
+        }
+
+        fun accepted(filePath: String): Boolean {
+            if (copiedSoFar() >= countLimit) {
+                fileLimitReached = true
+                // Include only: entries the limit cut off, for the dialog and the notice. Entries the
+                // filters reject would not have been copied anyway, so they are not "left out".
+                if (includeNonText && passesFilters(filePath)) limitLeftOut++
+                return false
+            }
+            return passesFilters(filePath)
         }
 
         // VFS bytes 讀取需在 ReadAction 內 (2024.3+ strict mode)；逐檔取 read lock，
@@ -102,15 +208,21 @@ object GitClipboardPayloadBuilder {
         contentEntries.forEach { entry ->
             indicator.checkCanceled()
             if (!accepted(entry.filePath)) return@forEach
-            val resolved = ApplicationManager.getApplication().runReadAction<ClipboardPayloadFormatter.PayloadFile> {
-                resolveContentEntry(entry, pathResolver, maxFileSizeBytes)
+            val outcome = ApplicationManager.getApplication().runReadAction<Resolved> {
+                resolveContentEntry(entry, pathResolver, maxFileSizeBytes, maxNonTextBytes, includeNonText)
             }
+            val resolved = outcome.file
             when {
-                resolved.skippedReason != null -> skippedSizeCount++
+                resolved.skippedReason != null -> {
+                    skippedSizeCount++
+                    if (outcome.unreadOverLimit) unreadOverLimit++
+                    if (outcome.nonTextOverLimit) nonTextOverLimit++
+                }
                 isPlaceholder(resolved.content) -> skippedUnreadableCount++
                 else -> {
                     copiedContent.add(entry)
                     copiedCount++
+                    resolved.nonText?.let { nonTextCarried.add(NonTextCopySummary.Item(resolved.path, it.size.toLong())) }
                 }
             }
             payloadFiles.add(resolved)
@@ -141,9 +253,19 @@ object GitClipboardPayloadBuilder {
         )
 
         val limitSuffix = if (fileLimitReached) " File limit $countLimit reached." else ""
+        var summary = buildSummary(copiedContent, acceptedDeleted, skippedSizeCount, skippedUnreadableCount) + limitSuffix
+        if (includeNonText) {
+            if (limitLeftOut > 0) summary += " ${NonTextCopy.limitLeftOutSentence(limitLeftOut)}."
+            if (nonTextCarried.isNotEmpty()) summary += " Non-text files copied as Base64: ${nonTextCarried.size}."
+        }
         return Payload(
             text = text,
-            summary = buildSummary(copiedContent, acceptedDeleted, skippedSizeCount, skippedUnreadableCount) + limitSuffix
+            summary = summary,
+            nonTextCarried = nonTextCarried,
+            nonTextOverLimit = nonTextOverLimit,
+            unreadOverLimit = unreadOverLimit,
+            limitLeftOut = if (includeNonText) limitLeftOut else null,
+            utf8Bytes = if (nonTextCarried.isNotEmpty()) NonTextCopy.utf8Length(text) else 0L
         )
     }
 
@@ -155,10 +277,14 @@ object GitClipboardPayloadBuilder {
     private fun resolveContentEntry(
         entry: GitContentResolver.ResolvedGitEntry,
         pathResolver: ClipboardPathResolver,
-        maxFileSizeBytes: Long
-    ): ClipboardPayloadFormatter.PayloadFile {
+        maxFileSizeBytes: Long,
+        maxNonTextBytes: Long,
+        includeNonText: Boolean
+    ): Resolved {
         val path = pathResolver.toClipboardPath(entry.filePath)
         val changeType = entry.changeType
+
+        fun plain(file: ClipboardPayloadFormatter.PayloadFile) = Resolved(file)
 
         val revisionContent = entry.contentFromRevision
         if (revisionContent != null && Utf8Text.looksLikeMojibake(revisionContent)) {
@@ -167,41 +293,87 @@ object GitClipboardPayloadBuilder {
             // surviving trace of a lenient decode, and letting it through would put
             // mojibake on the clipboard for the other tool to write over a real file.
             logger.info("Skipping Git revision content that did not decode cleanly: ${entry.filePath}")
-            return ClipboardPayloadFormatter.PayloadFile(
+            return plain(ClipboardPayloadFormatter.PayloadFile(
                 path, content = UNREADABLE_MARKER, changeType = changeType
-            )
+            ))
         }
         if (revisionContent != null) {
             val contentSizeBytes = revisionContent.toByteArray(Charsets.UTF_8).size.toLong()
             if (contentSizeBytes > maxFileSizeBytes) {
                 logger.info("Skipping oversized Git revision content: ${entry.filePath}")
-                return ClipboardPayloadFormatter.PayloadFile(path, skippedReason = sizeReason(contentSizeBytes), changeType = changeType)
+                return plain(ClipboardPayloadFormatter.PayloadFile(path, skippedReason = sizeReason(contentSizeBytes), changeType = changeType))
             }
-            return ClipboardPayloadFormatter.PayloadFile(path, content = revisionContent, changeType = changeType)
+            return plain(ClipboardPayloadFormatter.PayloadFile(path, content = revisionContent, changeType = changeType))
         }
 
         val virtualFile = entry.virtualFile
+        if (virtualFile != null && entry.hasVirtualFileContent && includeNonText) {
+            return resolveWorkingTreeIncludingNonText(entry, virtualFile, path, maxFileSizeBytes, maxNonTextBytes)
+        }
         if (virtualFile != null && entry.hasVirtualFileContent) {
             if (virtualFile.length > maxFileSizeBytes) {
                 logger.info("Skipping oversized Git file: ${entry.filePath}")
-                return ClipboardPayloadFormatter.PayloadFile(path, skippedReason = sizeReason(virtualFile.length), changeType = changeType)
+                return plain(ClipboardPayloadFormatter.PayloadFile(path, skippedReason = sizeReason(virtualFile.length), changeType = changeType))
             }
             return try {
                 // Strict UTF-8 or skip, same rule as the ordinary copy path — see Utf8Text.
                 val text = Utf8Text.decodeOrNull(virtualFile.contentsToByteArray())
-                    ?: return ClipboardPayloadFormatter.PayloadFile(
+                    ?: return plain(ClipboardPayloadFormatter.PayloadFile(
                         path, content = UNREADABLE_MARKER, changeType = changeType
-                    )
-                ClipboardPayloadFormatter.PayloadFile(path, content = text, changeType = changeType)
+                    ))
+                plain(ClipboardPayloadFormatter.PayloadFile(path, content = text, changeType = changeType))
             } catch (e: ProcessCanceledException) {
                 throw e
             } catch (e: Exception) {
                 logger.warn("Failed to read Git file content: ${entry.filePath}", e)
-                ClipboardPayloadFormatter.PayloadFile(path, content = READ_ERROR_MARKER, changeType = changeType)
+                plain(ClipboardPayloadFormatter.PayloadFile(path, content = READ_ERROR_MARKER, changeType = changeType))
             }
         }
 
-        return ClipboardPayloadFormatter.PayloadFile(path, content = UNREADABLE_MARKER, changeType = changeType)
+        return plain(ClipboardPayloadFormatter.PayloadFile(path, content = UNREADABLE_MARKER, changeType = changeType))
+    }
+
+    /**
+     * Include mode, working-tree file: classified by [NonTextCopy.classify] exactly like the files copy and
+     * held to the limit of its kind. A binary FILE TYPE is not consulted (isBinaryType = false) because
+     * today's Git path does not either: strict UTF-8 text stays text. Must run under a ReadAction.
+     */
+    private fun resolveWorkingTreeIncludingNonText(
+        entry: GitContentResolver.ResolvedGitEntry,
+        virtualFile: com.intellij.openapi.vfs.VirtualFile,
+        path: String,
+        maxFileSizeBytes: Long,
+        maxNonTextBytes: Long
+    ): Resolved {
+        val changeType = entry.changeType
+        val outcome = NonTextCopy.classify(
+            length = virtualFile.length,
+            isBinaryType = false,
+            textLimitBytes = maxFileSizeBytes,
+            nonTextLimitBytes = maxNonTextBytes
+        ) {
+            try {
+                virtualFile.contentsToByteArray()
+            } catch (e: ProcessCanceledException) {
+                throw e
+            } catch (e: Exception) {
+                logger.warn("Failed to read Git file content: ${entry.filePath}", e)
+                null
+            }
+        }
+        return when (outcome) {
+            is NonTextCopy.Outcome.SizePlaceholder -> Resolved(
+                ClipboardPayloadFormatter.PayloadFile(path, skippedReason = sizeReason(outcome.size), changeType = changeType),
+                unreadOverLimit = outcome.unread,
+                nonTextOverLimit = outcome.nonTextOverLimit
+            )
+            is NonTextCopy.Outcome.Text ->
+                Resolved(ClipboardPayloadFormatter.PayloadFile(path, content = outcome.content, changeType = changeType))
+            is NonTextCopy.Outcome.Carried ->
+                Resolved(ClipboardPayloadFormatter.PayloadFile(path, nonText = outcome.bytes, changeType = changeType))
+            NonTextCopy.Outcome.Unreadable ->
+                Resolved(ClipboardPayloadFormatter.PayloadFile(path, content = READ_ERROR_MARKER, changeType = changeType))
+        }
     }
 
     // Reason string embedded into the formatter's "// File skipped: <reason>" line.
