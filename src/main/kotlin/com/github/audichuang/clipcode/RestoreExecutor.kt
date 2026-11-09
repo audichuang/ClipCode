@@ -13,9 +13,16 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 
-class RestoreExecutor(
-    private val project: Project
+class RestoreExecutor internal constructor(
+    private val project: Project,
+    /**
+     * Test seam: runs while a symlink at the target is being replaced, after the new bytes are in
+     * the temporary file and before the rename. Throwing here stands in for a failed write.
+     */
+    private val linkReplaceWriteHook: (java.nio.file.Path) -> Unit
 ) {
+    constructor(project: Project) : this(project, {})
+
     data class ExecutionResult(
         val createdCount: Int,
         val overwrittenCount: Int,
@@ -74,6 +81,7 @@ class RestoreExecutor(
                     }
                     val previous = project.getUserData(RestoreVcsIgnoreProvider.PATHS)
                     project.putUserData(RestoreVcsIgnoreProvider.PATHS, paths)
+                    val replacedLinks = mutableListOf<java.nio.file.Path>()
                     try {
                         CommandProcessor.getInstance().allowMergeGlobalCommands {
                             WriteCommandAction.writeCommandAction(project).withName("Restore Files from Clipboard")
@@ -99,18 +107,16 @@ class RestoreExecutor(
                                             // overwrite consent the LINK is replaced by a regular file,
                                             // without it the row is skipped (mirror of OpenIDEA's
                                             // temp-file + rename write).
-                                            var replacedLink = false
                                             if (create != null && isSymlink(create.absolutePath)) {
                                                 if (skipExisting || !overwriteExisting || linkTargetIsDirectory(create.absolutePath)) {
                                                     skippedExistingCount++
-                                                    cursor++
-                                                    continue
+                                                } else {
+                                                    val link = java.nio.file.Path.of(create.absolutePath)
+                                                    replaceSymlink(link, create.nonTextBytes ?: create.content.toByteArray(java.nio.charset.StandardCharsets.UTF_8))
+                                                    replacedLinks.add(link)
+                                                    overwrittenCount++
                                                 }
-                                                removeSymlink(create.absolutePath)
-                                                replacedLink = true
-                                            }
-                                            val createdBefore = createdCount
-                                            if (create?.nonTextBytes != null) {
+                                            } else if (create?.nonTextBytes != null) {
                                                 when (writeNonText(create, create.nonTextBytes, overwriteExisting, skipExisting)) {
                                                     NonTextOutcome.CREATED -> createdCount++
                                                     NonTextOutcome.OVERWRITTEN -> overwrittenCount++
@@ -151,11 +157,6 @@ class RestoreExecutor(
                                                     deletedCount++
                                                 }
                                             }
-                                            if (replacedLink && createdCount > createdBefore) {
-                                                // The link was an existing entry: report it as overwritten.
-                                                createdCount--
-                                                overwrittenCount++
-                                            }
                                         } catch (e: ProcessCanceledException) {
                                             throw e
                                         } catch (e: Exception) {
@@ -166,6 +167,10 @@ class RestoreExecutor(
                                     }
                                 }
                         }
+                        // Outside the command on purpose: the refresh sees the link vanish and a
+                        // file appear, and inside a command FileUndoProvider records that external
+                        // change as non-undoable, which wiped the whole restore from the undo stack.
+                        replacedLinks.forEach(::refreshEntry)
                     } finally {
                         project.putUserData(RestoreVcsIgnoreProvider.PATHS, previous)
                     }
@@ -276,37 +281,94 @@ class RestoreExecutor(
 
     private fun linkTargetIsDirectory(path: String): Boolean = java.nio.file.Files.isDirectory(java.nio.file.Path.of(path))
 
-    /** Deletes the link itself (never its target), through the VFS so the change is undoable. */
-    private fun removeSymlink(path: String) {
-        val link = findFile(path)
-        if (link != null) link.delete(this) else java.nio.file.Files.deleteIfExists(java.nio.file.Path.of(path))
-        if (isSymlink(path)) java.nio.file.Files.deleteIfExists(java.nio.file.Path.of(path))
-        LocalFileSystem.getInstance().refreshAndFindFileByPath(java.nio.file.Path.of(path).parent.toString())?.refresh(false, false)
+    /**
+     * Replaces the symlink at [link] with a regular file holding [bytes]. The new file is written
+     * beside the link and renamed over it, so a failed write leaves the link exactly as it was
+     * (deleting first and then writing left the path empty, or holding a 0-byte file). Undo puts
+     * the LINK back: LocalHistory records no link target, so undoing a VFS delete of a link
+     * recreated a regular file instead. The caller refreshes the VFS after the command.
+     */
+    private fun replaceSymlink(link: java.nio.file.Path, bytes: ByteArray) {
+        val linkText = java.nio.file.Files.readSymbolicLink(link)
+        writeByRename(link, bytes)
+        // Anchored on the folder, whose VirtualFile stays valid while the entry flips between a
+        // link and a regular file; undo and redo work by path.
+        val folder = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(link.parent)
+            ?: throw java.nio.file.NoSuchFileException(link.parent.toString())
+        com.intellij.openapi.command.undo.UndoManager.getInstance(project).undoableActionPerformed(
+            object : com.intellij.openapi.command.undo.GlobalUndoableAction(folder) {
+                override fun undo() {
+                    restoreSymlink(link, linkText)
+                    refreshEntry(link)
+                }
+                override fun redo() {
+                    writeByRename(link, bytes)
+                    refreshEntry(link)
+                }
+            }
+        )
     }
 
     /**
-     * A read-only target follows the overwrite option like any other existing file: the write
-     * window makes it writable, then the original mode is put back. The VFS refuses to write a
-     * file the OS marks read-only, so without this an overwrite consent became a failure.
+     * Writes [bytes] to a fresh file in [target]'s folder and renames it over [target]. The
+     * temporary file is created with the mode a new file gets in that folder (0666 less the umask
+     * on POSIX), held at 0600 while the bytes go in, and set back before the rename. It is removed
+     * when anything fails, so the entry at [target] is untouched unless the rename happens.
      */
-    private fun <T> withWritable(file: VirtualFile, write: () -> T): T {
-        val path = java.nio.file.Path.of(file.path)
-        if (java.nio.file.Files.isWritable(path)) return write()
-        val posix = java.nio.file.Files.getFileStore(path).supportsFileAttributeView("posix")
-        val saved = if (posix) java.nio.file.Files.getPosixFilePermissions(path) else null
-        if (saved != null) {
-            java.nio.file.Files.setPosixFilePermissions(path, saved + java.nio.file.attribute.PosixFilePermission.OWNER_WRITE)
-        } else {
-            path.toFile().setWritable(true)
-        }
-        file.refresh(false, false)
+    private fun writeByRename(target: java.nio.file.Path, bytes: ByteArray) {
+        val temp = target.resolveSibling(".clipcode-write.${UUID.randomUUID()}")
+        java.nio.file.Files.newByteChannel(temp, java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE).close()
         try {
-            return write()
-        } finally {
-            if (saved != null) java.nio.file.Files.setPosixFilePermissions(path, saved) else path.toFile().setReadOnly()
-            file.refresh(false, false)
+            val newFileMode = FileWriteAccess.Nio.posixPermissions(temp)
+            if (newFileMode != null) {
+                java.nio.file.Files.setPosixFilePermissions(
+                    temp,
+                    setOf(java.nio.file.attribute.PosixFilePermission.OWNER_READ, java.nio.file.attribute.PosixFilePermission.OWNER_WRITE)
+                )
+            }
+            java.nio.channels.FileChannel.open(temp, java.nio.file.StandardOpenOption.WRITE).use { channel ->
+                val buffer = java.nio.ByteBuffer.wrap(bytes)
+                while (buffer.hasRemaining()) channel.write(buffer)
+                channel.force(true)
+            }
+            linkReplaceWriteHook(target)
+            if (newFileMode != null) java.nio.file.Files.setPosixFilePermissions(temp, newFileMode)
+            moveReplacing(temp, target)
+        } catch (e: Throwable) {
+            java.nio.file.Files.deleteIfExists(temp)
+            throw e
         }
     }
+
+    /** Undo of [replaceSymlink]: a link with the original text, renamed over the regular file. */
+    private fun restoreSymlink(link: java.nio.file.Path, linkText: java.nio.file.Path) {
+        val temp = link.resolveSibling(".clipcode-write.${UUID.randomUUID()}")
+        java.nio.file.Files.createSymbolicLink(temp, linkText)
+        try {
+            moveReplacing(temp, link)
+        } catch (e: Throwable) {
+            java.nio.file.Files.deleteIfExists(temp)
+            throw e
+        }
+    }
+
+    private fun moveReplacing(source: java.nio.file.Path, target: java.nio.file.Path) {
+        try {
+            java.nio.file.Files.move(source, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+        } catch (e: java.nio.file.AtomicMoveNotSupportedException) {
+            java.nio.file.Files.move(source, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+
+    /** The cached VFS node was a link: refresh the folder's children and the entry itself. */
+    private fun refreshEntry(path: java.nio.file.Path) {
+        val fs = LocalFileSystem.getInstance()
+        fs.refreshAndFindFileByNioFile(path.parent)?.let { VfsUtil.markDirtyAndRefresh(false, false, true, it) }
+        fs.refreshAndFindFileByNioFile(path)?.let { VfsUtil.markDirtyAndRefresh(false, false, false, it) }
+    }
+
+    private fun <T> withWritable(file: VirtualFile, write: () -> T): T =
+        withWritablePath(java.nio.file.Path.of(file.path), FileWriteAccess.Nio, { file.refresh(false, false) }, write)
 
     private fun writeRaw(file: VirtualFile, write: () -> Unit) {
         withWritable(file) { writeRawUnguarded(file, write) }
@@ -345,6 +407,64 @@ class RestoreExecutor(
     private fun findFile(path: String): VirtualFile? =
         LocalFileSystem.getInstance().findFileByPath(path)
             ?: LocalFileSystem.getInstance().refreshAndFindFileByPath(path)
+}
+
+/** The file-mode operations [withWritablePath] needs; a seam so a non-POSIX store can be faked. */
+internal interface FileWriteAccess {
+    fun isWritable(path: java.nio.file.Path): Boolean
+    /** Null when the store has no POSIX view. */
+    fun posixPermissions(path: java.nio.file.Path): Set<java.nio.file.attribute.PosixFilePermission>?
+    fun setPosixPermissions(path: java.nio.file.Path, permissions: Set<java.nio.file.attribute.PosixFilePermission>)
+    /** The DOS read-only attribute; null when the store has no DOS view. */
+    fun readOnlyAttribute(path: java.nio.file.Path): Boolean?
+    fun setReadOnlyAttribute(path: java.nio.file.Path, readOnly: Boolean)
+
+    object Nio : FileWriteAccess {
+        override fun isWritable(path: java.nio.file.Path) = java.nio.file.Files.isWritable(path)
+        override fun posixPermissions(path: java.nio.file.Path) =
+            if (java.nio.file.Files.getFileStore(path).supportsFileAttributeView("posix")) java.nio.file.Files.getPosixFilePermissions(path) else null
+        override fun setPosixPermissions(path: java.nio.file.Path, permissions: Set<java.nio.file.attribute.PosixFilePermission>) {
+            java.nio.file.Files.setPosixFilePermissions(path, permissions)
+        }
+        override fun readOnlyAttribute(path: java.nio.file.Path): Boolean? =
+            if (java.nio.file.Files.getFileStore(path).supportsFileAttributeView("dos")) {
+                java.nio.file.Files.readAttributes(path, java.nio.file.attribute.DosFileAttributes::class.java).isReadOnly
+            } else null
+        override fun setReadOnlyAttribute(path: java.nio.file.Path, readOnly: Boolean) {
+            java.nio.file.Files.setAttribute(path, "dos:readonly", readOnly)
+        }
+    }
+}
+
+/**
+ * A read-only target follows the overwrite option like any other existing file: the write
+ * window makes it writable, then the original mode is put back. The VFS refuses to write a
+ * file the OS marks read-only, so without this an overwrite consent became a failure.
+ */
+internal fun <T> withWritablePath(
+    path: java.nio.file.Path,
+    access: FileWriteAccess,
+    afterModeChange: () -> Unit,
+    write: () -> T
+): T {
+    if (access.isWritable(path)) return write()
+    // Record the original state on every store and put back exactly that. On Windows a file can
+    // be unwritable through its ACL with the DOS read-only attribute clear; clearing nothing and
+    // then setting read-only in `finally` added an attribute the file never had.
+    val savedMode = access.posixPermissions(path)
+    val wasReadOnly = if (savedMode == null) access.readOnlyAttribute(path) == true else false
+    when {
+        savedMode != null -> access.setPosixPermissions(path, savedMode + java.nio.file.attribute.PosixFilePermission.OWNER_WRITE)
+        wasReadOnly -> access.setReadOnlyAttribute(path, false)
+        else -> return write()
+    }
+    afterModeChange()
+    try {
+        return write()
+    } finally {
+        if (savedMode != null) access.setPosixPermissions(path, savedMode) else access.setReadOnlyAttribute(path, true)
+        afterModeChange()
+    }
 }
 
 /** Suppress VCS add/remove prompts only for paths in the current restore command. */
