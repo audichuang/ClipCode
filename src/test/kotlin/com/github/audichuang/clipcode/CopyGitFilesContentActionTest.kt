@@ -228,13 +228,13 @@ class CopyGitFilesContentActionTest : BasePlatformTestCase() {
         assertContains(clipboardText(), "base64 follows")
     }
 
-    fun testNonTextExcludeChoiceCopiesTodaysPayload() {
+    fun testNonTextExcludeChoiceOfALoneNonTextFileCopiesNothing() {
+        Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection("untouched"), null)
         val chooser = RecordingChooser(NonTextChoice.EXCLUDE)
         copyWithChooser(chooser, listOf(nonTextVfEntry()))
         assertEquals(1, chooser.summaries.size)
-        val text = clipboardText()
-        assertFalse(text.contains("base64 follows"), text)
-        assertContains(text, "// Unable to read file content")
+        // X3: the lone non-text file is skipped under Exclude, so nothing is copied and the clipboard stays.
+        assertEquals("untouched", clipboardText())
     }
 
     fun testNonTextCancelChoiceCopiesNothing() {

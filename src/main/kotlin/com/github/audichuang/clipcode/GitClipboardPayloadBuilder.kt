@@ -50,7 +50,11 @@ object GitClipboardPayloadBuilder {
         /** UTF-8 length of [text]; only computed when non-text files were carried. */
         val utf8Bytes: Long = 0,
         /** The unreadable entries, by name, in every build; the notice names them (spec "What is carried"). */
-        val skipNotes: SkipNotes = SkipNotes()
+        val skipNotes: SkipNotes = SkipNotes(),
+        /** X3: no entry carried content (all skipped): the clipboard must be left alone. */
+        val nothingToCopy: Boolean = false,
+        /** Entries skipped for size, for the "Nothing to copy" lines. */
+        val sizeSkipped: Int = 0
     ) {
         fun toSummary(settings: CopyFileContentSettings?) = NonTextCopySummary(
             carried = nonTextCarried,
@@ -111,6 +115,10 @@ object GitClipboardPayloadBuilder {
         rebuildToday: (ProgressIndicator) -> Payload,
         deliver: (Payload) -> Unit
     ) {
+        // X3 applies to whichever build reaches the user: Include, or today's build after Exclude.
+        val guarded = { payload: Payload ->
+            if (payload.nothingToCopy) showNothingToCopy(project, payload) else deliver(payload)
+        }
         fun rebuild(leftOut: Int?, leftOutCapped: Boolean) {
             ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Building Git clipboard payload…", true) {
                 private var payload: Payload? = null
@@ -122,7 +130,7 @@ object GitClipboardPayloadBuilder {
 
                 override fun onSuccess() {
                     if (project.isDisposed) return
-                    payload?.let { deliver(it.withLimitLeftOut(leftOut, leftOutCapped)) }
+                    payload?.let { guarded(it.withLimitLeftOut(leftOut, leftOutCapped)) }
                 }
             })
         }
@@ -133,7 +141,7 @@ object GitClipboardPayloadBuilder {
             return
         }
         when (chooser.choose(project, include.toSummary(settings))) {
-            NonTextChoice.INCLUDE -> deliver(include)
+            NonTextChoice.INCLUDE -> guarded(include)
             NonTextChoice.EXCLUDE -> rebuild(null, false)
             NonTextChoice.CANCEL -> Unit
         }
@@ -231,8 +239,19 @@ object GitClipboardPayloadBuilder {
         val copiedContent = mutableListOf<GitContentResolver.ResolvedGitEntry>()
         val acceptedDeleted = mutableListOf<GitContentResolver.ResolvedGitEntry>()
 
+        // X1: the portability rule runs on every entry (working tree, revision, staged, deleted) before
+        // anything else, with the path as the header would carry it. An unportable path is named and never
+        // reaches a header, and it neither spends the file-count limit nor counts as left out.
+        fun unportable(entry: GitContentResolver.ResolvedGitEntry): Boolean {
+            if (PortableName.isPortableFile(pathResolver, entry.filePath)) return false
+            skipNotes.note(SkipCategory.NAME_NOT_PORTABLE, pathResolver.rawRelativePath(entry.filePath) ?: entry.filePath)
+            logger.info("Skipping Git entry: name not portable (${PortableName.visibleName(entry.filePath)})")
+            return true
+        }
+
         contentEntries.forEach { entry ->
             indicator.checkCanceled()
+            if (unportable(entry)) return@forEach
             if (!accepted(entry.filePath)) return@forEach
             val outcome = ApplicationManager.getApplication().runReadAction<Resolved> {
                 resolveContentEntry(entry, pathResolver, maxFileSizeBytes, maxNonTextBytes, includeNonText)
@@ -260,6 +279,7 @@ object GitClipboardPayloadBuilder {
         }
 
         deletedMarkerEntries.forEach { entry ->
+            if (unportable(entry)) return@forEach
             if (!accepted(entry.filePath)) return@forEach
             acceptedDeleted.add(entry)
             copiedCount++
@@ -303,7 +323,25 @@ object GitClipboardPayloadBuilder {
             limitLeftOut = if (includeNonText) limitLeftOut else null,
             limitLeftOutCapped = includeNonText && limitLeftOutCapped,
             utf8Bytes = if (nonTextCarried.isNotEmpty()) NonTextCopy.utf8Length(text) else 0L,
-            skipNotes = skipNotes
+            skipNotes = skipNotes,
+            nothingToCopy = copiedCount == 0,
+            sizeSkipped = skippedSizeCount
+        )
+    }
+
+    /**
+     * X3: every entry was skipped, so the clipboard is not written. Shown even with the copy notification
+     * off, since the user's clipboard was left as it was.
+     */
+    @IdeBoundCode
+    fun showNothingToCopy(project: Project, payload: Payload) {
+        val lines = NonTextCopy.nothingToCopyLines(payload.sizeSkipped, payload.skipNotes)
+        CopyFileContentAction.showNotification(
+            "<html><b>Nothing to copy</b>" +
+                lines.joinToString("") { "<br>" + com.intellij.openapi.util.text.StringUtil.escapeXmlEntities(it) } +
+                "</html>",
+            com.intellij.notification.NotificationType.WARNING,
+            project
         )
     }
 
