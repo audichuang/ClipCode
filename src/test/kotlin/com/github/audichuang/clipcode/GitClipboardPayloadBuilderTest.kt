@@ -288,14 +288,14 @@ class GitClipboardPayloadBuilderTest : BasePlatformTestCase() {
 
     /** Spec "What is carried": the Include notice names what it could not read, not only counts it. */
     fun testIncludeNoticeNamesUnreadableEntries() {
-        val gone = GitContentResolver.ResolvedGitEntry(ChangeTypeLabel.MODIFIED, "src/Gone<1>.kt", null, null)
+        val gone = GitContentResolver.ResolvedGitEntry(ChangeTypeLabel.MODIFIED, "src/Gone&1.kt", null, null)
         val entries = listOf(vfEntry("img/logo.png", pngBytes(4)), gone)
 
         // B7: after Include the skip is called "Unreadable", with its count stated once (spec lines 117-118).
         val include = buildWith(entries, includeNonText = true)
         assertEquals("1 files copied. Non-text files copied as Base64: 1.", include.summary)
         assertEquals(
-            "<b>${include.summary}</b><br>Unreadable: 1<br>src/Gone&lt;1&gt;.kt<br>",
+            "<b>${include.summary}</b><br>Unreadable: 1<br>src/Gone&amp;1.kt<br>",
             include.noticeHtml()
         )
 
@@ -305,7 +305,7 @@ class GitClipboardPayloadBuilderTest : BasePlatformTestCase() {
         assertEquals("0 files copied (2 skipped: not UTF-8 text or unreadable).", exclude.summary)
         val notice = exclude.noticeHtml()
         assertTrue(notice.startsWith("<b>${exclude.summary}</b><br>"), notice)
-        assertTrue(notice.endsWith("logo.png<br>src/Gone&lt;1&gt;.kt<br>"), notice)
+        assertTrue(notice.endsWith("logo.png<br>src/Gone&amp;1.kt<br>"), notice)
         assertFalse(notice.contains("Unreadable:"), notice)
     }
 
