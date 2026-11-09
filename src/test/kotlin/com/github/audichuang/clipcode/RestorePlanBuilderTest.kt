@@ -625,6 +625,34 @@ class RestorePlanBuilderTest {
     }
 
     @Test
+    fun `NFC and NFD spellings of one name collide exactly when the file system folds normalization`() {
+        val root = Files.createTempDirectory("clipcode-nt-nfc").toRealPath()
+        val nfc = java.text.Normalizer.normalize("caf\u00e9.txt", java.text.Normalizer.Form.NFC)
+        val nfd = java.text.Normalizer.normalize("caf\u00e9.txt", java.text.Normalizer.Form.NFD)
+        assertTrue(nfc != nfd)
+        val mac = System.getProperty("os.name").orEmpty().lowercase().contains("mac")
+        val plan = planFor(
+            root,
+            listOf(
+                ClipboardRestoreParser.ParsedClipboardEntry(nfc, "1"),
+                ClipboardRestoreParser.ParsedClipboardEntry(nfd, "2")
+            )
+        )
+        if (mac) {
+            assertEquals(emptyList(), plan.createOperations.map { it.relativePath })
+            assertEquals(
+                listOf(nfc to RestorePlan.SkipReason.TARGET_COLLISION, nfd to RestorePlan.SkipReason.TARGET_COLLISION),
+                plan.skippedOperations.map { it.relativePath to it.reason }
+            )
+        } else {
+            // No NFC folding outside macOS: two distinct names (when the file system keeps them distinct).
+            org.junit.Assume.assumeTrue("file system folds normalization here", !Files.exists(root.resolve("probe\u00e9").also { Files.createFile(it) }.parent.resolve(java.text.Normalizer.normalize("probe\u00e9", java.text.Normalizer.Form.NFD))))
+            assertEquals(2, plan.createOperations.size)
+            assertTrue(plan.skippedOperations.isEmpty())
+        }
+    }
+
+    @Test
     fun `exact duplicate paths are not collisions`() {
         val root = Files.createTempDirectory("clipcode-nt-dup").toRealPath()
         val plan = planFor(
