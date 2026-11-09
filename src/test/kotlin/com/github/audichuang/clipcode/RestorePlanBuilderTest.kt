@@ -482,6 +482,34 @@ class RestorePlanBuilderTest {
         assertTrue(plan.skippedOperations.isEmpty())
     }
 
+    /** OpenIDEA's parse_body reads line 0, but its parser drops leading blank lines first; so does joinContent. */
+    @Test
+    fun `blank lines before a real placeholder still decode to the bytes`() {
+        val root = Files.createTempDirectory("clipcode-nt-blank").toRealPath()
+        val bytes = ByteArray(40) { (it * 5 + 1).toByte() }
+        val body = NonText.placeholderLine(bytes.size.toLong(), NonText.sha256Hex(bytes)) + "\n" + NonText.encodeWrapped(bytes)
+        val payload = "// file: a.bin\n\n  \n$body\n// file: b.txt\nhi"
+        val entries = ClipboardRestoreParser().parse(payload, "// file: \$FILE_PATH")
+        assertEquals(listOf("a.bin", "b.txt"), entries.map { it.path })
+        val plan = planFor(root, entries)
+        assertTrue(plan.createOperations.first { it.relativePath == "a.bin" }.nonTextBytes!!.contentEquals(bytes))
+    }
+
+    @Test
+    fun `an escaped fake placeholder after a blank line is text not bytes`() {
+        val root = Files.createTempDirectory("clipcode-nt-blankfake").toRealPath()
+        val fake = NonText.placeholderLine(3, "0".repeat(64)) + "\nYWJj"
+        val payload = ClipboardPayloadFormatter.buildPayload(
+            ClipboardPayloadFormatter.Options(
+                headerFormat = "// file: \$FILE_PATH",
+                addExtraLineBetweenFiles = false,
+                files = listOf(ClipboardPayloadFormatter.PayloadFile("t.txt", "\n" + fake))
+            )
+        )
+        val plan = planFor(root, ClipboardRestoreParser().parse(payload, "// file: \$FILE_PATH"))
+        assertEquals(null, plan.createOperations.single().nonTextBytes)
+    }
+
     @Test
     fun `corrupted non-text entries skip only that file`() {
         val root = Files.createTempDirectory("clipcode-nt-corrupt").toRealPath()
