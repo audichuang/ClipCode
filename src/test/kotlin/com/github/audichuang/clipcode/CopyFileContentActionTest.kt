@@ -287,6 +287,110 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         }
     }
 
+    /** Spec case 30: a folder holding only a mode-000 file. Windows ignores the chmod, so it is skipped there. */
+    @Test
+    fun testFolderHoldingOnlyAnUnreadableFileCopiesNothing() {
+        val root = Files.createTempDirectory("clipcode-only-locked-file")
+        val folder = root.resolve("folder").createDirectories()
+        val locked = folder.resolve("locked.txt").also { Files.writeString(it, "SECRET") }
+        try {
+            locked.toFile().setReadable(false, false)
+            locked.toFile().setWritable(false, false)
+            if (posix) assertFalse(Files.isReadable(locked), "test setup: chmod must take effect on POSIX")
+            assumeFalse("chmod cannot make a file unreadable here (Windows)", Files.isReadable(locked))
+            val dir = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root) ?: error("no vfs dir")
+            VfsUtil.markDirtyAndRefresh(false, true, true, dir)
+            val folderVfs = dir.findChild("folder") ?: error("no folder vfs")
+            for (choice in listOf(NonTextChoice.INCLUDE, NonTextChoice.EXCLUDE)) {
+                setSentinel()
+                val messages = collectNotifications()
+                val chooser = RecordingChooser(choice)
+                CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(folderVfs))
+                assertTrue(chooser.summaries.isEmpty(), "nothing non-text to ask about")
+                val notice = nothingToCopyNotice(messages)
+                assertContains(notice, "1 skipped: not UTF-8 text or unreadable.<br>")
+                // Outside every root the name is the absolute path, shortened in the middle; the end stays.
+                assertContains(notice, "/locked.txt</html>")
+            }
+        } finally {
+            locked.toFile().setReadable(true, false)
+            locked.toFile().setWritable(true, false)
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    /** Spec case 30: a folder holding only `q"uote.txt`. Windows cannot create the name, so it is skipped there. */
+    @Test
+    fun testFolderHoldingOnlyAQuoteNameCopiesNothing() {
+        val root = Files.createTempDirectory("clipcode-only-quote")
+        try {
+            val folder = root.resolve("folder").createDirectories()
+            val created = nameRoundTrips(folder, "q\"uote.txt") &&
+                runCatching { Files.writeString(folder.resolve("q\"uote.txt"), "QUOTE-CONTENT") }.isSuccess
+            if (posix) assertTrue(created, "test setup: POSIX file names may hold '\"'")
+            assumeTrue("Windows file names cannot contain '\"'", created)
+            val dir = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root) ?: error("no vfs dir")
+            VfsUtil.markDirtyAndRefresh(false, true, true, dir)
+            val folderVfs = dir.findChild("folder") ?: error("no folder vfs")
+            assertEquals(listOf("q\"uote.txt"), folderVfs.children.map { it.name }, "test setup: VFS must list the name")
+            for (choice in listOf(NonTextChoice.INCLUDE, NonTextChoice.EXCLUDE)) {
+                setSentinel()
+                val messages = collectNotifications()
+                CopyFileContentAction(RecordingChooser(choice)).performCopyFilesContent(project, arrayOf(folderVfs))
+                val notice = nothingToCopyNotice(messages)
+                assertContains(notice, "Name not portable: 1<br>")
+                assertContains(notice, "q&quot;uote.txt")
+                assertFalse(notice.contains("QUOTE-CONTENT"), notice)
+            }
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    /**
+     * Spec case 36: the limit is reached but the number it left out is 0 — the next item is filtered out
+     * (exact 0), or is a folder that was never listed (0 counted, so the number is only a lower bound). The
+     * notice states the limit and has no left-out clause: never "0+", "left out 0" or "more files".
+     */
+    @Test
+    fun testFileLimitWithNothingLeftOutHasNoLeftOutClause() {
+        val state = CopyFileContentSettings.getInstance(project)!!.state
+        state.setMaxFileCount = true
+        state.fileCountLimit = 2
+        state.useFilters = true
+        state.useExcludeFilters = true
+        state.useIncludeFilters = false
+        state.filterRules = mutableListOf(
+            CopyFileContentSettings.FilterRule(
+                type = CopyFileContentSettings.FilterType.PATTERN,
+                action = CopyFileContentSettings.FilterAction.EXCLUDE,
+                value = "*.log",
+                enabled = true
+            )
+        )
+        val a = myFixture.addFileToProject("zero/a.kt", "A").virtualFile
+        val b = myFixture.addFileToProject("zero/b.kt", "B").virtualFile
+        val excluded = myFixture.addFileToProject("zero/c.log", "C").virtualFile
+        myFixture.addFileToProject("zero/later/d.kt", "D")
+        val later = myFixture.findFileInTempDir("zero/later") ?: error("dir not found")
+
+        for ((label, selection) in listOf("filtered" to arrayOf(a, b, excluded), "unlisted folder" to arrayOf(a, b, later))) {
+            val include = buildIncludePayload(selection, com.intellij.openapi.progress.EmptyProgressIndicator())
+            assertEquals(true, include.field("fileLimitReached"), label)
+            assertEquals(0, include.field("limitLeftOut"), label)
+            // The unlisted folder makes the 0 a lower bound: the very input that would read "0+".
+            assertEquals(label == "unlisted folder", include.field("limitLeftOutCapped"), label)
+
+            val messages = collectNotifications()
+            val chooser = RecordingChooser(NonTextChoice.INCLUDE)
+            CopyFileContentAction(chooser).performCopyFilesContent(project, selection)
+            assertTrue(chooser.summaries.isEmpty(), label)
+            val warning = messages.singleOrNull { it.contains("File Limit Reached") } ?: error("$label: $messages")
+            assertContains(warning, "The file limit of 2 files was reached.")
+            listOf("0+", "left out", "more files").forEach { assertFalse(warning.contains(it), "$label: '$it' in $warning") }
+        }
+    }
+
     @Test
     fun testFileCountLimitTruncates() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
@@ -821,7 +925,10 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         }
     }
 
-    private fun buildIncludePayload(dir: VirtualFile, indicator: com.intellij.openapi.progress.ProgressIndicator): Any {
+    private fun buildIncludePayload(dir: VirtualFile, indicator: com.intellij.openapi.progress.ProgressIndicator): Any =
+        buildIncludePayload(arrayOf(dir), indicator)
+
+    private fun buildIncludePayload(selection: Array<VirtualFile>, indicator: com.intellij.openapi.progress.ProgressIndicator): Any {
         val settings = CopyFileContentSettings.getInstance(project)!!
         val method = CopyFileContentAction::class.java.getDeclaredMethod(
             "buildCopyPayload",
@@ -829,7 +936,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
             CopyFileContentSettings::class.java, kotlin.jvm.functions.Function2::class.java,
             com.intellij.openapi.progress.ProgressIndicator::class.java, Boolean::class.javaPrimitiveType
         ).apply { isAccessible = true }
-        return method.invoke(CopyFileContentAction(), project, arrayOf(dir), settings, null, indicator, true)!!
+        return method.invoke(CopyFileContentAction(), project, selection, settings, null, indicator, true)!!
     }
 
     private fun Any.field(name: String) = javaClass.getDeclaredField(name).apply { isAccessible = true }.get(this)
@@ -1063,7 +1170,8 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
 
     /**
      * chmod 000 file, dangling symlink and an unlistable folder are named after Include. Windows ignores
-     * the chmod, so there the file and folder are rightly copied and only the dangling link is named.
+     * the chmod, so there the file and folder are rightly copied and only the dangling link is named; a
+     * Windows host without the symlink privilege cannot build the fixture and skips the test.
      */
     @Test
     fun testIncludeNamesUnreadableItems() {
@@ -1072,8 +1180,10 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         val lockedDir = root.resolve("lockedDir").createDirectories()
         Files.writeString(lockedDir.resolve("inner.txt"), "inner")
         Files.write(root.resolve("ok.png"), pngBytes(9))
-        Files.createSymbolicLink(root.resolve("dangling.txt"), root.resolve("missing-target"))
         try {
+            val linked = runCatching { Files.createSymbolicLink(root.resolve("dangling.txt"), root.resolve("missing-target")) }.isSuccess
+            if (posix) assertTrue(linked, "test setup: the symlink must exist on POSIX")
+            assumeTrue("Windows refuses to create a symlink without the privilege", linked)
             locked.toFile().setReadable(false, false)
             lockedDir.toFile().setReadable(false, false)
             lockedDir.toFile().setExecutable(false, false)

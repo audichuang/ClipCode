@@ -255,6 +255,45 @@ class PasteAndRestoreFilesActionTest : BasePlatformTestCase() {
         }
     }
 
+    /**
+     * Spec case 34: a real plan built on disk taken through to the preview text. `IMG.png` / `img.png` on a
+     * file system that folds case are one file: both rows read "Another entry writes the same file" and
+     * neither is listed to create; other.txt is. Where case is not folded (Linux) both are ordinary creates.
+     */
+    fun testCaseCollisionFromARealPlanReachesThePreviewText() {
+        val root = java.nio.file.Files.createTempDirectory("clipcode-preview-case").toRealPath()
+        try {
+            java.nio.file.Files.write(root.resolve("probe.tmp"), byteArrayOf(1))
+            val folds = java.nio.file.Files.exists(root.resolve("PROBE.TMP"))
+            java.nio.file.Files.delete(root.resolve("probe.tmp"))
+            val rootPath = root.toString().replace('\\', '/')
+            val bytes = byteArrayOf(0, 1)
+            val png = NonText.placeholderLine(2, NonText.sha256Hex(bytes)) + "\n" + NonText.encodeWrapped(bytes)
+            val plan = RestorePlanBuilder(ClipboardPathResolver.fromRootPaths(listOf(rootPath), rootPath)).build(
+                listOf(
+                    ClipboardRestoreParser.ParsedClipboardEntry("IMG.png", png),
+                    ClipboardRestoreParser.ParsedClipboardEntry("img.png", png),
+                    ClipboardRestoreParser.ParsedClipboardEntry("other.txt", "ok")
+                )
+            )
+            val message = PasteAndRestoreFilesAction().confirmationMessage(plan)
+            if (folds) {
+                assertContains(message, "Will be SKIPPED:")
+                assertContains(message, "Another entry writes the same file: 2")
+                assertContains(message, "Files to CREATE (new) (1):")
+                assertContains(message, "+ other.txt")
+                assertFalse(message.contains("+ IMG.png"), message)
+                assertFalse(message.contains("+ img.png"), message)
+                assertFalse(message.contains("TARGET_COLLISION"), message)
+            } else {
+                assertContains(message, "Files to CREATE (new) (3):")
+                assertFalse(message.contains("Another entry writes the same file"), message)
+            }
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     // === reflection helpers ===
 
     private fun PasteAndRestoreFilesAction.confirmationMessage(plan: RestorePlan): String =

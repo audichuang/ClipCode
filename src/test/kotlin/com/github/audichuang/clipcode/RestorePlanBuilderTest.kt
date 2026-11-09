@@ -652,6 +652,73 @@ class RestorePlanBuilderTest {
         }
     }
 
+    /**
+     * Spec case 32: non-text `café.png` spelled in NFC and in NFD next to `other.png`. On macOS both café
+     * rows are skipped with the collision reason and other.png is still created; elsewhere (no normalization
+     * folding) all three are planned as today.
+     */
+    @Test
+    fun `non-text NFC and NFD spellings collide on macOS and the other entry is still planned`() {
+        val root = Files.createTempDirectory("clipcode-nt-nfc-png").toRealPath()
+        val nfc = java.text.Normalizer.normalize("café.png", java.text.Normalizer.Form.NFC)
+        val nfd = java.text.Normalizer.normalize("café.png", java.text.Normalizer.Form.NFD)
+        assertTrue(nfc != nfd)
+        val mac = System.getProperty("os.name").orEmpty().lowercase().contains("mac")
+        val plan = planFor(
+            root,
+            listOf(nonTextEntry(nfc, byteArrayOf(0, 1)), nonTextEntry(nfd, byteArrayOf(0, 2)), nonTextEntry("other.png", byteArrayOf(0, 3)))
+        )
+        if (mac) {
+            assertEquals(listOf("other.png"), plan.createOperations.map { it.relativePath })
+            assertEquals(
+                listOf(nfc to RestorePlan.SkipReason.TARGET_COLLISION, nfd to RestorePlan.SkipReason.TARGET_COLLISION),
+                plan.skippedOperations.map { it.relativePath to it.reason }
+            )
+        } else {
+            org.junit.Assume.assumeTrue(
+                "file system folds normalization here",
+                !Files.exists(root.resolve("probeé").also { Files.createFile(it) }.parent.resolve(java.text.Normalizer.normalize("probeé", java.text.Normalizer.Form.NFD)))
+            )
+            assertEquals(listOf(nfc, nfd, "other.png"), plan.createOperations.map { it.relativePath })
+            assertTrue(plan.skippedOperations.isEmpty())
+        }
+    }
+
+    /**
+     * Spec case 34: `real/x.png` and `link/x.png` where `link` is a symlink to `real` inside the root are one
+     * file. Both rows are skipped with the collision reason; the other entry is planned.
+     */
+    @Test
+    fun `entries meeting through a symlinked parent folder collide`() {
+        val root = Files.createTempDirectory("clipcode-nt-linkparent").toRealPath()
+        root.resolve("real").createDirectories()
+        val linked = runCatching { Files.createSymbolicLink(root.resolve("link"), root.resolve("real")) }.isSuccess
+        if (!System.getProperty("os.name").orEmpty().lowercase().contains("win")) assertTrue(linked, "test setup: the symlink must exist on POSIX")
+        org.junit.Assume.assumeTrue("cannot create symlinks here (Windows without the privilege)", linked)
+        // Each alone is an ordinary create: the collision is not a resolver refusal.
+        assertEquals(listOf("link/x.png"), planFor(root, listOf(nonTextEntry("link/x.png", byteArrayOf(1)))).createOperations.map { it.relativePath })
+
+        for (existing in listOf(false, true)) {
+            if (existing) Files.write(root.resolve("real/x.png"), byteArrayOf(9))
+            val plan = planFor(
+                root,
+                listOf(
+                    nonTextEntry("real/x.png", byteArrayOf(0, 1)),
+                    nonTextEntry("link/x.png", byteArrayOf(0, 2)),
+                    ClipboardRestoreParser.ParsedClipboardEntry("link/new/y.txt", "text"),
+                    ClipboardRestoreParser.ParsedClipboardEntry("other.txt", "ok")
+                )
+            )
+            assertEquals(listOf("link/new/y.txt", "other.txt"), plan.createOperations.map { it.relativePath }, "existing=$existing")
+            assertEquals(
+                listOf("real/x.png" to RestorePlan.SkipReason.TARGET_COLLISION, "link/x.png" to RestorePlan.SkipReason.TARGET_COLLISION),
+                plan.skippedOperations.map { it.relativePath to it.reason },
+                "existing=$existing"
+            )
+            assertTrue(plan.skippedOperations.all { skipReasonText(it.reason) == "Another entry writes the same file" })
+        }
+    }
+
     @Test
     fun `exact duplicate paths are not collisions`() {
         val root = Files.createTempDirectory("clipcode-nt-dup").toRealPath()

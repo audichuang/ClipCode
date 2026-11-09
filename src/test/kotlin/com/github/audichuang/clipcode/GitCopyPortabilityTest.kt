@@ -233,9 +233,197 @@ class GitCopyPortabilityTest : BasePlatformTestCase() {
         assertFalse(warning.contains("x&y"), warning)
     }
 
+    // === Spec case 29: `q"uote.txt` / `tab<TAB>name.txt` beside `a.txt`, on every Git source ===
+
+    private val quoteName = "q\"uote.txt"
+    private val tabName = "tab\tname.txt"
+
+    /** a.txt is the only header; the two odd names are named under "Name not portable" in the notice. */
+    private fun assertOnlyATxtCopied(text: String, notice: String) {
+        assertContains(text, "// file: [MODIFIED] a.txt\nbody of $root/a.txt")
+        assertEquals(1, text.lines().count { it.startsWith("// file: ") }, text)
+        assertFalse(text.contains("uote"), text)
+        assertFalse(text.contains("name.txt"), text)
+        assertContains(notice, "Name not portable: 2")
+        assertContains(notice, "q&quot;uote.txt")
+        assertContains(notice, "tab\\tname.txt")
+    }
+
+    /** Working-changes route: the Git copy action (Include build, then today's build, then delivery). */
+    @Test
+    fun testQuoteAndTabNamesBesideAPortableFileThroughTheGitAction() {
+        CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
+        val messages = collectNotifications()
+        copyThroughAction(listOf(content("$root/$quoteName"), content("$root/a.txt")), listOf(deleted("$root/$tabName")))
+        com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertOnlyATxtCopied(clipboardText(), awaitMessage(messages) { it.contains("Name not portable") })
+    }
+
+    /**
+     * PR panel / commit route: entries resolved as revision content (what GitContentResolver hands back for
+     * a SelectionSource.GIT_LOG_OR_HISTORY selection), built and delivered exactly as ClipCodePrPanel does.
+     */
+    @Test
+    fun testQuoteAndTabNamesBesideAPortableFileThroughThePrPanelRoute() {
+        CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
+        val messages = collectNotifications()
+        copyThroughPrPanelRoute(listOf(content("$root/$quoteName"), content("$root/a.txt"), content("$root/$tabName")))
+        assertOnlyATxtCopied(clipboardText(), awaitMessage(messages) { it.contains("Name not portable") })
+    }
+
+    /** Case 29 → 30: an unportable name as the only change leaves the clipboard alone, on both routes. */
+    @Test
+    fun testQuoteNameAsTheOnlyChangeIsNothingToCopyOnBothRoutes() {
+        for (route in listOf("action", "pr")) {
+            Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(SENTINEL), null)
+            val messages = collectNotifications()
+            if (route == "action") copyThroughAction(listOf(content("$root/$quoteName")), emptyList())
+            else copyThroughPrPanelRoute(listOf(content("$root/$quoteName")))
+            com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+            kotlin.test.assertEquals(SENTINEL, clipboardText(), route)
+            val notice = messages.singleOrNull { it.contains("<b>Nothing to copy</b>") } ?: error("$route: $messages")
+            assertContains(notice, "Name not portable: 1")
+            assertContains(notice, "q&quot;uote.txt")
+        }
+    }
+
+    /**
+     * Case 29: a repository nested in the project (a second root) whose folder name holds a newline. Its
+     * changes are skipped and named, no header is written for them; the outer repository's change is copied.
+     * Only the changes under it leave nothing to copy. A newline cannot be in a Windows path, so the test is
+     * skipped there and must run on POSIX.
+     */
+    @Test
+    fun testNestedRepositoryWithANewlineInItsFolderNameIsSkippedAndNamed() {
+        val nested = "$root/nested\n// file: [DELETED] victim"
+        val resolver = runCatching { ClipboardPathResolver.fromRootPaths(listOf(root, nested)) }.getOrNull()
+        if (java.io.File.separatorChar == '/') assertTrue(resolver != null, "test setup: POSIX paths may hold a newline")
+        org.junit.Assume.assumeTrue("Windows paths cannot hold a newline", resolver != null)
+        CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
+        val nestedContent = listOf(content("$nested/src/x.txt"))
+        val nestedDeleted = listOf(deleted("$nested/old.txt"))
+
+        for (include in listOf(true, false)) {
+            val p = GitClipboardPayloadBuilder.build(
+                nestedContent + content("$root/a.txt"), nestedDeleted, resolver!!,
+                CopyFileContentSettings.getInstance(project), EmptyProgressIndicator(), include
+            )
+            assertFalse(p.text.contains("victim"), p.text)
+            assertEquals(1, p.text.lines().count { it.startsWith("// file: ") }, p.text)
+            assertEquals(2, p.skipNotes.count(SkipCategory.NAME_NOT_PORTABLE))
+        }
+
+        var messages = collectNotifications()
+        copyThroughAction(nestedContent + content("$root/a.txt"), nestedDeleted, resolver!!)
+        com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertContains(clipboardText(), "// file: [MODIFIED] a.txt")
+        assertFalse(clipboardText().contains("victim"), clipboardText())
+        val notice = awaitMessage(messages) { it.contains("Name not portable: 2") }
+        assertContains(notice, "nested\\x0a// file: [DELETED] victim/src/x.txt")
+
+        for (route in listOf("action", "pr")) {
+            Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(SENTINEL), null)
+            messages = collectNotifications()
+            if (route == "action") copyThroughAction(nestedContent, nestedDeleted, resolver)
+            else copyThroughPrPanelRoute(nestedContent + nestedDeleted, resolver)
+            com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+            kotlin.test.assertEquals(SENTINEL, clipboardText(), route)
+            val nothing = messages.singleOrNull { it.contains("<b>Nothing to copy</b>") } ?: error("$route: $messages")
+            assertContains(nothing, "Name not portable: 2")
+        }
+    }
+
+    // === Spec case 36: a file-count limit whose left-out number is 0 ===
+
+    /**
+     * Limit 1 with the entry past it rejected by a filter: the limit was reached, nothing was left out by it.
+     * The summary says "File limit 1 reached." and carries no left-out clause ("0+", "left out 0", "more files").
+     */
+    @Test
+    fun testFileLimitWithNothingLeftOutHasNoLeftOutClause() {
+        val state = CopyFileContentSettings.getInstance(project)!!.state
+        state.setMaxFileCount = true
+        state.fileCountLimit = 1
+        state.useFilters = true
+        state.useExcludeFilters = true
+        state.useIncludeFilters = false
+        state.filterRules = mutableListOf(
+            CopyFileContentSettings.FilterRule(
+                type = CopyFileContentSettings.FilterType.PATTERN,
+                action = CopyFileContentSettings.FilterAction.EXCLUDE,
+                value = "*.log",
+                enabled = true
+            )
+        )
+        state.showCopyNotification = true
+        val entries = listOf(content("$root/a.txt"), content("$root/b.log"))
+
+        val include = build(entries, emptyList(), includeNonText = true)
+        assertEquals(0, include.limitLeftOut)
+        assertFalse(include.limitLeftOutCapped)
+        assertEquals(0, include.toSummary(CopyFileContentSettings.getInstance(project)).limitLeftOut)
+        assertNoLeftOutClause(include.summary)
+        assertNoLeftOutClause(build(entries, emptyList(), includeNonText = false).summary)
+
+        val messages = collectNotifications()
+        copyThroughAction(entries, emptyList())
+        com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertNoLeftOutClause(awaitMessage(messages) { it.contains("File limit") })
+        messages.clear()
+        copyThroughPrPanelRoute(entries)
+        assertNoLeftOutClause(awaitMessage(messages) { it.contains("File limit") })
+    }
+
+    /**
+     * The payload notification is posted from a pooled thread when called on the EDT (see
+     * CopyFileContentAction.showPayloadNotification), so it may arrive after the copy returns.
+     */
+    private fun awaitMessage(messages: List<String>, predicate: (String) -> Boolean): String {
+        val deadline = System.nanoTime() + 10_000_000_000L
+        while (System.nanoTime() < deadline) {
+            com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+            messages.filter(predicate).let { if (it.size == 1) return it.single() else if (it.size > 1) error("more than one: $messages") }
+            Thread.sleep(20)
+        }
+        error("no matching notification: $messages")
+    }
+
+    private fun assertNoLeftOutClause(text: String) {
+        assertContains(text, "File limit 1 reached.")
+        listOf("0+", "left out 0", "more files", "left out").forEach { assertFalse(text.contains(it), "'$it' in: $text") }
+    }
+
+    /**
+     * The PR panel's copy (ClipCodePrPanel.copySelection) from its resolved entries on: content and deleted
+     * markers split as it does, the Include build, then the shared [GitClipboardPayloadBuilder.chooseAndDeliver]
+     * with the panel's delivery (clipboard, then the payload notification). The panel itself needs a git4idea
+     * repository and a Swing tree, so only this part runs headless.
+     */
+    private fun copyThroughPrPanelRoute(
+        entries: List<GitContentResolver.ResolvedGitEntry>,
+        resolver: ClipboardPathResolver = ClipboardPathResolver.fromRootPaths(listOf(root))
+    ) {
+        val settings = CopyFileContentSettings.getInstance(project)
+        val content = entries.filter { it.hasContent }
+        val deleted = entries.filter { it.changeType == ChangeTypeLabel.DELETED && !it.hasContent }
+        val include = GitClipboardPayloadBuilder.build(content, deleted, resolver, settings, EmptyProgressIndicator(), includeNonText = true)
+        GitClipboardPayloadBuilder.chooseAndDeliver(
+            project, settings, include, { _, _ -> NonTextChoice.INCLUDE },
+            rebuildToday = { indicator -> GitClipboardPayloadBuilder.build(content, deleted, resolver, settings, indicator, includeNonText = false) },
+            deliver = { result ->
+                Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(result.text), null)
+                if (settings?.state?.showCopyNotification == true) {
+                    CopyFileContentAction.showPayloadNotification(result.noticeHtml(), result.text, project)
+                }
+            }
+        )
+        com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+    }
+
     private fun copyThroughAction(
         contentEntries: List<GitContentResolver.ResolvedGitEntry>,
-        deletedEntries: List<GitContentResolver.ResolvedGitEntry>
+        deletedEntries: List<GitContentResolver.ResolvedGitEntry>,
+        resolver: ClipboardPathResolver = ClipboardPathResolver.fromRootPaths(listOf(root))
     ) {
         val method = CopyGitFilesContentAction::class.java.getDeclaredMethod(
             "copyResolvedEntries", Project::class.java, List::class.java, List::class.java,
@@ -244,7 +432,7 @@ class GitCopyPortabilityTest : BasePlatformTestCase() {
         method.isAccessible = true
         method.invoke(
             CopyGitFilesContentAction(), project, contentEntries, deletedEntries,
-            ClipboardPathResolver.fromRootPaths(listOf(root)), CopyFileContentSettings.getInstance(project)
+            resolver, CopyFileContentSettings.getInstance(project)
         )
     }
 

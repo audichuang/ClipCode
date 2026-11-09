@@ -887,7 +887,9 @@ class CopyFileContentAction(
         } catch (e: ProcessCanceledException) {
             throw e
         } catch (e: Exception) {
-            logger.error("Failed to read file contents: ${e.message}")
+            // warn, not error: an unreadable file (mode 000, say) is an expected skip that the notice
+            // names; Logger.error raised the IDE's internal-error report for it.
+            logger.warn("Failed to read file contents: ${e.message}")
             null
         }
     }
