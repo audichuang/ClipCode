@@ -291,15 +291,35 @@ class GitClipboardPayloadBuilderTest : BasePlatformTestCase() {
         val gone = GitContentResolver.ResolvedGitEntry(ChangeTypeLabel.MODIFIED, "src/Gone<1>.kt", null, null)
         val entries = listOf(vfEntry("img/logo.png", pngBytes(4)), gone)
 
+        // B7: after Include the skip is called "Unreadable", with its count stated once (spec lines 117-118).
         val include = buildWith(entries, includeNonText = true)
+        assertEquals("1 files copied. Non-text files copied as Base64: 1.", include.summary)
         assertEquals(
             "<b>${include.summary}</b><br>Unreadable: 1<br>src/Gone&lt;1&gt;.kt<br>",
             include.noticeHtml()
         )
 
-        // Today's build keeps today's notice: the summary alone.
+        // A3: today's build keeps today's sentence (it carries the count, here the png too) and names
+        // the paths below it, without a second count line.
         val exclude = buildWith(entries, includeNonText = false)
-        assertEquals("<b>${exclude.summary}</b><br>", exclude.noticeHtml())
+        assertEquals("0 files copied (2 skipped: not UTF-8 text or unreadable).", exclude.summary)
+        val notice = exclude.noticeHtml()
+        assertTrue(notice.startsWith("<b>${exclude.summary}</b><br>"), notice)
+        assertTrue(notice.endsWith("logo.png<br>src/Gone&lt;1&gt;.kt<br>"), notice)
+        assertFalse(notice.contains("Unreadable:"), notice)
+    }
+
+    /** A3: the no-dialog / Exclude delivery (rebuild + withLimitLeftOut) still names the unreadable entry. */
+    fun testExcludeNoticeNamesUnreadableEntriesWithoutChangingThePayload() {
+        val gone = GitContentResolver.ResolvedGitEntry(ChangeTypeLabel.MODIFIED, "src/Gone.kt", null, null)
+        val entries = listOf(textEntry("src/A.kt", "val a = 1"), gone)
+
+        val today = buildWith(entries, includeNonText = false)
+        val delivered = today.withLimitLeftOut(2)
+
+        assertEquals(1, today.skipNotes.count(SkipCategory.UNREADABLE))
+        assertEquals(buildWith(entries, includeNonText = null), today)
+        assertTrue(delivered.noticeHtml().endsWith("left out 2 files.</b><br>src/Gone.kt<br>"), delivered.noticeHtml())
     }
 
     fun testExcludeAndDefaultAreTodaysPayloadByteForByte() {

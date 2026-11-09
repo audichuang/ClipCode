@@ -669,7 +669,12 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
 
     private fun Any.field(name: String) = javaClass.getDeclaredField(name).apply { isAccessible = true }.get(this)
 
-    /** D1: the walk ends once 1000 files are counted past the limit and one more exists. */
+    /**
+     * D1 / spec lines 84-92: the walk stops once the limit is filled; the 1170 remaining entries of the
+     * already-listed folder are counted up to 1000, so the number reads 1000+. Changed from "counts up to
+     * 1000 more files while walking": the old bound (`checks < 1100`) allowed a counting-only walk past
+     * the limit, which the spec forbids, so it now pins that only the 30 copied files are visited.
+     */
     fun testLeftOutCountStopsTheWalkAt1000Plus() {
         val settings = CopyFileContentSettings.getInstance(project)!!
         settings.state.setMaxFileCount = true
@@ -683,8 +688,67 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertEquals(30, result.field("fileCount"))
         assertEquals(1000, result.field("limitLeftOut"))
         assertEquals(true, result.field("limitLeftOutCapped"))
-        // One checkCanceled per visited file: a full walk would be at least 1200.
-        assertTrue(indicator.checks < 1100, "walk visited too much: ${indicator.checks}")
+        // One checkCanceled per visited file: only the 30 copied files (plus the folder) are visited.
+        assertTrue(indicator.checks < 40, "walk went past the limit: ${indicator.checks}")
+    }
+
+    /**
+     * Spec lines 89-91: a folder walk stops once the limit is filled. Past the limit the two picked files
+     * are known (the selection is already listed) and counted; the picked folder was never listed, so the
+     * number is a lower bound and reads "2+". The selection order is fixed, so VFS child order does not
+     * matter here.
+     */
+    fun testWalkStopsAtLimitAndUnlistedFoldersMakeThePlus() {
+        val settings = CopyFileContentSettings.getInstance(project)!!
+        settings.state.setMaxFileCount = true
+        settings.state.fileCountLimit = 30
+        (1..30).forEach { myFixture.addFileToProject("stopA/a%02d.kt".format(it), "text-$it") }
+        val picked = (1..2).map { myFixture.addFileToProject("stopP/p$it.kt", "picked-$it").virtualFile }
+        for (sub in listOf("z1", "z2")) {
+            (1..200).forEach { myFixture.addFileToProject("stopB/$sub/t%03d.kt".format(it), "deep-$it") }
+        }
+        val first = myFixture.findFileInTempDir("stopA") ?: error("dir not found")
+        val deep = myFixture.findFileInTempDir("stopB") ?: error("dir not found")
+        val indicator = CountingIndicator()
+        val method = CopyFileContentAction::class.java.getDeclaredMethod(
+            "buildCopyPayload",
+            com.intellij.openapi.project.Project::class.java, Array<VirtualFile>::class.java,
+            CopyFileContentSettings::class.java, kotlin.jvm.functions.Function2::class.java,
+            com.intellij.openapi.progress.ProgressIndicator::class.java, Boolean::class.javaPrimitiveType
+        ).apply { isAccessible = true }
+
+        val result = method.invoke(
+            CopyFileContentAction(), project, arrayOf(first) + picked + deep, settings, null, indicator, true
+        )!!
+
+        assertEquals(30, result.field("fileCount"))
+        assertEquals(true, result.field("fileLimitReached"))
+        assertEquals(2, result.field("limitLeftOut"))
+        assertEquals(true, result.field("limitLeftOutCapped"))
+        assertTrue(indicator.checks < 40, "walk went into the unlisted folder: ${indicator.checks}")
+    }
+
+    /** OpenIDEA refuses an unportable name before it counts it: past the limit it is never "left out". */
+    fun testUnportableNamePastTheLimitIsNotCountedAsLeftOut() {
+        val root = Files.createTempDirectory("clipcode-leftout-odd")
+        try {
+            Files.writeString(root.resolve("a.txt"), "A")
+            Files.writeString(root.resolve("c.txt"), "C")
+            Files.writeString(root.resolve("t\tname.txt"), "T")
+            val dir = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root) ?: error("no vfs dir")
+            VfsUtil.markDirtyAndRefresh(false, true, true, dir)
+            val settings = CopyFileContentSettings.getInstance(project)!!
+            settings.state.setMaxFileCount = true
+            settings.state.fileCountLimit = 1
+
+            val result = buildIncludePayload(dir, com.intellij.openapi.progress.EmptyProgressIndicator())
+
+            assertEquals(1, result.field("fileCount"))
+            assertEquals(1, result.field("limitLeftOut"))
+            assertEquals(false, result.field("limitLeftOutCapped"))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
     }
 
     fun testExactly1000LeftOutIsNotCapped() {
@@ -1026,6 +1090,52 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
                 val notice = messages.firstOrNull { it.contains("Name not portable: 1") } ?: error("$choice: $messages")
                 assertContains(notice, "a\\x0afile: [DELETED] victim.txt")
             }
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    /**
+     * A1: a project-local folder registered as a library (node_modules) is a real folder on disk; its
+     * files get the same portability check, so a newline name cannot forge a `[DELETED]` header.
+     */
+    fun testNewlineNameInsideALibraryFolderCannotInjectAHeader() {
+        val libRoot = java.io.File(project.basePath!!, "$name/node_modules").apply { mkdirs() }
+        java.io.File(libRoot, "a\nfile: [DELETED] victim.js").writeText("evil()")
+        java.io.File(libRoot, "index.js").writeText("ok()")
+        val lib = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(libRoot)!!
+        lib.refresh(false, true)
+        com.intellij.openapi.roots.ModuleRootModificationUtil.addModuleLibrary(module, lib.url)
+        assertEquals(2, lib.children.size, "test setup: VFS must list the newline name")
+        val odd = lib.children.single { it.name.contains('\n') }
+        assertTrue(ExternalLibraryHandler(project).isFromExternalLibrary(odd), "test setup: must be a library file")
+        CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
+        for (choice in listOf(NonTextChoice.INCLUDE, NonTextChoice.EXCLUDE)) {
+            val messages = collectNotifications()
+            CopyFileContentAction(RecordingChooser(choice)).performCopyFilesContent(project, arrayOf(lib))
+            val text = clipboardText()
+            assertContains(text, "ok()")
+            assertFalse(text.contains("[DELETED]"), "$choice: $text")
+            assertFalse(text.contains("evil()"), "$choice: $text")
+            val notice = messages.firstOrNull { it.contains("Name not portable: 1") } ?: error("$choice: $messages")
+            assertContains(notice, "a\\x0afile: [DELETED] victim.js")
+        }
+    }
+
+    /** B5: a folder selected together with its parent is named once per category, not once per visit. */
+    fun testFolderVisitedTwiceIsNamedOnce() {
+        val root = Files.createTempDirectory("clipcode-odd-twice")
+        try {
+            val odd = oddFolder(root)
+            val link = odd.findChild("linkdir") ?: error("no link vfs")
+            CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
+            val messages = collectNotifications()
+            CopyFileContentAction(RecordingChooser(NonTextChoice.INCLUDE)).performCopyFilesContent(project, arrayOf(odd, link))
+
+            val notice = messages.firstOrNull { it.contains("Non-text files copied as Base64: 1.") } ?: error("$messages")
+            assertContains(notice, "Symlinked folder: 1")
+            assertEquals(1, notice.split("linkdir").size - 1, notice)
+            assertContains(notice, "Name not portable: 3")
         } finally {
             root.toFile().deleteRecursively()
         }

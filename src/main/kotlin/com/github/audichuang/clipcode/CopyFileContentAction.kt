@@ -159,7 +159,7 @@ class CopyFileContentAction(
                     // in Include and silently skipped today), and Exclude must stay byte-identical to
                     // today. Only the left-out count is taken from the Include walk: no non-text file took
                     // a file-count slot, so it stopped at the same place, and today's walk does not count
-                    // past the limit. Unreadable items come from the walk whose payload is copied.
+                    // what the limit left out. Unreadable items come from the walk whose payload is copied.
                     copyWithoutNonText(project, filesToCopy, settings, customHeaderGenerator, include.limitLeftOut, include.limitLeftOutCapped)
                     return
                 }
@@ -253,9 +253,12 @@ class CopyFileContentAction(
             add(ClipboardRestoreParser.escapeContent(settings.state.preText, settings.state.headerFormat))
         }
 
-        for (file in filesToCopy) {
+        for ((index, file) in filesToCopy.withIndex()) {
             indicator.checkCanceled()
-            if (stopForFileLimit(session, settings)) break
+            if (stopForFileLimit(session, settings)) {
+                countLimitLeftOut(filesToCopy.asList().subList(index, filesToCopy.size), session)
+                break
+            }
 
             val (isDirectory, isSymlinkedFolder) = ApplicationManager.getApplication().runReadAction<Pair<Boolean, Boolean>> {
                 file.isDirectory to (file.isDirectory && file.`is`(com.intellij.openapi.vfs.VFileProperty.SYMLINK))
@@ -264,9 +267,7 @@ class CopyFileContentAction(
             // selection (alone or among others). A project root reached through its own spelling is
             // not such a link. A dangling link is not a directory: processFile names it Unreadable.
             if (isSymlinkedFolder && session.pathResolver.rawRelativePath(file.path) != "") {
-                if (!session.countingOnly) {
-                    session.skipNotes.note(SkipCategory.SYMLINKED_FOLDER, CopyPathFormatter.displayPath(session.pathResolver, file.path))
-                }
+                session.skipNotes.note(SkipCategory.SYMLINKED_FOLDER, CopyPathFormatter.displayPath(session.pathResolver, file.path))
                 continue
             }
             if (isDirectory) {
@@ -302,29 +303,84 @@ class CopyFileContentAction(
             nonTextCarried = session.nonTextCarried.toList(),
             nonTextOverLimit = session.nonTextOverLimit,
             unreadOverLimit = session.unreadOverLimit,
-            limitLeftOut = if (session.countingOnly) session.limitLeftOut else null,
-            limitLeftOutCapped = session.countingOnly && session.limitLeftOutCapped,
+            limitLeftOut = if (session.includeNonText && session.fileLimitReached) session.limitLeftOut else null,
+            limitLeftOutCapped = session.includeNonText && session.fileLimitReached && session.limitLeftOutCapped,
             utf8Bytes = if (session.nonTextCarried.isNotEmpty()) NonTextCopy.utf8Length(text) else 0L
         )
     }
 
     /**
-     * Today's file-count check, shared by the top-level loop and [processDirectory]. Exclude stops
-     * walking (true) exactly as before. Include keeps walking in counting-only mode so the number of
-     * files the limit left out is exact — the dialog and, when there is no dialog, the completion
-     * notice both report it. Nothing past the limit is read or written. Counting ends (true) once
-     * [NonTextCopy.LEFT_OUT_COUNT_CAP] files are counted and one more exists: the rest of the tree is
-     * never walked just to count.
+     * Today's file-count check, shared by the top-level loop and [processDirectory]: once the limit is
+     * filled the walk stops (true) in both modes. Spec non-text-files.md lines 84-92: a folder walk is
+     * never continued only to count what the limit left out; see [countLimitLeftOut].
      */
     private fun stopForFileLimit(session: CopySession, settings: CopyFileContentSettings): Boolean {
-        if (session.countingOnly) return session.limitLeftOutCapped
         if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
             session.fileLimitReached = true
-            if (!session.includeNonText) return true
-            session.countingOnly = true
+            return true
         }
         return false
     }
+
+    /**
+     * Include only: the files the limit left out, counted from what is already known when the walk stops
+     * — the rest of a list already enumerated ([remaining], the selection or one folder's children). Each
+     * level of the walk adds its own remainder as it unwinds. Mirror of OpenIDEA `plan_export_with`
+     * (`items[cut..]` that pass the filters) with `limit_left_out_lower_bound`: a remaining folder is never
+     * listed, so it only marks the number as a lower bound ("+"). A file is counted only when the copy
+     * would have taken it: it passes the filters, its name is portable and it was not copied already.
+     * Symlinked folders and unportable or filtered-out folders are not left out. Counting stops at
+     * [NonTextCopy.LEFT_OUT_COUNT_CAP]; one more makes it "1000+".
+     */
+    private fun countLimitLeftOut(remaining: List<VirtualFile>, session: CopySession) {
+        if (!session.includeNonText) return
+        ApplicationManager.getApplication().runReadAction {
+            for (item in remaining) {
+                if (session.limitLeftOutCapped && session.limitLeftOut >= NonTextCopy.LEFT_OUT_COUNT_CAP) return@runReadAction
+                if (item.isDirectory) {
+                    val linked = item.`is`(com.intellij.openapi.vfs.VFileProperty.SYMLINK) &&
+                        session.pathResolver.rawRelativePath(item.path) != ""
+                    if (!linked && (!item.isInLocalFileSystem || PortableName.isPortableFolder(session.pathResolver, item.path)) &&
+                        directoryPassesFilters(item, session)
+                    ) {
+                        session.limitLeftOutCapped = true
+                    }
+                    continue
+                }
+                if (item.path in session.copiedFilePaths || item.path in session.limitLeftOutPaths) continue
+                if (session.useFilters && !passesFileFilters(item, session)) continue
+                if (isUnportable(item, session)) continue
+                if (session.limitLeftOut >= NonTextCopy.LEFT_OUT_COUNT_CAP) {
+                    session.limitLeftOutCapped = true
+                } else {
+                    session.limitLeftOutPaths.add(item.path)
+                    session.limitLeftOut++
+                }
+            }
+        }
+    }
+
+    /** The per-file filter decision, from [CopyFilterMatcher] (see AGENTS.md). Caller holds the read lock. */
+    private fun passesFileFilters(file: VirtualFile, session: CopySession): Boolean =
+        CopyFilterMatcher.passes(
+            fileName = file.name,
+            relativePath = CopyPathFormatter.relativeFilterPath(session.pathResolver, file.path),
+            absolutePath = file.path,
+            useIncludeFilters = session.useIncludeFilters,
+            useExcludeFilters = session.useExcludeFilters,
+            includeRules = session.includeRules,
+            excludeRules = session.excludeRules,
+            cache = session.patternCache
+        )
+
+    /**
+     * Decision D2 for one file. Every file with a real name on disk is checked, library files included: a
+     * project-local folder registered as a library (node_modules) is still a folder of real files whose
+     * header is built from the on-disk name. Only entries of a jar / jrt / decompiled view, which have no
+     * such name, keep today's path.
+     */
+    private fun isUnportable(file: VirtualFile, session: CopySession): Boolean =
+        file.isInLocalFileSystem && !PortableName.isPortableFile(session.pathResolver, file.path)
 
     @IdeBoundCode
     private fun showCopyNotifications(
@@ -333,7 +389,9 @@ class CopyFileContentAction(
         result: CopyPayload
     ) {
         if (result.fileLimitReached) {
-            val leftOut = result.limitLeftOut?.takeIf { it > 0 }?.let { " ${NonTextCopy.limitLeftOutSentence(it, result.limitLeftOutCapped)}." } ?: ""
+            val leftOut = result.limitLeftOut
+                ?.takeIf { NonTextCopy.hasLimitLeftOut(it, result.limitLeftOutCapped) }
+                ?.let { " ${NonTextCopy.limitLeftOutSentence(it, result.limitLeftOutCapped)}." } ?: ""
             val fileLimitWarningMessage = """
                 <html>
                 <b>File Limit Reached:</b> The file limit of ${settings.state.fileCountLimit} files was reached.$leftOut
@@ -386,9 +444,9 @@ class CopyFileContentAction(
         val nonTextCarried: List<NonTextCopySummary.Item> = emptyList(),
         val nonTextOverLimit: Int = 0,
         val unreadOverLimit: Int = 0,
-        /** Files the file-count limit left out; null when not counted (the walk stopped at the limit). */
+        /** Files the file-count limit left out; null when not counted (today's build, or the limit not reached). */
         val limitLeftOut: Int? = null,
-        /** True when [limitLeftOut] stopped at the count cap: the real number is larger. */
+        /** True when [limitLeftOut] is a lower bound: the count cap, or a folder past the limit never listed. */
         val limitLeftOutCapped: Boolean = false,
         /** UTF-8 length of [text]; computed on the background thread, only when non-text files were carried. */
         val utf8Bytes: Long = 0
@@ -469,36 +527,16 @@ class CopyFileContentAction(
         // Check filters if enabled. The decision itself lives in CopyFilterMatcher so the
         // git payload builder applies exactly the same rules — it used to apply none.
         if (session.useFilters) {
-            val passes = CopyFilterMatcher.passes(
-                fileName = file.name,
-                relativePath = CopyPathFormatter.relativeFilterPath(session.pathResolver, file.path),
-                absolutePath = file.path,
-                useIncludeFilters = session.useIncludeFilters,
-                useExcludeFilters = session.useExcludeFilters,
-                includeRules = session.includeRules,
-                excludeRules = session.excludeRules,
-                cache = session.patternCache
-            )
-            if (!passes) {
+            if (!passesFileFilters(file, session)) {
                 logger.info("Skipping file: ${file.name} - filtered out")
                 return ""
             }
         }
 
-        // Include mode past the file-count limit: count what the limit left out, read nothing.
-        if (session.countingOnly) {
-            if (session.limitLeftOut >= NonTextCopy.LEFT_OUT_COUNT_CAP) {
-                // One more file exists past the cap: stop counting; the callers end the walk.
-                session.limitLeftOutCapped = true
-            } else {
-                session.limitLeftOut++
-            }
-            return ""
-        }
         // Decision D2: a name a header cannot carry unchanged is skipped and named, in every mode, before
         // anything is read. A newline in a name would otherwise put a second, forged header line on the
-        // clipboard. External-library files keep today's path (their header is not the on-disk path).
-        if (!isExternalLibrary && !PortableName.isPortableRelativePath(PortableName.checkedPath(session.pathResolver, file.path))) {
+        // clipboard. Library files on disk too (see isUnportable).
+        if (isUnportable(file, session)) {
             session.noteUnportable(file.path)
             logger.info("Skipping file: ${file.name} - name not portable")
             return ""
@@ -685,32 +723,34 @@ class CopyFileContentAction(
             else (directory.canonicalPath ?: directory.path) to directory.children.map { it to it.isDirectory }
         } ?: return
         // Decision D2: a folder whose name is not portable is named once and not walked, so none of its
-        // files is copied (the spec allows this instead of naming each file). Past the file-count limit
-        // nothing is named, as for unlistable folders.
-        if (!PortableName.isPortableFolderPath(PortableName.checkedPath(session.pathResolver, directory.path))) {
-            if (!session.countingOnly) session.noteUnportable(directory.path)
+        // files is copied (the spec allows this instead of naming each file). A jar / jrt folder has no
+        // on-disk name and keeps today's path, as its files do.
+        if (directory.isInLocalFileSystem && !PortableName.isPortableFolder(session.pathResolver, directory.path)) {
+            session.noteUnportable(directory.path)
             logger.info("Skipping directory: ${directory.name} - name not portable")
             return
         }
         // A folder that cannot be listed shows as empty in VFS; name it in either mode. Only the
         // notice changes — nothing is added to the payload.
-        if (!session.countingOnly && snapshot.second.isEmpty()) {
+        if (snapshot.second.isEmpty()) {
             noteIfUnlistable(directory, session)
         }
-        if (!session.countingOnly) noteNamesHiddenByVfs(directory, snapshot.second.map { it.first.name }.toSet(), session)
+        noteNamesHiddenByVfs(directory, snapshot.second.map { it.first.name }.toSet(), session)
         // Track only current ancestors: normal package aliases keep their selected paths.
         if (!session.directoryAncestors.add(snapshot.first)) return
         try {
-            for ((childFile, childIsDirectory) in snapshot.second) {
-                if (stopForFileLimit(session, settings)) break
+            for ((index, child) in snapshot.second.withIndex()) {
+                val (childFile, childIsDirectory) = child
+                if (stopForFileLimit(session, settings)) {
+                    countLimitLeftOut(snapshot.second.subList(index, snapshot.second.size).map { it.first }, session)
+                    break
+                }
                 if (childIsDirectory) {
                     // Never through a link (decision D2): it is counted and named as a symlinked
                     // folder. Following links also multiplied a pnpm/Bazel tree into aliases of the
                     // same few files; the real directories are reached on their own.
                     if (childFile.`is`(com.intellij.openapi.vfs.VFileProperty.SYMLINK)) {
-                        if (!session.countingOnly) {
-                            session.skipNotes.note(SkipCategory.SYMLINKED_FOLDER, CopyPathFormatter.displayPath(session.pathResolver, childFile.path))
-                        }
+                        session.skipNotes.note(SkipCategory.SYMLINKED_FOLDER, CopyPathFormatter.displayPath(session.pathResolver, childFile.path))
                         continue
                     }
                     processDirectory(childFile, fileContents, session, settings, addExtraLine, customHeaderGenerator)
@@ -931,10 +971,11 @@ class CopyFileContentAction(
         // today's copy, byte for byte.
         val includeNonText: Boolean = false,
         val maxNonTextBytes: Long = 2048L * 1024,
-        /** Include mode past the file-count limit: files are only counted into [limitLeftOut]. */
-        var countingOnly: Boolean = false,
+        /** Include only: files the limit left out, counted when the walk stops (see countLimitLeftOut). */
         var limitLeftOut: Int = 0,
         var limitLeftOutCapped: Boolean = false,
+        /** The files counted into [limitLeftOut]: one also listed by an enclosing level is counted once. */
+        val limitLeftOutPaths: MutableSet<String> = mutableSetOf(),
         val nonTextCarried: MutableList<NonTextCopySummary.Item> = mutableListOf(),
         var nonTextOverLimit: Int = 0,
         var unreadOverLimit: Int = 0
