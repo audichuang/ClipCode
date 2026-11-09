@@ -4,7 +4,12 @@ class ClipboardRestoreParser {
     data class ParsedClipboardEntry(
         val path: String,
         val content: String,
-        val changeTypes: Set<ChangeTypeLabel> = emptySet()
+        val changeTypes: Set<ChangeTypeLabel> = emptySet(),
+        /**
+         * The body's first non-blank line was written as `//clipcode-esc: ` plus a non-text placeholder
+         * line: a real text entry, never a size/non-text placeholder. One prefix is already removed.
+         */
+        val escapedPlaceholder: Boolean = false
     ) {
         val isDeleted: Boolean
             get() = changeTypes.contains(ChangeTypeLabel.DELETED)
@@ -101,6 +106,58 @@ class ClipboardRestoreParser {
             val customRegex = toHeaderPattern(headerFormat)
             return text.split("\n").joinToString("\n") { line ->
                 if (needsEscape(line, customRegex)) ESCAPE_MARKER + line else line
+            }
+        }
+
+        /**
+         * [escapeContent] for a text body. A first non-blank line that is placeholder-shaped gets one extra
+         * [ESCAPE_MARKER] (then escapeContent adds the normal one: two layers), so a reader never decodes
+         * text as a non-text entry. The ONE helper every text-body writer must call.
+         */
+        fun escapeTextBody(text: String, headerFormat: String): String {
+            if (text.isEmpty()) return text
+            val lines = text.split("\n")
+            val forceIdx = lines.indexOfFirst { asciiTrim(it).isNotEmpty() }
+            if (forceIdx < 0 || !isPlaceholderShaped(lines[forceIdx])) return escapeContent(text, headerFormat)
+            val forced = lines.toMutableList()
+            forced[forceIdx] = ESCAPE_MARKER + forced[forceIdx]
+            return escapeContent(forced.joinToString("\n"), headerFormat)
+        }
+
+        /** After removing any number of leading escape prefixes, is [line] the non-text placeholder line? */
+        fun isPlaceholderShaped(line: String): Boolean {
+            var rest = line
+            while (rest.startsWith(ESCAPE_MARKER)) rest = rest.substring(ESCAPE_MARKER.length)
+            return NonText.parsePlaceholderLine(rest) != null
+        }
+
+        /**
+         * A headerFormat for which escaping cannot keep a non-text entry's placeholder or Base64 lines
+         * from being read as file headers (e.g. `$FILE_PATH`, `//$FILE_PATH`, `$FILE_PATH==`).
+         * Mirror of format.rs header_format_unescapable.
+         */
+        fun headerFormatUnescapable(headerFormat: String): Boolean {
+            val custom = toHeaderPattern(headerFormat) ?: return false
+            fun unescapable(line: String) = findHeaderPath(line, custom) != null && !needsEscape(line, custom)
+            val sha = "0".repeat(64)
+            if (listOf(1L, 123_456_789L).any { unescapable(NonText.placeholderLine(it, sha)) }) return true
+            val segments = headerFormat.split("\$FILE_PATH")
+            val first = segments.first()
+            val last = segments.last()
+            val inner = segments.subList(1, segments.size - 1)
+            fun isBase64Line(line: String): Boolean {
+                val body = line.trimEnd('=')
+                return line.length - body.length <= 2 && line.length <= NonText.BASE64_LINE_LEN &&
+                    body.all { it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '+' || it == '/' }
+            }
+            return listOf(1, 2, 3, 4, 38, 76).any { n ->
+                val path = "A".repeat(n)
+                val line = buildString {
+                    append(first).append(path)
+                    for (seg in inner) append(seg).append(path)
+                    append(last)
+                }
+                isBase64Line(line) && unescapable(line)
             }
         }
 
@@ -206,11 +263,23 @@ class ClipboardRestoreParser {
 
         fun flush() {
             val path = currentFilePath ?: return
+            var content = unescapeContent(joinContent(currentContent.toString()))
+            // After one un-escape, a first non-blank line that still starts with the marker and is
+            // placeholder-shaped is a text file's placeholder escape: strip exactly that one prefix.
+            var offset = 0
+            var first = ""
+            for (line in content.split("\n")) {
+                if (asciiTrim(line).isNotEmpty()) { first = line; break }
+                offset += line.length + 1
+            }
+            val escapedPlaceholder = first.startsWith(ESCAPE_MARKER) && isPlaceholderShaped(first)
+            if (escapedPlaceholder) content = content.removeRange(offset, offset + ESCAPE_MARKER.length)
             parsedEntries.add(
                 ParsedClipboardEntry(
                     path = path,
-                    content = unescapeContent(joinContent(currentContent.toString())),
-                    changeTypes = currentChangeTypes
+                    content = content,
+                    changeTypes = currentChangeTypes,
+                    escapedPlaceholder = escapedPlaceholder
                 )
             )
             currentFilePath = null

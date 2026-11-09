@@ -19,8 +19,24 @@ object ClipboardPayloadFormatter {
         val path: String,
         val content: String? = null,
         val changeType: ChangeTypeLabel? = null,
-        val skippedReason: String? = null
-    )
+        val skippedReason: String? = null,
+        /** Raw bytes of a non-text file; carried as placeholder line + Base64 (spec non-text-files.md). */
+        val nonText: ByteArray? = null
+    ) {
+        // ByteArray uses identity equality in a data class; compare contents instead.
+        override fun equals(other: Any?): Boolean =
+            other is PayloadFile && path == other.path && content == other.content &&
+                changeType == other.changeType && skippedReason == other.skippedReason &&
+                nonText.contentEquals(other.nonText)
+
+        override fun hashCode(): Int {
+            var h = path.hashCode()
+            h = 31 * h + (content?.hashCode() ?: 0)
+            h = 31 * h + (changeType?.hashCode() ?: 0)
+            h = 31 * h + (skippedReason?.hashCode() ?: 0)
+            return 31 * h + nonText.contentHashCode()
+        }
+    }
 
     data class Options(
         val headerFormat: String,
@@ -72,15 +88,21 @@ object ClipboardPayloadFormatter {
                     changeType = file.changeType
                 )
             )
-            // Non-empty skippedReason wins; empty/null falls through to content —
-            // mirrors the TS authority's `file.skippedReason ? … : file.content ?? ''`
-            // truthiness, so an empty reason doesn't emit a bare "// File skipped: ".
+            // Non-empty skippedReason wins; empty/null falls through — mirrors the TS authority's
+            // truthiness check, so an empty reason doesn't emit a bare "// File skipped: ".
+            // Then non-text bytes (placeholder + Base64, each line through the same escaping),
+            // then the text body through escapeTextBody (placeholder-shaped first line gets two layers).
+            val bytes = file.nonText
             val body = if (!file.skippedReason.isNullOrEmpty()) {
-                "// File skipped: ${file.skippedReason}"
+                ClipboardRestoreParser.escapeContent("// File skipped: ${file.skippedReason}", headerFormat)
+            } else if (bytes != null) {
+                val placeholder = NonText.placeholderLine(bytes.size.toLong(), NonText.sha256Hex(bytes))
+                val text = placeholder + "\n" + NonText.encodeWrapped(bytes)
+                ClipboardRestoreParser.escapeContent(text, headerFormat)
             } else {
-                file.content ?: ""
+                ClipboardRestoreParser.escapeTextBody(file.content ?: "", headerFormat)
             }
-            lines.add(ClipboardRestoreParser.escapeContent(body, headerFormat))
+            lines.add(body)
             if (options.addExtraLineBetweenFiles) {
                 lines.add("")
             }
