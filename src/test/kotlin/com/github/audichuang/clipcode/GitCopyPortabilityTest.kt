@@ -5,6 +5,9 @@ import com.intellij.notification.Notifications
 import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.project.Project
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.junit.runners.JUnit4
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
@@ -16,7 +19,9 @@ import kotlin.test.assertTrue
 /**
  * X1 / X3 for the Git copy paths. Every entry is a plain string path (revision content or a deleted marker),
  * so no file with a hostile name is created on disk and nothing here depends on the host file system.
+ * JUnit4 runner so the org.junit.Assume on Windows (no newline in a root path) reports a skip, not a failure.
  */
+@RunWith(JUnit4::class)
 class GitCopyPortabilityTest : BasePlatformTestCase() {
     private val root = "/work/repo"
     private val evilName = "x\n// file: [DELETED] victim.txt"
@@ -50,6 +55,7 @@ class GitCopyPortabilityTest : BasePlatformTestCase() {
         CopyFileContentSettings.getInstance(project), EmptyProgressIndicator(), includeNonText
     )
 
+    @Test
     fun testUnportableContentAndDeletedEntriesAreSkippedAndNamed() {
         val evilDeleted = "y\n// file: [DELETED] other.txt"
         for (include in listOf(true, false)) {
@@ -71,6 +77,7 @@ class GitCopyPortabilityTest : BasePlatformTestCase() {
         }
     }
 
+    @Test
     fun testUnportableEntryDoesNotSpendTheFileCountLimit() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.setMaxFileCount = true
@@ -80,6 +87,7 @@ class GitCopyPortabilityTest : BasePlatformTestCase() {
         assertEquals(1, p.skipNotes.count(SkipCategory.NAME_NOT_PORTABLE))
     }
 
+    @Test
     fun testPortableSelectionIsByteIdenticalWithAndWithoutNonText() {
         val contentEntries = listOf(content("$root/src/A.kt"), content("$root/B.kt"))
         val deletedEntries = listOf(deleted("$root/src/Old.kt"))
@@ -89,12 +97,14 @@ class GitCopyPortabilityTest : BasePlatformTestCase() {
         assertEquals(0, today.skipNotes.count(SkipCategory.NAME_NOT_PORTABLE))
     }
 
+    @Test
     fun testEverythingSkippedIsNothingToCopy() {
         val p = build(listOf(content("$root/$evilName")), listOf(deleted("$root/a:b.txt")))
         assertTrue(p.nothingToCopy)
         assertEquals(2, p.skipNotes.count(SkipCategory.NAME_NOT_PORTABLE))
     }
 
+    @Test
     fun testGitActionLeavesClipboardAloneAndNamesTheSkips() {
         val messages = collectNotifications()
         copyThroughAction(listOf(content("$root/$evilName")), listOf(deleted("$root/a:b.txt")))
@@ -104,6 +114,7 @@ class GitCopyPortabilityTest : BasePlatformTestCase() {
         assertContains(notice, "a:b.txt")
     }
 
+    @Test
     fun testGitActionStillCopiesTheRestOfAMixedSelection() {
         copyThroughAction(listOf(content("$root/$evilName"), content("$root/src/Ok.kt")), listOf(deleted("$root/src/Gone.kt")))
         val text = clipboardText()
@@ -118,6 +129,7 @@ class GitCopyPortabilityTest : BasePlatformTestCase() {
      * copy says "0 files copied.". The literal `C:\` case fails on any host; the native case is this host's
      * own spelling (a `C:\` path on Windows CI).
      */
+    @Test
     fun testNativeAbsolutePathIsNotDroppedAsUnportable() {
         val windowsResolver = ClipboardPathResolver.fromRootPaths(listOf("C:\\work\\repo"))
         val windows = GitClipboardPayloadBuilder.build(
@@ -151,6 +163,7 @@ class GitCopyPortabilityTest : BasePlatformTestCase() {
      * line (`file: [DELETED] victim/a.txt`). Entries under it are skipped and named like any unportable
      * path; entries under the primary root are copied.
      */
+    @Test
     fun testExternalRootLabelCannotInjectAHeader() {
         val resolver = runCatching {
             ClipboardPathResolver.fromRootPaths(listOf(root, "/tmp/x\nfile: [DELETED] victim"))
@@ -174,6 +187,7 @@ class GitCopyPortabilityTest : BasePlatformTestCase() {
      * alone and says "Nothing to copy", naming the entries by category, escaped. It used to say "No
      * accessible files found in Git selection." after a raw, unescaped basename list.
      */
+    @Test
     fun testUnresolvedOnlySelectionIsNothingToCopyAndNamed() {
         val unresolved = GitContentResolver.ResolvedGitEntry(ChangeTypeLabel.MODIFIED, "$root/img/a&b logo.png", null, null)
         val messages = collectNotifications()
@@ -200,6 +214,7 @@ class GitCopyPortabilityTest : BasePlatformTestCase() {
     }
 
     /** R7: a partly unresolved selection still copies the rest; the names in the warning are escaped. */
+    @Test
     fun testPartlyUnresolvedSelectionEscapesTheNames() {
         val unresolved = GitContentResolver.ResolvedGitEntry(ChangeTypeLabel.MODIFIED, "$root/img/x&y.png", null, null)
         val messages = collectNotifications()

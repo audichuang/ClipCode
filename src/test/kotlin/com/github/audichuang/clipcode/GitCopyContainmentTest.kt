@@ -5,6 +5,9 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.junit.runners.JUnit4
 import org.junit.Assume.assumeTrue
 import java.nio.file.Files
 import java.nio.file.Path
@@ -18,8 +21,10 @@ import kotlin.test.assertTrue
  * outside every copy root must not carry that target's bytes, whether the entry itself is the link
  * (`CLAUDE.md -> ~/.agents/secret`) or it is reached through a linked folder (`vendor -> ~/private`). The
  * builder is where a selection lands as soon as it mixes a staged, revision or deleted entry in, in Include
- * and in Exclude. Real disk: temp:// has no symlinks.
+ * and in Exclude. Real disk: temp:// has no symlinks. JUnit4 runner so the org.junit.Assume on Windows
+ * (no symlink privilege) reports a skip, not a failure.
  */
+@RunWith(JUnit4::class)
 class GitCopyContainmentTest : BasePlatformTestCase() {
     private val posix = java.io.File.separatorChar == '/'
 
@@ -45,6 +50,7 @@ class GitCopyContainmentTest : BasePlatformTestCase() {
         return dir.findFileByRelativePath(relative) ?: error("no vfs for $relative")
     }
 
+    @Test
     fun testWorkingTreeLinkOutOfEveryRootIsNotReadByTheGitBuilder() {
         val outside = Files.createTempDirectory("clipcode-git-outside")
         // VFS refreshes through the links into this directory; the test framework only lets it read there
