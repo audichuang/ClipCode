@@ -14,8 +14,11 @@ import com.intellij.openapi.vfs.VirtualFile
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 
+/** [nonTextChooser]: see [CopyFileContentAction]; the default shows the dialog, tests inject one. */
 @IdeBoundCode
-class CopyGitFilesContentAction : AnAction() {
+class CopyGitFilesContentAction(
+    private val nonTextChooser: NonTextChooser = NonTextCopyDialog.CHOOSER
+) : AnAction() {
     private val logger = Logger.getInstance(CopyGitFilesContentAction::class.java)
 
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
@@ -127,7 +130,7 @@ class CopyGitFilesContentAction : AnAction() {
             deletedMarkerEntries.isEmpty()
         ) {
             val indexedEntries = contentEntries.associateBy { it.virtualFile!!.path }
-            CopyFileContentAction().performCopyFilesContent(
+            CopyFileContentAction(nonTextChooser).performCopyFilesContent(
                 project,
                 contentEntries.map { it.virtualFile!! }.toTypedArray()
             ) { file, _ ->
@@ -167,7 +170,7 @@ class CopyGitFilesContentAction : AnAction() {
 
         val settings = CopyFileContentSettings.getInstance(project)
         val headerFormat = settings?.state?.headerFormat ?: "// file: \$FILE_PATH"
-        CopyFileContentAction().performCopyFilesContent(
+        CopyFileContentAction(nonTextChooser).performCopyFilesContent(
             project,
             selectedFiles.toTypedArray()
         ) { file, _ ->
@@ -186,28 +189,40 @@ class CopyGitFilesContentAction : AnAction() {
         pathResolver: ClipboardPathResolver,
         settings: CopyFileContentSettings?
     ) {
-        // 讀取 VFS bytes 與組合字串都搬到 BGT，避免在 EDT 上同步 I/O
+        // 讀取 VFS bytes 與組合字串都搬到 BGT，避免在 EDT 上同步 I/O。
+        // Include is built first; whether to ask comes from it (see GitClipboardPayloadBuilder.chooseAndDeliver).
+        fun deliver(result: GitClipboardPayloadBuilder.Payload) {
+            copyToClipboard(result.text)
+            if (settings?.state?.showCopyNotification == true) {
+                CopyFileContentAction.showPayloadNotification(
+                    "<b>${result.summary}</b><br>",
+                    result.text,
+                    project
+                )
+            }
+        }
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Building Git clipboard payload…", true) {
             private var payload: GitClipboardPayloadBuilder.Payload? = null
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
                 payload = GitClipboardPayloadBuilder.build(
-                    contentEntries, deletedMarkerEntries, pathResolver, settings, indicator
+                    contentEntries, deletedMarkerEntries, pathResolver, settings, indicator, includeNonText = true
                 )
             }
 
             override fun onSuccess() {
                 if (project.isDisposed) return
-                val result = payload ?: return
-                copyToClipboard(result.text)
-                if (settings?.state?.showCopyNotification == true) {
-                    CopyFileContentAction.showPayloadNotification(
-                        "<b>${result.summary}</b><br>",
-                        result.text,
-                        project
-                    )
-                }
+                val include = payload ?: return
+                GitClipboardPayloadBuilder.chooseAndDeliver(
+                    project, settings, include, nonTextChooser,
+                    rebuildToday = { indicator ->
+                        GitClipboardPayloadBuilder.build(
+                            contentEntries, deletedMarkerEntries, pathResolver, settings, indicator, includeNonText = false
+                        )
+                    },
+                    deliver = ::deliver
+                )
             }
         })
     }

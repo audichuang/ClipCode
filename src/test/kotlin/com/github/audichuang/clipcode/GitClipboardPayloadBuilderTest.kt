@@ -235,6 +235,135 @@ class GitClipboardPayloadBuilderTest : BasePlatformTestCase() {
         assertEquals("1 file copied (from Git history) (1 skipped: not UTF-8 text or unreadable).", payload.summary)
     }
 
+    // === non-text files (spec non-text-files.md) ===
+
+    private fun pngBytes(seed: Int, size: Int = 64): ByteArray =
+        ByteArray(size) { i -> if (i == 0) 0x89.toByte() else if (i == 1) 0 else (i * 31 + seed).toByte() }
+
+    private fun vfEntry(path: String, bytes: ByteArray): GitContentResolver.ResolvedGitEntry {
+        val file = myFixture.addFileToProject(path, "placeholder").virtualFile
+        com.intellij.openapi.application.ApplicationManager.getApplication().runWriteAction { file.setBinaryContent(bytes) }
+        return GitContentResolver.ResolvedGitEntry(ChangeTypeLabel.NEW, file.path, file, null)
+    }
+
+    private fun textEntry(path: String, text: String) = vfEntry(path, text.toByteArray())
+
+    private fun buildWith(
+        entries: List<GitContentResolver.ResolvedGitEntry>,
+        includeNonText: Boolean?,
+        nonTextKB: Int = 2048
+    ): GitClipboardPayloadBuilder.Payload {
+        val settings = CopyFileContentSettings.getInstance(project)!!
+        val prev = settings.state.maxNonTextFileSizeKB
+        settings.state.maxNonTextFileSizeKB = nonTextKB
+        return try {
+            withSettings("// file: \$FILE_PATH", maxFileSizeKB = 500) {
+                if (includeNonText == null) {
+                    GitClipboardPayloadBuilder.build(entries, emptyList(), ClipboardPathResolver.fromProject(project), settings, EmptyProgressIndicator())
+                } else {
+                    GitClipboardPayloadBuilder.build(entries, emptyList(), ClipboardPathResolver.fromProject(project), settings, EmptyProgressIndicator(), includeNonText)
+                }
+            }
+        } finally {
+            settings.state.maxNonTextFileSizeKB = prev
+        }
+    }
+
+    fun testIncludeCarriesWorkingTreeNonTextFileAsBase64() {
+        val png = pngBytes(1)
+        val entries = listOf(vfEntry("img/logo.png", png), textEntry("src/A.kt", "val a = 1"))
+
+        val payload = buildWith(entries, includeNonText = true)
+
+        assertTrue(payload.text.contains(NonText.placeholderLine(png.size.toLong(), NonText.sha256Hex(png))), payload.text)
+        assertTrue(payload.text.contains("val a = 1"))
+        assertEquals(1, payload.nonTextCarried.size)
+        assertTrue(payload.nonTextCarried[0].path.endsWith("img/logo.png"))
+        assertEquals(png.size.toLong(), payload.nonTextCarried[0].size)
+        assertEquals(NonTextCopy.utf8Length(payload.text), payload.utf8Bytes)
+        assertEquals(0, payload.limitLeftOut)
+        assertTrue(payload.summary.startsWith("2 files copied"), payload.summary)
+        assertTrue(payload.summary.contains("Non-text files copied as Base64: 1."), payload.summary)
+    }
+
+    fun testExcludeAndDefaultAreTodaysPayloadByteForByte() {
+        val entries = listOf(vfEntry("img/logo.png", pngBytes(1)), textEntry("src/A.kt", "val a = 1"))
+
+        val default = buildWith(entries, includeNonText = null)
+        val exclude = buildWith(entries, includeNonText = false)
+
+        assertEquals(default, exclude)
+        assertFalse(exclude.text.contains("base64 follows"))
+        assertContainsBody(exclude.text, "// Unable to read file content")
+        assertEquals("1 files copied (1 skipped: not UTF-8 text or unreadable).", exclude.summary)
+        assertTrue(exclude.nonTextCarried.isEmpty())
+        assertEquals(null, exclude.limitLeftOut)
+    }
+
+    fun testIncludeWithTextOnlyEntriesEqualsToday() {
+        val entries = listOf(textEntry("src/A.kt", "val a = 1"), textEntry("src/B.kt", "val b = 2"))
+
+        val include = buildWith(entries, includeNonText = true)
+        val today = buildWith(entries, includeNonText = false)
+
+        assertEquals(today.text, include.text)
+        assertEquals(today.summary, include.summary)
+        assertTrue(include.nonTextCarried.isEmpty())
+    }
+
+    fun testNonTextOverItsLimitBecomesSizePlaceholderAndIsCounted() {
+        val big = pngBytes(2, size = 3 * 1024)
+        val payload = buildWith(listOf(vfEntry("img/big.png", big)), includeNonText = true, nonTextKB = 1)
+
+        assertContainsBody(payload.text, "// File skipped: size exceeds limit (${big.size} bytes)")
+        assertTrue(payload.nonTextCarried.isEmpty())
+        // Over both limits (text 500 KB is larger, so this one was read): non-text over limit.
+        assertEquals(1, payload.nonTextOverLimit)
+        assertEquals(0, payload.unreadOverLimit)
+    }
+
+    fun testFileOverBothLimitsIsNotReadAndCounted() {
+        val huge = ByteArray(600 * 1024) { 'a'.code.toByte() }
+        val payload = buildWith(listOf(vfEntry("data/huge.txt", huge)), includeNonText = true, nonTextKB = 1)
+
+        assertContainsBody(payload.text, "// File skipped: size exceeds limit (${huge.size} bytes)")
+        assertEquals(1, payload.unreadOverLimit)
+        assertEquals(0, payload.nonTextOverLimit)
+    }
+
+    fun testNonTextFileTakesAFileCountSlotAndLimitLeftOutIsCounted() {
+        val entries = listOf(
+            vfEntry("img/a.png", pngBytes(1)),
+            textEntry("src/B.kt", "val b = 1"),
+            textEntry("src/C.kt", "val c = 1")
+        )
+
+        val payload = withFileCountLimit(1) { buildWith(entries, includeNonText = true) }
+
+        assertEquals(1, payload.nonTextCarried.size)
+        assertFalse(payload.text.contains("val b = 1"))
+        assertEquals(2, payload.limitLeftOut)
+        assertTrue(payload.summary.contains("The file-count limit left out 2 files."), payload.summary)
+        assertTrue(payload.summary.contains("File limit 1 reached."), payload.summary)
+    }
+
+    fun testRevisionContentIsNeverCarriedAsNonText() {
+        val file = vfEntry("img/rev.png", pngBytes(3)).virtualFile
+        val entry = GitContentResolver.ResolvedGitEntry(ChangeTypeLabel.MODIFIED, file!!.path, file, contentFromRevision = "revision text")
+
+        val payload = buildWith(listOf(entry), includeNonText = true)
+
+        assertContainsBody(payload.text, "revision text")
+        assertTrue(payload.nonTextCarried.isEmpty())
+    }
+
+    fun testWithLimitLeftOutAppendsSentenceOnlyWhenPositive() {
+        val p = GitClipboardPayloadBuilder.Payload("t", "2 files copied.")
+        assertEquals("2 files copied. The file-count limit left out 1 file.", p.withLimitLeftOut(1).summary)
+        assertEquals(p, p.withLimitLeftOut(0))
+        assertEquals(p, p.withLimitLeftOut(null))
+    }
+
     private fun buildPayload(
         contentEntries: List<GitContentResolver.ResolvedGitEntry>
     ): GitClipboardPayloadBuilder.Payload = withSettings("// file: \$FILE_PATH", maxFileSizeKB = 500) {
