@@ -89,17 +89,28 @@ class NodeModulesCopyTest : BasePlatformTestCase() {
         val entries = ClipboardRestoreParser().parse(field(result, "text") as String, "// file: $" + "FILE_PATH")
         assertEquals(1, entries.size)
         assertEquals("END", entries.single().content)
+        // The link was always left out; D2 names it instead of dropping it silently.
+        val notes = field(result, "skipNotes") as SkipNotes
+        assertEquals(1, notes.count(SkipCategory.SYMLINKED_FOLDER))
+        assertTrue(notes.names(SkipCategory.SYMLINKED_FOLDER).single().endsWith("node_modules/self"))
     }
 
-    fun testNormalPackageSymlinkStillCopiesItsSelectedPath() {
+    /**
+     * Spec "What is carried" / case 22 (decision D2): a symlinked folder is never followed, even when it
+     * IS the selection. The pnpm package link used to be expanded; now it is skipped and named, and its
+     * files are reached through the real `.pnpm` folder only.
+     */
+    fun testSelectedPackageSymlinkIsNotFollowed() {
         val root = fixture(mapOf(".pnpm/package/index.js" to "END"), false)
         java.nio.file.Files.createSymbolicLink(java.nio.file.Path.of(root.path, "package"), java.nio.file.Path.of(root.path, ".pnpm/package"))
         root.refresh(false, true)
         val result = copy(root.findChild("package")!!)
         val entries = ClipboardRestoreParser().parse(field(result, "text") as String, "// file: $" + "FILE_PATH")
-        assertEquals(1, entries.size)
-        assertTrue(entries.single().path.endsWith("node_modules/package/index.js"))
-        assertEquals("END", entries.single().content)
+        assertEquals(0, entries.size)
+        assertEquals(0, field(result, "fileCount"))
+        val notes = field(result, "skipNotes") as SkipNotes
+        assertEquals(1, notes.count(SkipCategory.SYMLINKED_FOLDER))
+        assertTrue(notes.names(SkipCategory.SYMLINKED_FOLDER).single().endsWith("node_modules/package"))
     }
 
     fun testDefaultLimitsExplicitlyReportPartialCopy() {

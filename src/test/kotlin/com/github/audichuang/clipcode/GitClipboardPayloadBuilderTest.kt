@@ -286,6 +286,22 @@ class GitClipboardPayloadBuilderTest : BasePlatformTestCase() {
         assertTrue(payload.summary.contains("Non-text files copied as Base64: 1."), payload.summary)
     }
 
+    /** Spec "What is carried": the Include notice names what it could not read, not only counts it. */
+    fun testIncludeNoticeNamesUnreadableEntries() {
+        val gone = GitContentResolver.ResolvedGitEntry(ChangeTypeLabel.MODIFIED, "src/Gone<1>.kt", null, null)
+        val entries = listOf(vfEntry("img/logo.png", pngBytes(4)), gone)
+
+        val include = buildWith(entries, includeNonText = true)
+        assertEquals(
+            "<b>${include.summary}</b><br>Unreadable: 1<br>src/Gone&lt;1&gt;.kt<br>",
+            include.noticeHtml()
+        )
+
+        // Today's build keeps today's notice: the summary alone.
+        val exclude = buildWith(entries, includeNonText = false)
+        assertEquals("<b>${exclude.summary}</b><br>", exclude.noticeHtml())
+    }
+
     fun testExcludeAndDefaultAreTodaysPayloadByteForByte() {
         val entries = listOf(vfEntry("img/logo.png", pngBytes(1)), textEntry("src/A.kt", "val a = 1"))
 

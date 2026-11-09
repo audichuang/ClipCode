@@ -216,13 +216,55 @@ class NonTextCopyTest {
     fun `include notice lines, one category per line`() {
         assertEquals(
             listOf("Non-text files copied as Base64: 1."),
-            NonTextCopy.includeNoticeLines(1, 0, emptyList())
+            NonTextCopy.includeNoticeLines(1, SkipNotes())
         )
-        val paths = (1..7).map { "u$it" }
+        val notes = SkipNotes()
+        (1..7).forEach { notes.note(SkipCategory.UNREADABLE, "u$it") }
         assertEquals(
             listOf("Non-text files copied as Base64: 3.", "Unreadable: 7", "u1", "u2", "u3", "u4", "u5", "and 2 more"),
-            NonTextCopy.includeNoticeLines(3, 7, paths)
+            NonTextCopy.includeNoticeLines(3, notes)
         )
+    }
+
+    /** Spec "What is carried": each skip reason has its own block, named with the real name. */
+    @Test
+    fun `symlinked folders and unportable names get their own category`() {
+        val notes = SkipNotes()
+        notes.note(SkipCategory.NAME_NOT_PORTABLE, "odd/back\\slash.txt")
+        notes.note(SkipCategory.UNREADABLE, "odd/locked.txt")
+        notes.note(SkipCategory.SYMLINKED_FOLDER, "odd/linkdir")
+        notes.note(SkipCategory.NAME_NOT_PORTABLE, "odd/tab\tname.txt")
+        assertEquals(1, notes.count(SkipCategory.UNREADABLE))
+        assertEquals(2, notes.count(SkipCategory.NAME_NOT_PORTABLE))
+        assertTrue(notes.hasNamedSkips)
+        assertEquals(
+            listOf(
+                "Non-text files copied as Base64: 1.",
+                "Unreadable: 1", "odd/locked.txt",
+                "Symlinked folder: 1", "odd/linkdir",
+                "Name not portable: 2", "odd/back\\slash.txt", "odd/tab\\tname.txt"
+            ),
+            NonTextCopy.includeNoticeLines(1, notes)
+        )
+        // Exclude / no dialog: today's sentence carries the unreadable count, so its block drops the count line.
+        assertEquals(
+            listOf(
+                "odd/locked.txt",
+                "Symlinked folder: 1", "odd/linkdir",
+                "Name not portable: 2", "odd/back\\slash.txt", "odd/tab\\tname.txt"
+            ),
+            NonTextCopy.excludeNoticeLines(notes)
+        )
+        assertEquals(emptyList(), NonTextCopy.excludeNoticeLines(SkipNotes()))
+        assertFalse(SkipNotes().also { it.note(SkipCategory.UNREADABLE, "x") }.hasNamedSkips)
+    }
+
+    @Test
+    fun `skip notes keep only the names a notice shows`() {
+        val notes = SkipNotes()
+        (1..2000).forEach { notes.note(SkipCategory.SYMLINKED_FOLDER, "l$it") }
+        assertEquals(2000, notes.count(SkipCategory.SYMLINKED_FOLDER))
+        assertEquals((1..NonTextCopy.NOTICE_PATH_LIMIT).map { "l$it" }, notes.names(SkipCategory.SYMLINKED_FOLDER))
     }
 
     /** "and N more" counts what the count names but the list does not show, so the two always agree. */

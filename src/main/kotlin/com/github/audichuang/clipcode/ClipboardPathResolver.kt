@@ -134,6 +134,33 @@ class ClipboardPathResolver private constructor(
         private val WINDOWS_STYLE_PATH = Regex("^[A-Za-z]:($|/[\\s\\S]*)")
         private val WINDOWS_ABSOLUTE_PATH = Regex("^[A-Za-z]:/[\\s\\S]*")
 
+        /**
+         * Also the writer's "Name not portable" rule ([PortableName]): a path is portable exactly when
+         * this returns it unchanged.
+         */
+        internal fun sanitizeRelativePath(path: String): String? {
+            // asciiTrim, not String.trim(): the two stdlibs disagree on U+001C-U+001F and
+            // U+FEFF, and here that decided the FILENAME each tool wrote — `// file: a.txt\u001C`
+            // restored as `a.txt` here and `a.txt\u001C` in VS Code. The parsers were aligned
+            // first; without this the divergence just moved one layer down.
+            val normalizedPath = ClipboardRestoreParser.asciiTrim(path)
+                .replace('\\', '/').replace(DUPLICATE_SEPARATORS, "/").trimStart('/')
+            val segments = normalizedPath.split('/')
+                .filter { segment -> segment.isNotEmpty() && segment != "." }
+            if (segments.isEmpty()) {
+                return ""
+            }
+            // A control character (0x00-0x1F) is refused on EVERY platform, exactly like the
+            // Windows-illegal <>:"|?* beside it: Windows cannot create such a name and
+            // WindowsPathParser throws on it, so allowing it elsewhere made one payload restore
+            // differently per platform. U+0085/U+2028/U+2029 are legal on Windows and stay.
+            // TS mirror: pathResolver.ts sanitizeRelativePath.
+            if (segments.any { segment -> segment == ".." || segment.any { it in "<>:\"|?*" || it.code < 0x20 } }) {
+                return null
+            }
+            return segments.joinToString("/")
+        }
+
         fun fromProject(project: Project): ClipboardPathResolver {
             val projectBasePath = ProjectPathRoots.primaryRootPath(project)
             val rootManager = ProjectRootManager.getInstance(project)
@@ -301,6 +328,27 @@ class ClipboardPathResolver private constructor(
             .firstOrNull()
 
         return directRelative ?: normalizedAbsolutePath
+    }
+
+    /**
+     * The path of [absolutePath] under the root [toClipboardPath] would pick (primary first), exactly as
+     * it is on disk: no separator rewrite, no trim, no sanitising, no root label. Null when it is under no
+     * root. The writer's portability check ([PortableName]) needs this: [toClipboardPath] turns `\` into
+     * `/`, trims a trailing space and falls back to the absolute path on a control character, so the
+     * very names the check must catch never reach its output.
+     */
+    fun rawRelativePath(absolutePath: String): String? {
+        val absoluteKey = pathLookupKey(absolutePath)
+        val candidates = listOfNotNull(primaryRoot) + orderedRoots.filter { it != primaryRoot }
+        for (root in candidates) {
+            val normalizedRoot = normalizePathString(root.path.toString())
+            val rootKey = pathLookupKey(normalizedRoot)
+            if (absoluteKey == rootKey) return ""
+            if (absoluteKey.startsWith("$rootKey/") && absolutePath.length > normalizedRoot.length) {
+                return absolutePath.substring(normalizedRoot.length + 1)
+            }
+        }
+        return null
     }
 
     /** Containment is enforced once, on the way out, so no branch can bypass it. */
@@ -541,29 +589,6 @@ class ClipboardPathResolver private constructor(
     private fun pathLookupKey(path: String): String {
         val normalizedPath = normalizePathString(path)
         return if (isWindowsStylePath(normalizedPath)) normalizedPath.lowercase() else normalizedPath
-    }
-
-    private fun sanitizeRelativePath(path: String): String? {
-        // asciiTrim, not String.trim(): the two stdlibs disagree on U+001C-U+001F and
-        // U+FEFF, and here that decided the FILENAME each tool wrote — `// file: a.txt\u001C`
-        // restored as `a.txt` here and `a.txt\u001C` in VS Code. The parsers were aligned
-        // first; without this the divergence just moved one layer down.
-        val normalizedPath = ClipboardRestoreParser.asciiTrim(path)
-            .replace('\\', '/').replace(DUPLICATE_SEPARATORS, "/").trimStart('/')
-        val segments = normalizedPath.split('/')
-            .filter { segment -> segment.isNotEmpty() && segment != "." }
-        if (segments.isEmpty()) {
-            return ""
-        }
-        // A control character (0x00-0x1F) is refused on EVERY platform, exactly like the
-        // Windows-illegal <>:"|?* beside it: Windows cannot create such a name and
-        // WindowsPathParser throws on it, so allowing it elsewhere made one payload restore
-        // differently per platform. U+0085/U+2028/U+2029 are legal on Windows and stay.
-        // TS mirror: pathResolver.ts sanitizeRelativePath.
-        if (segments.any { segment -> segment == ".." || segment.any { it in "<>:\"|?*" || it.code < 0x20 } }) {
-            return null
-        }
-        return segments.joinToString("/")
     }
 
     private fun isAbsolutePath(path: String): Boolean =

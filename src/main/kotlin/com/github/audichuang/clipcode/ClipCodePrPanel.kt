@@ -238,7 +238,7 @@ class ClipCodePrPanel(
                         Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(result.text), null)
                         if (settings?.state?.showCopyNotification == true) {
                             CopyFileContentAction.showPayloadNotification(
-                                "<b>${result.summary}</b><br>",
+                                result.noticeHtml(),
                                 result.text,
                                 project
                             )
