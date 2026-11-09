@@ -69,6 +69,44 @@ class NonTextCopyTest {
     }
 
     @Test
+    fun `UTF-16 file with BOM is non-text`() {
+        val bytes = byteArrayOf(0xFF.toByte(), 0xFE.toByte(), 'h'.code.toByte(), 0, 'i'.code.toByte(), 0)
+        assertIs<NonTextCopy.Outcome.Carried>(classify(bytes))
+    }
+
+    @Test
+    fun `empty file is text`() {
+        assertEquals("", assertIs<NonTextCopy.Outcome.Text>(classify(ByteArray(0))).content)
+    }
+
+    @Test
+    fun `svg xml in UTF-8 is text`() {
+        val svg = "<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M0 0\"/></svg>"
+        assertEquals(svg, assertIs<NonTextCopy.Outcome.Text>(classify(svg.toByteArray())).content)
+    }
+
+    @Test
+    fun `non-text file exactly at the limit is carried and one byte more is a size placeholder`() {
+        val limit = 8 * kb
+        assertIs<NonTextCopy.Outcome.Carried>(classify(nonTextBytes(limit.toInt()), text = 16 * kb, nonText = limit))
+        val over = assertIs<NonTextCopy.Outcome.SizePlaceholder>(
+            classify(nonTextBytes(limit.toInt() + 1), text = 16 * kb, nonText = limit)
+        )
+        assertEquals(limit + 1, over.size)
+        assertTrue(over.nonTextOverLimit)
+    }
+
+    @Test
+    fun `text file exactly at the limit is text and one byte more is a size placeholder`() {
+        val limit = 4 * kb
+        assertIs<NonTextCopy.Outcome.Text>(classify(textBytes(limit.toInt()), text = limit, nonText = 8 * kb))
+        val over = assertIs<NonTextCopy.Outcome.SizePlaceholder>(
+            classify(textBytes(limit.toInt() + 1), text = limit, nonText = 8 * kb)
+        )
+        assertFalse(over.nonTextOverLimit)
+    }
+
+    @Test
     fun `formatter uses the shared non-text body`() {
         val bytes = nonTextBytes(200)
         val hf = "// file: \$FILE_PATH"

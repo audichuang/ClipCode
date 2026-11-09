@@ -853,6 +853,27 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         }
     }
 
+    /** A symlink to a file carries the target's bytes under the link's own path. */
+    fun testSymlinkedFileCarriesTargetBytesUnderLinkPath() {
+        val root = Files.createTempDirectory("clipcode-symfile")
+        try {
+            val target = root.resolve("real.png")
+            Files.write(target, pngBytes(5))
+            Files.createSymbolicLink(root.resolve("link.png"), target)
+            val dir = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root) ?: error("no vfs dir")
+            VfsUtil.markDirtyAndRefresh(false, true, true, dir)
+            val link = dir.findChild("link.png") ?: error("no link vfs")
+            val chooser = RecordingChooser(NonTextChoice.INCLUDE)
+            CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(link))
+            val expected = formatterPayload(
+                listOf(ClipboardPayloadFormatter.PayloadFile(pathResolver().toClipboardPath(link.path), nonText = pngBytes(5)))
+            )
+            assertEquals(expected, clipboardText())
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     // === D2: names that are not portable and symlinked folders are skipped and named ===
 
     /** Real disk (temp:// has no symlinks): `odd/` holds normal files beside every kind of D2 skip. */

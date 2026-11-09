@@ -454,6 +454,24 @@ class RestoreExecutorTest : BasePlatformTestCase() {
         }
     }
 
+    fun testIdenticalNonTextTargetKeepsItsMtime() {
+        val root = Files.createTempDirectory("clipcode-nt-mtime")
+        try {
+            val bytes = byteArrayOf(0, 1, 2, 0xff.toByte())
+            val target = root.resolve("same.bin")
+            Files.write(target, bytes)
+            val old = java.nio.file.attribute.FileTime.fromMillis(1_000_000_000_000L)
+            Files.setLastModifiedTime(target, old)
+            val plan = planOf(root, nonTextOp(root, "same.bin", bytes, existed = true, identical = true))
+            val result = RestoreExecutor(project).execute(plan, overwriteExisting = true, skipExisting = false)
+            assertTrue(result.errors.isEmpty(), result.errors.toString())
+            assertEquals(1, result.unchangedCount)
+            assertEquals(old, Files.getLastModifiedTime(target))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     fun testNonTextOverwriteIsSkippedWithoutPermissionAndNeverTouchesFolders() {
         val root = Files.createTempDirectory("clipcode-nt-exec-skip")
         try {
