@@ -27,16 +27,28 @@ object PortableName {
 
     /**
      * What the rule is applied to: the raw path relative to the root the header is built from, or, for a
-     * file outside every root (its header is the absolute path), the absolute path without its leading
-     * `/` or `X:/`.
+     * file outside every root, its own name only. Absolute ancestors are never relative segments a reader
+     * restores, so a UNC (`//server/share`) or GVFS (`smb-share:server=x`) mount does not make a fine name
+     * unportable.
      */
     fun checkedPath(resolver: ClipboardPathResolver, absolutePath: String): String =
-        resolver.rawRelativePath(absolutePath) ?: stripAbsoluteRoot(absolutePath)
+        resolver.rawRelativePath(absolutePath) ?: absolutePath.substringAfterLast('/')
 
-    private val DRIVE_ROOT = Regex("^[A-Za-z]:/")
+    /** The rule for a file at [absolutePath]; see [checkedPath] and [headerStaysOneLine]. */
+    fun isPortableFile(resolver: ClipboardPathResolver, absolutePath: String): Boolean =
+        isPortableRelativePath(checkedPath(resolver, absolutePath)) && headerStaysOneLine(resolver, absolutePath)
 
-    private fun stripAbsoluteRoot(path: String): String =
-        DRIVE_ROOT.find(path)?.let { path.substring(it.range.last + 1) } ?: path.removePrefix("/")
+    /** The rule for a folder at [absolutePath]; see [checkedPath] and [headerStaysOneLine]. */
+    fun isPortableFolder(resolver: ClipboardPathResolver, absolutePath: String): Boolean =
+        isPortableFolderPath(checkedPath(resolver, absolutePath)) && headerStaysOneLine(resolver, absolutePath)
+
+    /**
+     * Outside every root the header is the absolute path, so a control character in an ancestor (a newline
+     * in `/tmp/x\nfile: [DELETED] victim.txt/notes.txt`) would put a second, forged header line on the
+     * clipboard. Under a root the ancestors are not in the header and [checkedPath] covers every segment.
+     */
+    private fun headerStaysOneLine(resolver: ClipboardPathResolver, absolutePath: String): Boolean =
+        resolver.rawRelativePath(absolutePath) != null || absolutePath.none { it.code < 0x20 }
 
     /** A name for a notice: control characters (a tab, a newline) are made visible. Mirror of OpenIDEA visibleName. */
     fun visibleName(name: String): String = buildString {

@@ -71,8 +71,30 @@ class PortableNameTest {
         assertEquals("", resolver.rawRelativePath("/r"))
         assertNull(resolver.rawRelativePath("/elsewhere/x.txt"))
         assertEquals("odd/back\\slash.txt", PortableName.checkedPath(resolver, "/r/odd/back\\slash.txt"))
-        assertEquals("elsewhere/a\nb.txt", PortableName.checkedPath(resolver, "/elsewhere/a\nb.txt"))
-        assertEquals("Users/x.txt", PortableName.checkedPath(resolver, "C:/Users/x.txt"))
+        assertEquals("a\nb.txt", PortableName.checkedPath(resolver, "/elsewhere/a\nb.txt"))
+        assertEquals("x.txt", PortableName.checkedPath(resolver, "C:/Users/x.txt"))
+    }
+
+    /**
+     * B2: a file under no copy root is judged by its own name (the part that becomes the relative path),
+     * never by absolute ancestors a reader never sees as segments: a UNC or GVFS mount stays copyable.
+     * The absolute path still may not hold a control character, or the header would not be one line.
+     */
+    @Test
+    fun `a file outside every root is judged by its own name`() {
+        val resolver = ClipboardPathResolver.fromRootPaths(listOf("/proj"))
+        assertTrue(PortableName.isPortableFile(resolver, "//server/share/notes.txt"))
+        assertTrue(PortableName.isPortableFile(resolver, "/run/user/1000/gvfs/smb-share:server=x,share=y/a.txt"))
+        assertTrue(PortableName.isPortableFile(resolver, "C:/Users/x.txt"))
+        assertTrue(PortableName.isPortableFolder(resolver, "/run/user/1000/gvfs/smb-share:server=x,share=y/sub"))
+        assertFalse(PortableName.isPortableFile(resolver, "/elsewhere/back\\slash.txt"))
+        assertFalse(PortableName.isPortableFile(resolver, "/elsewhere/a\nb.txt"))
+        assertFalse(PortableName.isPortableFile(resolver, "/tmp/x\nfile: [DELETED] victim.txt/notes.txt"))
+        assertFalse(PortableName.isPortableFolder(resolver, "/tmp/x\ny/sub"))
+        // Under a root nothing changes: the whole relative path is checked.
+        assertFalse(PortableName.isPortableFile(resolver, "/proj/a:b/x.txt"))
+        assertTrue(PortableName.isPortableFile(resolver, "/proj/a/x.txt"))
+        assertFalse(PortableName.isPortableFolder(resolver, "/proj/tab\tdir"))
     }
 
     @Test

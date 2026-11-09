@@ -28,7 +28,10 @@ data class NonTextCopySummary(
     val limitLeftOut: Int,
     val nonTextLimitBytes: Long,
     val headerFormat: String,
-    /** True when counting stopped at [NonTextCopy.LEFT_OUT_COUNT_CAP]; more files were left out than [limitLeftOut]. */
+    /**
+     * True when more files were left out than [limitLeftOut]: counting stopped at
+     * [NonTextCopy.LEFT_OUT_COUNT_CAP], or the walk stopped before listing a folder past the limit.
+     */
     val limitLeftOutCapped: Boolean = false
 ) {
     data class Item(val path: String, val size: Long)
@@ -46,13 +49,16 @@ enum class SkipCategory(val label: String) {
 /**
  * Count and the first few real names of every skip category. The only way to record a skip: count and
  * names move together, so a notice never says "Unreadable: 2" while listing one path. Only the names a
- * notice can show are kept (mirror of OpenIDEA `note_skipped`).
+ * notice can show are kept (mirror of OpenIDEA `note_skipped`). A name is counted once per category: a
+ * folder selected together with its parent is reached twice, and the notice must not say 2 for one item.
  */
 class SkipNotes {
     private val counts = IntArray(SkipCategory.entries.size)
     private val names = SkipCategory.entries.map { mutableListOf<String>() }
+    private val seen = SkipCategory.entries.map { mutableSetOf<String>() }
 
     fun note(category: SkipCategory, name: String) {
+        if (!seen[category.ordinal].add(name)) return
         counts[category.ordinal]++
         val shown = names[category.ordinal]
         if (shown.size < NonTextCopy.NOTICE_PATH_LIMIT) shown.add(name)
@@ -75,7 +81,10 @@ class SkipNotes {
 
 /** Pure logic of the non-text copy: per-file classification and UI text. No IDE dependency. */
 object NonTextCopy {
-    /** Left-out files are counted up to this many past the limit; beyond it the number reads "1000+". */
+    /**
+     * Left-out files are counted up to this many past the limit; beyond it the number reads "1000+". Only
+     * entries already listed are counted: the walk never goes on past the limit just to count.
+     */
     const val LEFT_OUT_COUNT_CAP = 1000
     const val DIALOG_PATH_LIMIT = 10
     const val NOTICE_PATH_LIMIT = 5
@@ -149,8 +158,18 @@ object NonTextCopy {
 
     private fun files(n: Int) = if (n == 1) "1 file" else "$n files"
 
-    fun limitLeftOutSentence(n: Int, capped: Boolean = false): String =
-        "The file-count limit left out ${if (capped) "$n+ files" else files(n)}"
+    /**
+     * "N+" when the count is a lower bound. With nothing counted but folders left unlisted, the number is
+     * unknown: the sentence still says the limit cut files off, without a misleading "0+".
+     */
+    fun limitLeftOutSentence(n: Int, capped: Boolean = false): String = when {
+        capped && n == 0 -> "The file-count limit left out more files"
+        capped -> "The file-count limit left out $n+ files"
+        else -> "The file-count limit left out ${files(n)}"
+    }
+
+    /** Whether there is anything to say about files the limit left out. */
+    fun hasLimitLeftOut(n: Int, capped: Boolean): Boolean = n > 0 || capped
 
     data class DialogText(
         val found: String,
@@ -172,7 +191,9 @@ object NonTextCopy {
             if (summary.unreadOverLimit > 0) {
                 add("Files over both size limits, not read, copied as size placeholders: ${summary.unreadOverLimit}")
             }
-            if (summary.limitLeftOut > 0) add(limitLeftOutSentence(summary.limitLeftOut, summary.limitLeftOutCapped))
+            if (hasLimitLeftOut(summary.limitLeftOut, summary.limitLeftOutCapped)) {
+                add(limitLeftOutSentence(summary.limitLeftOut, summary.limitLeftOutCapped))
+            }
         }
         return DialogText(
             found = "Non-text files found: $n (total ${formatSize(summary.totalBytes)}).",

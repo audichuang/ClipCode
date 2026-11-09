@@ -211,6 +211,14 @@ class NonTextCopyTest {
         assertTrue(capped.notes.contains("The file-count limit left out 1000+ files"), "${capped.notes}")
     }
 
+    /** Only unlisted folders remained past the limit: the number is unknown, but the cut is still reported. */
+    @Test
+    fun `left-out sentence with nothing counted but more unlisted`() {
+        assertEquals("The file-count limit left out more files", NonTextCopy.limitLeftOutSentence(0, capped = true))
+        val unknown = NonTextCopy.dialogText(summary(1, leftOut = 0).copy(limitLeftOutCapped = true))
+        assertTrue(unknown.notes.contains("The file-count limit left out more files"), "${unknown.notes}")
+    }
+
     @Test
     fun `dialog text for one file`() {
         val lines = NonTextCopy.dialogText(summary(1))
@@ -295,6 +303,18 @@ class NonTextCopyTest {
         )
         assertEquals(emptyList(), NonTextCopy.excludeNoticeLines(SkipNotes()))
         assertFalse(SkipNotes().also { it.note(SkipCategory.UNREADABLE, "x") }.hasNamedSkips)
+    }
+
+    /** B5: an item reached twice (selected with its parent) is counted and named once per category. */
+    @Test
+    fun `skip notes count a name once per category`() {
+        val notes = SkipNotes()
+        notes.note(SkipCategory.SYMLINKED_FOLDER, "a/link")
+        notes.note(SkipCategory.SYMLINKED_FOLDER, "a/link")
+        notes.note(SkipCategory.NAME_NOT_PORTABLE, "a/link")
+        assertEquals(1, notes.count(SkipCategory.SYMLINKED_FOLDER))
+        assertEquals(listOf("a/link"), notes.names(SkipCategory.SYMLINKED_FOLDER))
+        assertEquals(1, notes.count(SkipCategory.NAME_NOT_PORTABLE))
     }
 
     @Test

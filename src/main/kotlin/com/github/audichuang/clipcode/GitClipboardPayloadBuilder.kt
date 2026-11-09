@@ -49,7 +49,7 @@ object GitClipboardPayloadBuilder {
         val limitLeftOutCapped: Boolean = false,
         /** UTF-8 length of [text]; only computed when non-text files were carried. */
         val utf8Bytes: Long = 0,
-        /** Include only: the unreadable entries the summary counts, by name. Empty for today's build. */
+        /** The unreadable entries, by name, in every build; the notice names them (spec "What is carried"). */
         val skipNotes: SkipNotes = SkipNotes()
     ) {
         fun toSummary(settings: CopyFileContentSettings?) = NonTextCopySummary(
@@ -63,15 +63,26 @@ object GitClipboardPayloadBuilder {
             headerFormat = settings?.state?.headerFormat ?: "// file: \$FILE_PATH"
         )
 
-        /** The completion notice body: the summary, then (Include only) the unreadable entries by name. */
-        fun noticeHtml(): String =
-            "<b>$summary</b><br>" + SkipCategory.entries
-                .flatMap { NonTextCopy.skipLines(it, skipNotes.count(it), skipNotes.names(it)) }
-                .joinToString("") { com.intellij.openapi.util.text.StringUtil.escapeXmlEntities(it) + "<br>" }
+        /**
+         * The completion notice body: the summary, then the unreadable entries by name, as the files copy
+         * does. After Include (non-text files carried) the block is "Unreadable: N" plus the names, and the
+         * summary does not repeat the count. Otherwise today's summary sentence carries the count, so only
+         * the names follow ([NonTextCopy.excludeNoticeLines]).
+         */
+        fun noticeHtml(): String {
+            val lines = if (nonTextCarried.isNotEmpty()) {
+                SkipCategory.entries.flatMap { NonTextCopy.skipLines(it, skipNotes.count(it), skipNotes.names(it)) }
+            } else {
+                NonTextCopy.excludeNoticeLines(skipNotes)
+            }
+            return "<b>$summary</b><br>" +
+                lines.joinToString("") { com.intellij.openapi.util.text.StringUtil.escapeXmlEntities(it) + "<br>" }
+        }
 
         /** Adds the left-out sentence to a notice whose payload came from today's (Exclude) build. */
         fun withLimitLeftOut(n: Int?, capped: Boolean = false): Payload =
-            if (n == null || n <= 0) this else copy(summary = "$summary ${NonTextCopy.limitLeftOutSentence(n, capped)}.")
+            if (n == null || !NonTextCopy.hasLimitLeftOut(n, capped)) this
+            else copy(summary = "$summary ${NonTextCopy.limitLeftOutSentence(n, capped)}.")
     }
 
     private fun nonTextLimitBytes(settings: CopyFileContentSettings?): Long =
@@ -235,9 +246,9 @@ object GitClipboardPayloadBuilder {
                 }
                 isPlaceholder(resolved.content) -> {
                     skippedUnreadableCount++
-                    // Spec "What is carried": the notice names what it could not read. Today's build
-                    // keeps today's notice, the count alone.
-                    if (includeNonText) skipNotes.note(SkipCategory.UNREADABLE, resolved.path)
+                    // Spec "What is carried": the notice names what it could not read, in every build
+                    // (the payload is unchanged; only the notice lists the paths).
+                    skipNotes.note(SkipCategory.UNREADABLE, resolved.path)
                 }
                 else -> {
                     copiedContent.add(entry)
@@ -273,9 +284,14 @@ object GitClipboardPayloadBuilder {
         )
 
         val limitSuffix = if (fileLimitReached) " File limit $countLimit reached." else ""
-        var summary = buildSummary(copiedContent, acceptedDeleted, skippedSizeCount, skippedUnreadableCount) + limitSuffix
+        // After Include the unreadable count is stated once, as "Unreadable: N" in noticeHtml (spec: not
+        // "non-text file or unreadable"); otherwise today's sentence keeps it.
+        val summaryUnreadable = if (nonTextCarried.isNotEmpty()) 0 else skippedUnreadableCount
+        var summary = buildSummary(copiedContent, acceptedDeleted, skippedSizeCount, summaryUnreadable) + limitSuffix
         if (includeNonText) {
-            if (limitLeftOut > 0) summary += " ${NonTextCopy.limitLeftOutSentence(limitLeftOut, limitLeftOutCapped)}."
+            if (NonTextCopy.hasLimitLeftOut(limitLeftOut, limitLeftOutCapped)) {
+                summary += " ${NonTextCopy.limitLeftOutSentence(limitLeftOut, limitLeftOutCapped)}."
+            }
             if (nonTextCarried.isNotEmpty()) summary += " Non-text files copied as Base64: ${nonTextCarried.size}."
         }
         return Payload(
