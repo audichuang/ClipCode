@@ -5,9 +5,9 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 
 class NonTextCopyDialogTest : BasePlatformTestCase() {
-    private fun summary(headerFormat: String) = NonTextCopySummary(
+    private fun summary(headerFormat: String, estimate: Long = 100) = NonTextCopySummary(
         carried = listOf(NonTextCopySummary.Item("img/a.png", 10)),
-        estimatedPayloadBytes = 100,
+        estimatedPayloadBytes = estimate,
         nonTextOverLimit = 0,
         unreadOverLimit = 0,
         limitLeftOut = 0,
@@ -15,9 +15,9 @@ class NonTextCopyDialogTest : BasePlatformTestCase() {
         headerFormat = headerFormat
     )
 
-    private fun withDialog(headerFormat: String, check: (NonTextCopyDialog) -> Unit) {
+    private fun withDialog(headerFormat: String, estimate: Long = 100, check: (NonTextCopyDialog) -> Unit) {
         ApplicationManager.getApplication().invokeAndWait {
-            val dialog = NonTextCopyDialog(project, summary(headerFormat))
+            val dialog = NonTextCopyDialog(project, summary(headerFormat, estimate))
             try {
                 check(dialog)
             } finally {
@@ -33,5 +33,15 @@ class NonTextCopyDialogTest : BasePlatformTestCase() {
 
     fun testIncludeIsDisabledForAnUnescapableHeader() = withDialog("\$FILE_PATH") { dialog ->
         assertFalse(dialog.isOKActionEnabled)
+    }
+
+    fun testIncludeIsDisabledOverFiftyMiBAndAllowedAtExactlyFiftyMiB() {
+        val cap = 50L * 1024 * 1024
+        withDialog("// file: \$FILE_PATH", cap) { assertTrue(it.isOKActionEnabled) }
+        withDialog("// file: \$FILE_PATH", cap + 1) { dialog ->
+            assertFalse(dialog.isOKActionEnabled)
+            // Exclude is the default and holds the focus, same as the unescapable-header case.
+            assertEquals("Exclude", (dialog.preferredFocusedComponent as javax.swing.JButton).text)
+        }
     }
 }

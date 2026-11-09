@@ -5,6 +5,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -124,12 +125,16 @@ class NonTextCopyTest {
     }
 
     @Test
-    fun `size formatting`() {
-        assertEquals("0 bytes", NonTextCopy.formatSize(0))
-        assertEquals("1 byte", NonTextCopy.formatSize(1))
-        assertEquals("1023 bytes", NonTextCopy.formatSize(1023))
-        assertEquals("4.0 KB", NonTextCopy.formatSize(4096))
-        assertEquals("2.0 MB", NonTextCopy.formatSize(2L * 1024 * 1024))
+    fun `size formatting is one format everywhere`() {
+        val cases = listOf(
+            0L to "0 B", 1L to "1 B", 83L to "83 B", 1023L to "1023 B",
+            1024L to "1.0 KB", 4096L to "4.0 KB", 10_239L to "10.0 KB", 10_240L to "10 KB",
+            12L * 1024 to "12 KB", 1024L * 1024 - 1 to "1024 KB",
+            1024L * 1024 to "1.0 MB", (1.5 * 1024 * 1024).toLong() to "1.5 MB",
+            2L * 1024 * 1024 to "2.0 MB", 50L * 1024 * 1024 to "50 MB",
+            1024L * 1024 * 1024 to "1.0 GB", 5L * 1024 * 1024 * 1024 to "5.0 GB"
+        )
+        for ((bytes, expected) in cases) assertEquals(expected, NonTextCopy.formatSize(bytes), "$bytes")
     }
 
     @Test
@@ -214,16 +219,19 @@ class NonTextCopyTest {
     /** Only unlisted folders remained past the limit: the number is unknown, but the cut is still reported. */
     @Test
     fun `left-out sentence with nothing counted but more unlisted`() {
-        assertEquals("The file-count limit left out more files", NonTextCopy.limitLeftOutSentence(0, capped = true))
+        // X9: a zero count omits the left-out clause, even when counting stopped early; never "0+".
+        assertFalse(NonTextCopy.hasLimitLeftOut(0, capped = true))
+        assertFalse(NonTextCopy.hasLimitLeftOut(0, capped = false))
+        assertTrue(NonTextCopy.hasLimitLeftOut(1, capped = false))
         val unknown = NonTextCopy.dialogText(summary(1, leftOut = 0).copy(limitLeftOutCapped = true))
-        assertTrue(unknown.notes.contains("The file-count limit left out more files"), "${unknown.notes}")
+        assertTrue(unknown.notes.isEmpty(), "${unknown.notes}")
     }
 
     @Test
     fun `dialog text for one file`() {
         val lines = NonTextCopy.dialogText(summary(1))
         assertEquals("Non-text files found: 1 (total 1.0 KB).", lines.found)
-        assertEquals("Estimated payload with them: 120.6 KB", lines.estimate)
+        assertEquals("Estimated payload with them: 121 KB", lines.estimate)
         assertEquals(listOf("img/p1.png" to "1.0 KB"), lines.paths)
         assertNull(lines.more)
         assertTrue(lines.notes.isEmpty())
@@ -256,6 +264,35 @@ class NonTextCopyTest {
             "Include is unavailable: the header format \"\$FILE_PATH\" would make Base64 lines read as file headers.",
             lines.includeUnavailable
         )
+    }
+
+    @Test
+    fun `include is allowed at exactly 50 MiB and disabled one byte over`() {
+        val cap = 50L * 1024 * 1024
+        assertEquals(52_428_800L, cap)
+        assertNull(NonTextCopy.dialogText(summary(1).copy(estimatedPayloadBytes = cap)).includeUnavailable)
+        val over = NonTextCopy.dialogText(summary(1).copy(estimatedPayloadBytes = cap + 1))
+        assertEquals(
+            "Include is unavailable: the payload with non-text files would be over the 50 MiB clipboard limit.",
+            over.includeUnavailable
+        )
+    }
+
+    @Test
+    fun `estimate is never lower than the raw total of the carried files`() {
+        val cap = 50L * 1024 * 1024
+        val s = summary(1).copy(carried = listOf(NonTextCopySummary.Item("a.bin", cap + 1)), estimatedPayloadBytes = 10)
+        assertEquals(cap + 1, s.effectiveEstimateBytes)
+        val lines = NonTextCopy.dialogText(s)
+        assertNotNull(lines.includeUnavailable)
+        assertEquals("Estimated payload with them: 50 MB", lines.estimate)
+    }
+
+    @Test
+    fun `both reasons are named when the header is unescapable and the payload is too large`() {
+        val s = summary(1, headerFormat = "\$FILE_PATH").copy(estimatedPayloadBytes = 50L * 1024 * 1024 + 1)
+        val reason = NonTextCopy.dialogText(s).includeUnavailable!!
+        assertTrue(reason.contains("50 MiB") && reason.contains("header format"), reason)
     }
 
     @Test

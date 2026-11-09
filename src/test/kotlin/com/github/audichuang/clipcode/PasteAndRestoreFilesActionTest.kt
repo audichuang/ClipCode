@@ -211,10 +211,9 @@ class PasteAndRestoreFilesActionTest : BasePlatformTestCase() {
         assertFalse(event.presentation.isEnabledAndVisible)
     }
 
-    fun testFormatByteSize() {
-        assertEquals("83 B", formatByteSize(83))
-        assertEquals("4.0 KB", formatByteSize(4096))
-        assertEquals("2.1 MB", formatByteSize((2.1 * 1024 * 1024).toLong()))
+    fun testPreviewLabelUsesTheSharedSizeFormat() {
+        val op = RestorePlan.CreateOperation("a.png", "/x/a.png", "/x", "", false, ByteArray(12 * 1024))
+        assertEquals("a.png  (non-text file \u00B7 12 KB)", previewLabel(op))
     }
 
     fun testNonTextRowsShowSizeAndIdenticalTargetsGetTheirOwnSection() {

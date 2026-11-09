@@ -475,14 +475,7 @@ class PasteAndRestoreFilesAction : AnAction() {
 /** "path  (non-text file · 4.0 KB)" for a non-text row, the plain path otherwise. Never any Base64. */
 internal fun previewLabel(op: RestorePlan.CreateOperation): String {
     val bytes = op.nonTextBytes ?: return op.relativePath
-    return "${op.relativePath}  (non-text file \u00B7 ${formatByteSize(bytes.size.toLong())})"
-}
-
-/** 83 B, 4.0 KB, 2.1 MB. */
-internal fun formatByteSize(bytes: Long): String = when {
-    bytes < 1024 -> "$bytes B"
-    bytes < 1024L * 1024 -> String.format(java.util.Locale.ROOT, "%.1f KB", bytes / 1024.0)
-    else -> String.format(java.util.Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024.0))
+    return "${op.relativePath}  (non-text file \u00B7 ${NonTextCopy.formatSize(bytes.size.toLong())})"
 }
 
 /** Short user text for the skipped summary of the new reasons. */

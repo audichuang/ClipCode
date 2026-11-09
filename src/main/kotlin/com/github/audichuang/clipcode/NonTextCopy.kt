@@ -37,6 +37,9 @@ data class NonTextCopySummary(
     data class Item(val path: String, val size: Long)
 
     val totalBytes: Long get() = carried.sumOf { it.size }
+
+    /** The Include estimate the 50 MiB ceiling is judged on: never lower than the raw total of the carried files. */
+    val effectiveEstimateBytes: Long get() = maxOf(estimatedPayloadBytes, totalBytes)
 }
 
 /** Why a reached item was skipped and named in the completion notice (spec non-text-files.md, decision D2). */
@@ -148,28 +151,37 @@ object NonTextCopy {
         return n
     }
 
-    fun formatSize(bytes: Long): String = when {
-        bytes == 1L -> "1 byte"
-        bytes < 1024 -> "$bytes bytes"
-        bytes < 1024L * 1024 -> String.format(Locale.ROOT, "%.1f KB", bytes / 1024.0)
-        bytes < 1024L * 1024 * 1024 -> String.format(Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024))
-        else -> String.format(Locale.ROOT, "%.1f GB", bytes / (1024.0 * 1024 * 1024))
+    /**
+     * The one size format of every user-visible place (dialog, notices, paste preview), mirror of OpenIDEA
+     * `formatBytes`: under 1024 "N B"; otherwise KB / MB / GB with one decimal below 10, none from 10 up.
+     */
+    fun formatSize(bytes: Long): String {
+        if (bytes < 1024) return "$bytes B"
+        val units = arrayOf("KB", "MB", "GB")
+        var value = bytes / 1024.0
+        var unit = 0
+        while (value >= 1024 && unit < units.size - 1) {
+            value /= 1024
+            unit++
+        }
+        return String.format(Locale.ROOT, if (value >= 10) "%.0f %s" else "%.1f %s", value, units[unit])
     }
+
+    /** The whole-payload ceiling of an Include copy (OpenIDEA `CLIPBOARD_PAYLOAD_MAX`): at the limit is allowed. */
+    const val INCLUDE_PAYLOAD_LIMIT_BYTES = 50L * 1024 * 1024
 
     private fun files(n: Int) = if (n == 1) "1 file" else "$n files"
 
     /**
-     * "N+" when the count is a lower bound. With nothing counted but folders left unlisted, the number is
-     * unknown: the sentence still says the limit cut files off, without a misleading "0+".
+     * "The file-count limit left out N files", "N+" when the count is a lower bound. Only for [n] above 0:
+     * a zero count has no clause at all, even when counting stopped early (see [hasLimitLeftOut]).
      */
-    fun limitLeftOutSentence(n: Int, capped: Boolean = false): String = when {
-        capped && n == 0 -> "The file-count limit left out more files"
-        capped -> "The file-count limit left out $n+ files"
-        else -> "The file-count limit left out ${files(n)}"
-    }
+    fun limitLeftOutSentence(n: Int, capped: Boolean = false): String =
+        if (capped) "The file-count limit left out $n+ files" else "The file-count limit left out ${files(n)}"
 
-    /** Whether there is anything to say about files the limit left out. */
-    fun hasLimitLeftOut(n: Int, capped: Boolean): Boolean = n > 0 || capped
+    /** Whether there is anything to say about files the limit left out: never for a zero count. */
+    @Suppress("UNUSED_PARAMETER")
+    fun hasLimitLeftOut(n: Int, capped: Boolean): Boolean = n > 0
 
     data class DialogText(
         val found: String,
@@ -197,15 +209,22 @@ object NonTextCopy {
         }
         return DialogText(
             found = "Non-text files found: $n (total ${formatSize(summary.totalBytes)}).",
-            estimate = "Estimated payload with them: ${formatSize(summary.estimatedPayloadBytes)}",
+            estimate = "Estimated payload with them: ${formatSize(summary.effectiveEstimateBytes)}",
             paths = summary.carried.take(DIALOG_PATH_LIMIT).map { shortenMiddle(it.path) to formatSize(it.size) },
             more = if (n > DIALOG_PATH_LIMIT) "and ${n - DIALOG_PATH_LIMIT} more" else null,
             notes = notes,
-            includeUnavailable = if (ClipboardRestoreParser.headerFormatUnescapable(summary.headerFormat)) {
-                "Include is unavailable: the header format \"${summary.headerFormat}\" would make Base64 lines read as file headers."
-            } else {
-                null
-            }
+            includeUnavailable = listOfNotNull(
+                if (summary.effectiveEstimateBytes > INCLUDE_PAYLOAD_LIMIT_BYTES) {
+                    "Include is unavailable: the payload with non-text files would be over the 50 MiB clipboard limit."
+                } else {
+                    null
+                },
+                if (ClipboardRestoreParser.headerFormatUnescapable(summary.headerFormat)) {
+                    "Include is unavailable: the header format \"${summary.headerFormat}\" would make Base64 lines read as file headers."
+                } else {
+                    null
+                }
+            ).joinToString(" ").ifEmpty { null }
         )
     }
 
