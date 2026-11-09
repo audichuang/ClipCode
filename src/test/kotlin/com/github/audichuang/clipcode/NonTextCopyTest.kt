@@ -17,8 +17,8 @@ class NonTextCopyTest {
     private fun nonTextBytes(size: Int) = ByteArray(size) { if (it % 7 == 0) 0 else (it % 251).toByte() }
     private fun textBytes(size: Int) = ByteArray(size) { 'a'.code.toByte() }
 
-    private fun classify(bytes: ByteArray, isBinaryType: Boolean = false, text: Long = textLimit, nonText: Long = nonTextLimit) =
-        NonTextCopy.classify(bytes.size.toLong(), isBinaryType, text, nonText) { bytes }
+    private fun classify(bytes: ByteArray, text: Long = textLimit, nonText: Long = nonTextLimit) =
+        NonTextCopy.classify(bytes.size.toLong(), text, nonText) { bytes }
 
     @Test
     fun `700 KB json over the text limit becomes a size placeholder`() {
@@ -39,7 +39,7 @@ class NonTextCopyTest {
     fun `3 MB non-text over both limits is not read and becomes a placeholder`() {
         var read = false
         val size = 3L * 1024 * 1024
-        val r = NonTextCopy.classify(size, false, textLimit, nonTextLimit) { read = true; ByteArray(0) }
+        val r = NonTextCopy.classify(size, textLimit, nonTextLimit) { read = true; ByteArray(0) }
         val p = assertIs<NonTextCopy.Outcome.SizePlaceholder>(r)
         assertTrue(p.unread)
         assertFalse(read, "a file over both limits must not be read")
@@ -55,13 +55,14 @@ class NonTextCopyTest {
     @Test
     fun `text under the limit is text, a read failure is unreadable`() {
         assertEquals("abc", assertIs<NonTextCopy.Outcome.Text>(classify("abc".toByteArray())).content)
-        assertIs<NonTextCopy.Outcome.Unreadable>(NonTextCopy.classify(3, false, textLimit, nonTextLimit) { null })
+        assertIs<NonTextCopy.Outcome.Unreadable>(NonTextCopy.classify(3, textLimit, nonTextLimit) { null })
     }
 
     @Test
-    fun `binary file type decoding as UTF-8 keeps today's skip, non-UTF-8 is carried`() {
-        assertIs<NonTextCopy.Outcome.Unreadable>(classify("plain".toByteArray(), isBinaryType = true))
-        assertIs<NonTextCopy.Outcome.Carried>(classify(byteArrayOf(0x89.toByte(), 0x50, 0), isBinaryType = true))
+    fun `classification uses the bytes only, never the IDE file type`() {
+        // X16: a binary-typed file whose bytes are strict UTF-8 is text, in Include and Exclude alike.
+        assertEquals("plain", assertIs<NonTextCopy.Outcome.Text>(classify("plain".toByteArray())).content)
+        assertIs<NonTextCopy.Outcome.Carried>(classify(byteArrayOf(0x89.toByte(), 0x50, 0)))
     }
 
     @Test
@@ -371,6 +372,29 @@ class NonTextCopyTest {
             listOf("Unreadable: 8", "u1", "u2", "u3", "u4", "u5", "and 3 more"),
             NonTextCopy.unreadableLines(8, paths)
         )
+    }
+
+    /** X3: one line per reason under "Nothing to copy", the same sentences as the normal notice. */
+    @Test
+    fun `nothing to copy lines name every category`() {
+        val notes = SkipNotes().apply {
+            note(SkipCategory.UNREADABLE, "locked")
+            note(SkipCategory.SYMLINKED_FOLDER, "linkdir")
+            note(SkipCategory.NAME_NOT_PORTABLE, "a:b.txt")
+        }
+        assertEquals(
+            listOf(
+                "2 skipped: size exceeded.",
+                "1 skipped: not UTF-8 text or unreadable.",
+                "locked",
+                "Symlinked folder: 1",
+                "linkdir",
+                "Name not portable: 1",
+                "a:b.txt"
+            ),
+            NonTextCopy.nothingToCopyLines(2, notes)
+        )
+        assertEquals(emptyList(), NonTextCopy.nothingToCopyLines(0, SkipNotes()))
     }
 
     @Test
