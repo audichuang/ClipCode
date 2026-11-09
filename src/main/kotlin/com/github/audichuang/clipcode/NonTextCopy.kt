@@ -27,7 +27,9 @@ data class NonTextCopySummary(
     /** Files that passed the filters but were left out by the file-count limit. */
     val limitLeftOut: Int,
     val nonTextLimitBytes: Long,
-    val headerFormat: String
+    val headerFormat: String,
+    /** True when counting stopped at [NonTextCopy.LEFT_OUT_COUNT_CAP]; more files were left out than [limitLeftOut]. */
+    val limitLeftOutCapped: Boolean = false
 ) {
     data class Item(val path: String, val size: Long)
 
@@ -36,6 +38,8 @@ data class NonTextCopySummary(
 
 /** Pure logic of the non-text copy: per-file classification and UI text. No IDE dependency. */
 object NonTextCopy {
+    /** Left-out files are counted up to this many past the limit; beyond it the number reads "1000+". */
+    const val LEFT_OUT_COUNT_CAP = 1000
     const val DIALOG_PATH_LIMIT = 10
     const val NOTICE_PATH_LIMIT = 5
 
@@ -108,7 +112,8 @@ object NonTextCopy {
 
     private fun files(n: Int) = if (n == 1) "1 file" else "$n files"
 
-    fun limitLeftOutSentence(n: Int): String = "The file-count limit left out ${files(n)}"
+    fun limitLeftOutSentence(n: Int, capped: Boolean = false): String =
+        "The file-count limit left out ${if (capped) "$n+ files" else files(n)}"
 
     data class DialogText(
         val found: String,
@@ -130,7 +135,7 @@ object NonTextCopy {
             if (summary.unreadOverLimit > 0) {
                 add("Files over both size limits, not read, copied as size placeholders: ${summary.unreadOverLimit}")
             }
-            if (summary.limitLeftOut > 0) add(limitLeftOutSentence(summary.limitLeftOut))
+            if (summary.limitLeftOut > 0) add(limitLeftOutSentence(summary.limitLeftOut, summary.limitLeftOutCapped))
         }
         return DialogText(
             found = "Non-text files found: $n (total ${formatSize(summary.totalBytes)}).",

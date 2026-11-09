@@ -45,6 +45,8 @@ object GitClipboardPayloadBuilder {
         val unreadOverLimit: Int = 0,
         /** Files that passed the filters but the file-count limit left out; null when not computed (Exclude). */
         val limitLeftOut: Int? = null,
+        /** True when [limitLeftOut] stopped at the count cap: the real number is larger. */
+        val limitLeftOutCapped: Boolean = false,
         /** UTF-8 length of [text]; only computed when non-text files were carried. */
         val utf8Bytes: Long = 0
     ) {
@@ -54,13 +56,14 @@ object GitClipboardPayloadBuilder {
             nonTextOverLimit = nonTextOverLimit,
             unreadOverLimit = unreadOverLimit,
             limitLeftOut = limitLeftOut ?: 0,
+            limitLeftOutCapped = limitLeftOutCapped,
             nonTextLimitBytes = nonTextLimitBytes(settings),
             headerFormat = settings?.state?.headerFormat ?: "// file: \$FILE_PATH"
         )
 
         /** Adds the left-out sentence to a notice whose payload came from today's (Exclude) build. */
-        fun withLimitLeftOut(n: Int?): Payload =
-            if (n == null || n <= 0) this else copy(summary = "$summary ${NonTextCopy.limitLeftOutSentence(n)}.")
+        fun withLimitLeftOut(n: Int?, capped: Boolean = false): Payload =
+            if (n == null || n <= 0) this else copy(summary = "$summary ${NonTextCopy.limitLeftOutSentence(n, capped)}.")
     }
 
     private fun nonTextLimitBytes(settings: CopyFileContentSettings?): Long =
@@ -89,7 +92,7 @@ object GitClipboardPayloadBuilder {
         rebuildToday: (ProgressIndicator) -> Payload,
         deliver: (Payload) -> Unit
     ) {
-        fun rebuild(leftOut: Int?) {
+        fun rebuild(leftOut: Int?, leftOutCapped: Boolean) {
             ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Building Git clipboard payload…", true) {
                 private var payload: Payload? = null
 
@@ -100,19 +103,19 @@ object GitClipboardPayloadBuilder {
 
                 override fun onSuccess() {
                     if (project.isDisposed) return
-                    payload?.let { deliver(it.withLimitLeftOut(leftOut)) }
+                    payload?.let { deliver(it.withLimitLeftOut(leftOut, leftOutCapped)) }
                 }
             })
         }
         if (include.nonTextCarried.isEmpty()) {
             // Same reasoning as CopyFileContentAction: today's build always runs; no non-text file took a
             // file-count slot, so the Include walk's left-out count describes this copy too.
-            rebuild(include.limitLeftOut)
+            rebuild(include.limitLeftOut, include.limitLeftOutCapped)
             return
         }
         when (chooser.choose(project, include.toSummary(settings))) {
             NonTextChoice.INCLUDE -> deliver(include)
-            NonTextChoice.EXCLUDE -> rebuild(null)
+            NonTextChoice.EXCLUDE -> rebuild(null, false)
             NonTextChoice.CANCEL -> Unit
         }
     }
@@ -139,6 +142,7 @@ object GitClipboardPayloadBuilder {
         var nonTextOverLimit = 0
         var unreadOverLimit = 0
         var limitLeftOut = 0
+        var limitLeftOutCapped = false
 
         val payloadFiles = mutableListOf<ClipboardPayloadFormatter.PayloadFile>()
         var skippedSizeCount = 0
@@ -187,7 +191,9 @@ object GitClipboardPayloadBuilder {
                 fileLimitReached = true
                 // Include only: entries the limit cut off, for the dialog and the notice. Entries the
                 // filters reject would not have been copied anyway, so they are not "left out".
-                if (includeNonText && passesFilters(filePath)) limitLeftOut++
+                if (includeNonText && passesFilters(filePath)) {
+                    if (limitLeftOut >= NonTextCopy.LEFT_OUT_COUNT_CAP) limitLeftOutCapped = true else limitLeftOut++
+                }
                 return false
             }
             return passesFilters(filePath)
@@ -255,7 +261,7 @@ object GitClipboardPayloadBuilder {
         val limitSuffix = if (fileLimitReached) " File limit $countLimit reached." else ""
         var summary = buildSummary(copiedContent, acceptedDeleted, skippedSizeCount, skippedUnreadableCount) + limitSuffix
         if (includeNonText) {
-            if (limitLeftOut > 0) summary += " ${NonTextCopy.limitLeftOutSentence(limitLeftOut)}."
+            if (limitLeftOut > 0) summary += " ${NonTextCopy.limitLeftOutSentence(limitLeftOut, limitLeftOutCapped)}."
             if (nonTextCarried.isNotEmpty()) summary += " Non-text files copied as Base64: ${nonTextCarried.size}."
         }
         return Payload(
@@ -265,6 +271,7 @@ object GitClipboardPayloadBuilder {
             nonTextOverLimit = nonTextOverLimit,
             unreadOverLimit = unreadOverLimit,
             limitLeftOut = if (includeNonText) limitLeftOut else null,
+            limitLeftOutCapped = includeNonText && limitLeftOutCapped,
             utf8Bytes = if (nonTextCarried.isNotEmpty()) NonTextCopy.utf8Length(text) else 0L
         )
     }

@@ -166,6 +166,14 @@ class NonTextCopyTest {
     )
 
     @Test
+    fun `left-out sentence shows 1000+ when capped`() {
+        assertEquals("The file-count limit left out 1000+ files", NonTextCopy.limitLeftOutSentence(1000, capped = true))
+        assertEquals("The file-count limit left out 1000 files", NonTextCopy.limitLeftOutSentence(1000))
+        val capped = NonTextCopy.dialogText(summary(1, leftOut = 1000).copy(limitLeftOutCapped = true))
+        assertTrue(capped.notes.contains("The file-count limit left out 1000+ files"), "${capped.notes}")
+    }
+
+    @Test
     fun `dialog text for one file`() {
         val lines = NonTextCopy.dialogText(summary(1))
         assertEquals("Non-text files found: 1 (total 1.0 KB).", lines.found)
