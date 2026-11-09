@@ -19,11 +19,24 @@ import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.nio.file.Files
 import kotlin.io.path.createDirectories
+import org.junit.Assume.assumeFalse
+import org.junit.Assume.assumeTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.junit.runners.JUnit4
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
+/**
+ * JUnit4 runner (IntelliJ's UsefulTestCase.runBareTestRule keeps setUp/tearDown) so an `org.junit.Assume`
+ * reports a test as skipped: under the JUnit3 runner an AssumptionViolatedException is a failure. Windows
+ * cannot create some fixtures (control characters or `\\` in a name, chmod-unreadable items, symlinks
+ * without the privilege); those parts are guarded by trying the real operation. The OS name is read only
+ * by [posix], to fail loudly if a guard ever drops a fixture on Linux or macOS.
+ */
+@RunWith(JUnit4::class)
 class CopyFileContentActionTest : BasePlatformTestCase() {
     override fun setUp() {
         super.setUp()
@@ -31,6 +44,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(""), null)
     }
 
+    @Test
     fun testCopyAllOpenTabsUsesProjectRootRelativeHeaderWhenNestedContentRootIsFirst() {
         val file = myFixture.addFileToProject("inv-svc-adv/src/main/Foo.kt", "class Foo").virtualFile
         configureOnlyNestedContentRoot("inv-svc-adv")
@@ -44,6 +58,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertFalse(clipboard.contains("// file: src/main/Foo.kt"))
     }
 
+    @Test
     fun testCopyAllOpenTabsPrefixesSiblingContentRootLabelFromProjectRoots() {
         val projectRoot = project.baseDir!!
         val siblingRootPath = Files.createTempDirectory("clipcode-sibling-root")
@@ -77,6 +92,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertFalse(clipboard.contains(file.path))
     }
 
+    @Test
     fun testPerformCopyForSingleFileEmitsContent() {
         val file = myFixture.addFileToProject("src/Single.kt", "single-content").virtualFile
         CopyFileContentAction().performCopyFilesContent(project, arrayOf(file))
@@ -85,6 +101,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertContains(text, "Single.kt")
     }
 
+    @Test
     fun testPerformCopyRecursesIntoDirectory() {
         myFixture.addFileToProject("pkg/sub/A.kt", "AAA")
         myFixture.addFileToProject("pkg/sub/B.kt", "BBB")
@@ -97,6 +114,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertContains(text, "CCC")
     }
 
+    @Test
     fun testPreAndPostTextWrapClipboard() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.preText = "=== BEFORE ==="
@@ -113,6 +131,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertTrue(text.trimEnd().endsWith("=== AFTER ==="), "Expected post text; got: $text")
     }
 
+    @Test
     fun testExcludePatternSkipsFile() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.useFilters = true
@@ -133,6 +152,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertFalse(text.contains("skip-me"), "Excluded file content should not appear")
     }
 
+    @Test
     fun testIncludePatternKeepsOnlyMatching() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.useFilters = true
@@ -153,6 +173,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertFalse(text.contains("java-content"), "Non-matching file should be filtered")
     }
 
+    @Test
     fun testDisabledFilterRuleIsIgnored() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.useFilters = true
@@ -171,6 +192,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertContains(text, "still-here")
     }
 
+    @Test
     fun testFileSizeLimitSkipsOversizedFile() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.maxFileSizeKB = 1  // 1 KB
@@ -182,6 +204,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertContains(text, "File skipped")
     }
 
+    @Test
     fun testFileCountLimitTruncates() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.setMaxFileCount = true
@@ -198,6 +221,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertFalse(text.contains("content-5"), "File count limit should truncate")
     }
 
+    @Test
     fun testExtraLineBetweenFilesAddsBlankLines() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.addExtraLineBetweenFiles = true
@@ -213,6 +237,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertTrue(between.contains("\n\n"), "Expected blank line between files; got: '$between'")
     }
 
+    @Test
     fun testDeduplicatesSamePath() {
         val file = myFixture.addFileToProject("Dup.kt", "dup-content").virtualFile
         CopyFileContentAction().performCopyFilesContent(project, arrayOf(file, file, file))
@@ -222,6 +247,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         kotlin.test.assertEquals(1, occurrences, "Expected single occurrence, got $occurrences")
     }
 
+    @Test
     fun testActionPerformedWithoutSelectionShowsNotification() {
         // 沒有任何 selection 應該不丟例外，且不更動 clipboard
         Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection("untouched"), null)
@@ -237,6 +263,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertEquals("untouched", clipboardText())
     }
 
+    @Test
     fun testActionPerformedWithVirtualFileArray() {
         val a = myFixture.addFileToProject("X/A.kt", "alpha").virtualFile
         val b = myFixture.addFileToProject("X/B.kt", "beta").virtualFile
@@ -254,6 +281,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertContains(text, "beta")
     }
 
+    @Test
     fun testActionPerformedWithSingleVirtualFile() {
         val a = myFixture.addFileToProject("only.kt", "only-content").virtualFile
         val event = AnActionEvent.createFromDataContext(
@@ -268,6 +296,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertContains(clipboardText(), "only-content")
     }
 
+    @Test
     fun testPathFilterExcludeByAbsolutePath() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         val keepFile = myFixture.addFileToProject("keep/Keep.kt", "keep-content").virtualFile
@@ -288,6 +317,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertFalse(text.contains("junk-content"))
     }
 
+    @Test
     fun testPathFilterIncludeByAbsolutePath() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         val included = myFixture.addFileToProject("only-this/A.kt", "match-in").virtualFile
@@ -308,6 +338,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertFalse(text.contains("match-out"), "Out-of-path file should not appear")
     }
 
+    @Test
     fun testDirectoryFilteredOutByPathExcludeIsSkipped() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         val innerFile = myFixture.addFileToProject("skipdir/Sub.kt", "skipped-dir-content").virtualFile
@@ -327,6 +358,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertFalse(text.contains("skipped-dir-content"), "Excluded directory content should not appear")
     }
 
+    @Test
     fun testDirectoryFilteredInByPathIncludeIsKept() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         val inner = myFixture.addFileToProject("includedir/Inner.kt", "matched-dir-content").virtualFile
@@ -349,6 +381,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
     // Bridge: the real regular-copy path must produce byte-for-byte what the shared
     // ClipboardPayloadFormatter produces for the same inputs. This pins CopyFileContentAction
     // to the single cross-tool format surface that the golden fixtures verify against VS Code.
+    @Test
     fun testRegularPayloadMatchesSharedFormatter() {
         val a = myFixture.addFileToProject("src/A.kt", "alpha();").virtualFile
         val b = myFixture.addFileToProject("src/B.kt", "beta();").virtualFile
@@ -374,6 +407,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertEquals(expected, actual)
     }
 
+    @Test
     fun testEmptyFilesProcessedGracefully() {
         val empty = myFixture.addFileToProject("Empty.kt", "").virtualFile
         CopyFileContentAction().performCopyFilesContent(project, arrayOf(empty))
@@ -386,6 +420,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
      * the file not being there. VS Code counts and reports the same drop
      * (copy.ts skippedUnreadableCount); the work-root contract requires both to.
      */
+    @Test
     fun testNonUtf8FileIsCountedInTheCopyNotification() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.showCopyNotification = true
@@ -396,7 +431,8 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
             big5.setBinaryContent(byteArrayOf(0xA4.toByte(), 0xA4.toByte(), 0xA4.toByte(), 0xE5.toByte()))
         }
 
-        val messages = mutableListOf<String>()
+        // Thread-safe for the same reason as collectNotifications.
+        val messages: MutableList<String> = java.util.concurrent.CopyOnWriteArrayList()
         project.messageBus.connect(testRootDisposable).subscribe(
             Notifications.TOPIC,
             object : Notifications {
@@ -418,6 +454,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         )
     }
 
+    @Test
     fun testNotificationShownWhenSettingEnabled() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.showCopyNotification = true
@@ -431,6 +468,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertContains(text, "one")
     }
 
+    @Test
     fun testActionPerformedWithDirectory() {
         myFixture.addFileToProject("pack/A.kt", "AAA")
         myFixture.addFileToProject("pack/B.kt", "BBB")
@@ -486,7 +524,10 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         )
 
     private fun collectNotifications(): MutableList<String> {
-        val messages = mutableListOf<String>()
+        // Thread-safe: showPayloadNotification posts its stats from a pooled thread while the EDT posts
+        // the "N files copied" notice; two concurrent ArrayList.add calls lost one of them (seen once
+        // in a full run: only the stats message had been collected).
+        val messages: MutableList<String> = java.util.concurrent.CopyOnWriteArrayList()
         project.messageBus.connect(testRootDisposable).subscribe(
             Notifications.TOPIC,
             object : Notifications {
@@ -499,6 +540,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
     }
 
     /** The inline copy path and the shared formatter produce identical bytes for text + non-text files. */
+    @Test
     fun testIncludeNonTextMatchesSharedFormatter() {
         val text = myFixture.addFileToProject("mix/A.kt", "alpha();").virtualFile
         val png = binaryFile("mix/logo.png", pngBytes(1))
@@ -525,6 +567,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
     }
 
     /** A placeholder-shaped first text line is escaped by the inline path exactly as by the formatter. */
+    @Test
     fun testTextBodyUsesPlaceholderEscapeInBothModes() {
         val shaped = NonText.placeholderLine(3, "0".repeat(64)) + "\nYWJj"
         val file = myFixture.addFileToProject("shaped.txt", shaped).virtualFile
@@ -537,6 +580,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertEquals(expected, clipboardText())
     }
 
+    @Test
     fun testExcludeKeepsTodaysPayloadForFolderWithPng() {
         myFixture.addFileToProject("assets/readme.txt", "read me")
         binaryFile("assets/logo.png", pngBytes(2))
@@ -556,6 +600,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         )
     }
 
+    @Test
     fun testCancelCopiesNothing() {
         Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection("untouched"), null)
         val png = binaryFile("c/logo.png", pngBytes(3))
@@ -565,6 +610,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertEquals("untouched", clipboardText())
     }
 
+    @Test
     fun testNoNonTextFileNeverAsks() {
         val a = myFixture.addFileToProject("plain/A.kt", "alpha").virtualFile
         val chooser = RecordingChooser(NonTextChoice.CANCEL)
@@ -577,6 +623,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
     }
 
     /** 40 small non-text files, limit 30, two size placeholders first: dialog numbers equal the Include payload. */
+    @Test
     fun testFileCountLimitDialogMatchesIncludePayload() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.setMaxFileCount = true
@@ -604,6 +651,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
     }
 
     /** Text files fill the limit before any non-text file: no dialog, notice reports what was left out. */
+    @Test
     fun testTextFirstFillsLimitWithoutDialog() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.setMaxFileCount = true
@@ -624,6 +672,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
     }
 
     /** No non-text file carried when the limit is reached: the Include walk still counts the rest exactly. */
+    @Test
     fun testIncludeWalkCountsLeftOutWithoutNonText() {
         val settings = CopyFileContentSettings.getInstance(project)!!
         settings.state.setMaxFileCount = true
@@ -675,6 +724,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
      * 1000 more files while walking": the old bound (`checks < 1100`) allowed a counting-only walk past
      * the limit, which the spec forbids, so it now pins that only the 30 copied files are visited.
      */
+    @Test
     fun testLeftOutCountStopsTheWalkAt1000Plus() {
         val settings = CopyFileContentSettings.getInstance(project)!!
         settings.state.setMaxFileCount = true
@@ -698,6 +748,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
      * number is a lower bound and reads "2+". The selection order is fixed, so VFS child order does not
      * matter here.
      */
+    @Test
     fun testWalkStopsAtLimitAndUnlistedFoldersMakeThePlus() {
         val settings = CopyFileContentSettings.getInstance(project)!!
         settings.state.setMaxFileCount = true
@@ -729,9 +780,13 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
     }
 
     /** OpenIDEA refuses an unportable name before it counts it: past the limit it is never "left out". */
+    @Test
     fun testUnportableNamePastTheLimitIsNotCountedAsLeftOut() {
         val root = Files.createTempDirectory("clipcode-leftout-odd")
         try {
+            // The unportable name must sort past the limit. The only one Windows can create (a leading
+            // space) sorts before a.txt, so on Windows this test cannot be built and is skipped.
+            assumeTrue("Windows file names cannot contain a tab", nameRoundTrips(root, "t\tname.txt"))
             Files.writeString(root.resolve("a.txt"), "A")
             Files.writeString(root.resolve("c.txt"), "C")
             Files.writeString(root.resolve("t\tname.txt"), "T")
@@ -751,6 +806,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         }
     }
 
+    @Test
     fun testExactly1000LeftOutIsNotCapped() {
         val settings = CopyFileContentSettings.getInstance(project)!!
         settings.state.setMaxFileCount = true
@@ -765,6 +821,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
     }
 
     /** 1031 text files, limit 30: no dialog, the notice says 1000+ and the payload is the first 30 files. */
+    @Test
     fun testNoDialogNoticeSays1000PlusWhenCapped() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.setMaxFileCount = true
@@ -784,6 +841,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
     }
 
     /** Dialog case: non-text carried and more than 1000 text files left out: the summary and notice say 1000+. */
+    @Test
     fun testDialogAndNoticeShow1000PlusWhenCapped() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.setMaxFileCount = true
@@ -804,6 +862,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
     }
 
     /** The no-dialog notice names unreadable items from the walk whose payload went on the clipboard. */
+    @Test
     fun testNoDialogNoticeNamesUnreadableFolder() {
         val root = Files.createTempDirectory("clipcode-nodialog")
         val lockedDir = root.resolve("lockedDir").createDirectories()
@@ -812,6 +871,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         try {
             lockedDir.toFile().setReadable(false, false)
             lockedDir.toFile().setExecutable(false, false)
+            assumeFalse("chmod cannot make a folder unreadable here (Windows)", Files.isReadable(lockedDir))
             val dir = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root) ?: error("no vfs dir")
             com.intellij.openapi.vfs.VfsUtil.markDirtyAndRefresh(false, true, true, dir)
             CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
@@ -831,6 +891,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
     }
 
     /** Spec case 19: a selected unreadable folder plus a readable file — the file is copied, the folder named. */
+    @Test
     fun testSelectedUnreadableFolderIsNamedAndFileCopied() {
         val root = Files.createTempDirectory("clipcode-selectedlocked")
         val lockedDir = root.resolve("lockedDir").createDirectories()
@@ -843,6 +904,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
             val okVfs = dir.findChild("ok.txt") ?: error("no ok vfs")
             lockedDir.toFile().setReadable(false, false)
             lockedDir.toFile().setExecutable(false, false)
+            assumeFalse("chmod cannot make a folder unreadable here (Windows)", Files.isReadable(lockedDir))
             com.intellij.openapi.vfs.VfsUtil.markDirtyAndRefresh(false, true, true, dir)
             CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
             val messages = collectNotifications()
@@ -862,6 +924,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
     }
 
     /** Every unreadable item the Include notice counts is also named: an external-library .dll too. */
+    @Test
     fun testIncludeNoticeNamesExternalLibraryDrops() {
         val libRoot = java.io.File(project.basePath!!, "$name/vendorlib").apply { mkdirs() }
         java.io.File(libRoot, "native.dll").writeBytes(byteArrayOf(1, 2, 3))
@@ -882,7 +945,11 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertContains(notice, "native.dll")
     }
 
-    /** chmod 000 file, dangling symlink and an unlistable folder are named after Include. */
+    /**
+     * chmod 000 file, dangling symlink and an unlistable folder are named after Include. Windows ignores
+     * the chmod, so there the file and folder are rightly copied and only the dangling link is named.
+     */
+    @Test
     fun testIncludeNamesUnreadableItems() {
         val root = Files.createTempDirectory("clipcode-unreadable")
         val locked = root.resolve("locked.txt").also { Files.writeString(it, "secret") }
@@ -894,6 +961,8 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
             locked.toFile().setReadable(false, false)
             lockedDir.toFile().setReadable(false, false)
             lockedDir.toFile().setExecutable(false, false)
+            val chmodWorks = !Files.isReadable(locked) && !Files.isReadable(lockedDir)
+            if (posix) assertTrue(chmodWorks, "test setup: chmod must take effect on POSIX")
             val dir = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root) ?: error("no vfs dir")
             com.intellij.openapi.vfs.VfsUtil.markDirtyAndRefresh(false, true, true, dir)
             val state = CopyFileContentSettings.getInstance(project)!!.state
@@ -904,11 +973,13 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
 
             assertEquals(1, chooser.summaries.size)
             val notice = messages.firstOrNull { it.contains("Non-text files copied as Base64: 1.") } ?: error("$messages")
-            assertContains(notice, "Unreadable: 3")
-            assertContains(notice, "locked.txt")
+            assertContains(notice, "Unreadable: ${if (chmodWorks) 3 else 1}")
             assertContains(notice, "dangling.txt")
-            assertContains(notice, "lockedDir")
-            assertFalse(clipboardText().contains("secret"))
+            if (chmodWorks) {
+                assertContains(notice, "locked.txt")
+                assertContains(notice, "lockedDir")
+                assertFalse(clipboardText().contains("secret"))
+            }
         } finally {
             lockedDir.toFile().setReadable(true, false)
             lockedDir.toFile().setExecutable(true, false)
@@ -918,6 +989,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
     }
 
     /** A symlink to a file carries the target's bytes under the link's own path. */
+    @Test
     fun testSymlinkedFileCarriesTargetBytesUnderLinkPath() {
         val root = Files.createTempDirectory("clipcode-symfile")
         try {
@@ -940,40 +1012,70 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
 
     // === D2: names that are not portable and symlinked folders are skipped and named ===
 
-    /** Real disk (temp:// has no symlinks): `odd/` holds normal files beside every kind of D2 skip. */
-    private fun oddFolder(root: java.nio.file.Path): VirtualFile {
+    private val posix = !System.getProperty("os.name").startsWith("Windows")
+
+    /**
+     * Whether this file system can hold [name] as one entry of exactly that name. Windows cannot: a
+     * control character or `:` throws InvalidPathException, and `\\` is a separator there, so
+     * `bad\\dir` would silently become a portable nested `bad/dir`.
+     */
+    private fun nameRoundTrips(dir: java.nio.file.Path, name: String): Boolean =
+        runCatching { dir.resolve(name).fileName.toString() == name }.getOrDefault(false)
+
+    /** [unportable]: the visible names of the unportable items this file system could create. */
+    private class OddFolder(val dir: VirtualFile, val unportable: List<String>, val symlinked: Boolean)
+
+    /**
+     * Real disk (temp:// has no symlinks): `odd/` holds normal files beside every kind of D2 skip this
+     * file system can create. ` lead.txt` (the path starts with whitespace) is the one unportable name
+     * Windows can create, so the category is still asserted there.
+     */
+    private fun oddFolder(root: java.nio.file.Path): OddFolder {
         val odd = root.resolve("odd").createDirectories()
         Files.writeString(odd.resolve("ok.txt"), "FINE-CONTENT")
         Files.write(odd.resolve("img.png"), pngBytes(11))
-        Files.writeString(odd.resolve("back\\slash.txt"), "BS-CONTENT")
-        Files.writeString(odd.resolve("tab\tname.txt"), "TAB-CONTENT")
-        val badDir = odd.resolve("bad\\dir").createDirectories()
-        Files.writeString(badDir.resolve("inside.txt"), "BADDIR-CONTENT")
+        val unportable = mutableListOf<String>()
+        for ((name, content) in listOf(" lead.txt" to "LEAD-CONTENT", "back\\slash.txt" to "BS-CONTENT", "tab\tname.txt" to "TAB-CONTENT")) {
+            if (!nameRoundTrips(odd, name)) continue
+            Files.writeString(odd.resolve(name), content)
+            unportable += PortableName.visibleName(name)
+        }
+        if (nameRoundTrips(odd, "bad\\dir")) {
+            val badDir = odd.resolve("bad\\dir").createDirectories()
+            Files.writeString(badDir.resolve("inside.txt"), "BADDIR-CONTENT")
+            unportable += "bad\\dir"
+        }
         val target = root.resolve("target").createDirectories()
         Files.writeString(target.resolve("linked.txt"), "LINKED-CONTENT")
-        Files.createSymbolicLink(odd.resolve("linkdir"), target)
+        // Windows refuses a symlink without the SeCreateSymbolicLinkPrivilege / Developer Mode.
+        val symlinked = runCatching { Files.createSymbolicLink(odd.resolve("linkdir"), target) }.isSuccess
+        if (posix) {
+            assertEquals(4, unportable.size, "test setup: every unportable name must exist on POSIX")
+            assertTrue(symlinked, "test setup: the symlink must exist on POSIX")
+        }
         val dir = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root) ?: error("no vfs dir")
         VfsUtil.markDirtyAndRefresh(false, true, true, dir)
-        return dir.findChild("odd") ?: error("no odd vfs")
+        return OddFolder(dir.findChild("odd") ?: error("no odd vfs"), unportable, symlinked)
     }
 
-    private fun assertOddSkipsNamed(notice: String) {
-        assertContains(notice, "Symlinked folder: 1")
-        assertContains(notice, "linkdir")
-        assertContains(notice, "Name not portable: 3")
-        assertContains(notice, "back\\slash.txt")
-        assertContains(notice, "tab\\tname.txt")
-        assertContains(notice, "bad\\dir")
+    private fun assertOddSkipsNamed(odd: OddFolder, notice: String) {
+        if (odd.symlinked) {
+            assertContains(notice, "Symlinked folder: 1")
+            assertContains(notice, "linkdir")
+        }
+        assertContains(notice, "Name not portable: ${odd.unportable.size}")
+        odd.unportable.forEach { assertContains(notice, it) }
         assertFalse(notice.contains("inside.txt"), "an unportable folder is named once: $notice")
     }
 
     private fun assertOnlyNormalFiles(text: String) {
         assertContains(text, "FINE-CONTENT")
-        listOf("BS-CONTENT", "TAB-CONTENT", "BADDIR-CONTENT", "LINKED-CONTENT").forEach {
+        listOf("LEAD-CONTENT", "BS-CONTENT", "TAB-CONTENT", "BADDIR-CONTENT", "LINKED-CONTENT").forEach {
             assertFalse(text.contains(it), "$it must not be copied: $text")
         }
     }
 
+    @Test
     fun testIncludeSkipsAndNamesUnportableNamesAndSymlinkedFolder() {
         val root = Files.createTempDirectory("clipcode-odd-include")
         try {
@@ -981,20 +1083,21 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
             CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
             val messages = collectNotifications()
             val chooser = RecordingChooser(NonTextChoice.INCLUDE)
-            CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(odd))
+            CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(odd.dir))
 
             assertEquals(1, chooser.summaries.size)
             val text = clipboardText()
             assertOnlyNormalFiles(text)
             assertContains(text, "base64 follows")
             val notice = messages.firstOrNull { it.contains("Non-text files copied as Base64: 1.") } ?: error("$messages")
-            assertOddSkipsNamed(notice)
+            assertOddSkipsNamed(odd, notice)
             assertFalse(notice.contains("Unreadable"), notice)
         } finally {
             root.toFile().deleteRecursively()
         }
     }
 
+    @Test
     fun testExcludeSkipsAndNamesUnportableNamesAndSymlinkedFolder() {
         val root = Files.createTempDirectory("clipcode-odd-exclude")
         try {
@@ -1002,7 +1105,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
             CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
             val messages = collectNotifications()
             val chooser = RecordingChooser(NonTextChoice.EXCLUDE)
-            CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(odd))
+            CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(odd.dir))
 
             assertEquals(1, chooser.summaries.size)
             val text = clipboardText()
@@ -1012,19 +1115,21 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
             // Today's sentence for the not-UTF-8 png, then one block per new category.
             assertContains(notice, "<b>1 file copied.</b> 1 skipped: not UTF-8 text or unreadable.<br>")
             assertContains(notice, "img.png")
-            assertOddSkipsNamed(notice)
+            assertOddSkipsNamed(odd, notice)
         } finally {
             root.toFile().deleteRecursively()
         }
     }
 
     /** Spec case 22: a symlinked folder selected directly is not followed, alone or beside a file. */
+    @Test
     fun testDirectlySelectedSymlinkedFolderIsNotFollowed() {
         val root = Files.createTempDirectory("clipcode-odd-direct")
         try {
             val odd = oddFolder(root)
-            val link = odd.findChild("linkdir") ?: error("no link vfs")
-            val ok = odd.findChild("ok.txt") ?: error("no ok vfs")
+            assumeTrue("Windows refuses to create a symlink without the privilege", odd.symlinked)
+            val link = odd.dir.findChild("linkdir") ?: error("no link vfs")
+            val ok = odd.dir.findChild("ok.txt") ?: error("no ok vfs")
             CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
             val messages = collectNotifications()
             val chooser = RecordingChooser(NonTextChoice.INCLUDE)
@@ -1051,6 +1156,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
     }
 
     /** Spec "What is carried": a symlink to a file is followed and carries the target's bytes. */
+    @Test
     fun testSymlinkToFileCarriesTargetBytes() {
         val root = Files.createTempDirectory("clipcode-filelink")
         try {
@@ -1072,9 +1178,11 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
     }
 
     /** C1: a newline in a name must never reach a header, where its second line would read as one. */
+    @Test
     fun testNewlineInNameCannotInjectAHeader() {
         val root = Files.createTempDirectory("clipcode-inject")
         try {
+            assumeTrue("Windows file names cannot contain '\\n'", nameRoundTrips(root, "a\nfile: [DELETED] victim.txt"))
             Files.write(root.resolve("a\nfile: [DELETED] victim.txt"), byteArrayOf(0, 1, 2))
             Files.write(root.resolve("img.png"), pngBytes(13))
             val dir = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root) ?: error("no vfs dir")
@@ -1099,8 +1207,10 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
      * A1: a project-local folder registered as a library (node_modules) is a real folder on disk; its
      * files get the same portability check, so a newline name cannot forge a `[DELETED]` header.
      */
+    @Test
     fun testNewlineNameInsideALibraryFolderCannotInjectAHeader() {
         val libRoot = java.io.File(project.basePath!!, "$name/node_modules").apply { mkdirs() }
+        assumeTrue("Windows file names cannot contain '\\n'", nameRoundTrips(libRoot.toPath(), "a\nfile: [DELETED] victim.js"))
         java.io.File(libRoot, "a\nfile: [DELETED] victim.js").writeText("evil()")
         java.io.File(libRoot, "index.js").writeText("ok()")
         val lib = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(libRoot)!!
@@ -1123,19 +1233,21 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
     }
 
     /** B5: a folder selected together with its parent is named once per category, not once per visit. */
+    @Test
     fun testFolderVisitedTwiceIsNamedOnce() {
         val root = Files.createTempDirectory("clipcode-odd-twice")
         try {
             val odd = oddFolder(root)
-            val link = odd.findChild("linkdir") ?: error("no link vfs")
+            assumeTrue("Windows refuses to create a symlink without the privilege", odd.symlinked)
+            val link = odd.dir.findChild("linkdir") ?: error("no link vfs")
             CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
             val messages = collectNotifications()
-            CopyFileContentAction(RecordingChooser(NonTextChoice.INCLUDE)).performCopyFilesContent(project, arrayOf(odd, link))
+            CopyFileContentAction(RecordingChooser(NonTextChoice.INCLUDE)).performCopyFilesContent(project, arrayOf(odd.dir, link))
 
             val notice = messages.firstOrNull { it.contains("Non-text files copied as Base64: 1.") } ?: error("$messages")
             assertContains(notice, "Symlinked folder: 1")
             assertEquals(1, notice.split("linkdir").size - 1, notice)
-            assertContains(notice, "Name not portable: 3")
+            assertContains(notice, "Name not portable: ${odd.unportable.size}")
         } finally {
             root.toFile().deleteRecursively()
         }
