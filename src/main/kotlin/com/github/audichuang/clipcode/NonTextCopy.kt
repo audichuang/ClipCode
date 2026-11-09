@@ -150,11 +150,13 @@ object NonTextCopy {
     fun includeNoticeLines(nonTextCopied: Int, unreadableCount: Int, unreadablePaths: List<String>): List<String> =
         listOf("Non-text files copied as Base64: $nonTextCopied.") + unreadableLines(unreadableCount, unreadablePaths)
 
+    /** "and N more" is [unreadableCount] minus the paths shown, so the line always adds up to the count. */
     fun unreadableLines(unreadableCount: Int, unreadablePaths: List<String>): List<String> = buildList {
         if (unreadableCount <= 0) return@buildList
         add("Unreadable: $unreadableCount")
-        unreadablePaths.take(NOTICE_PATH_LIMIT).forEach { add(shortenMiddle(it)) }
-        if (unreadablePaths.size > NOTICE_PATH_LIMIT) add("and ${unreadablePaths.size - NOTICE_PATH_LIMIT} more")
+        val shown = unreadablePaths.take(minOf(NOTICE_PATH_LIMIT, unreadableCount))
+        shown.forEach { add(shortenMiddle(it)) }
+        if (unreadableCount > shown.size) add("and ${unreadableCount - shown.size} more")
     }
 
     /** Shortest name budget worth keeping a folder prefix for. */

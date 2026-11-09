@@ -46,7 +46,9 @@ object NonText {
         return Header(size, m.groupValues[2])
     }
 
-    private fun isAsciiWs(c: Char) = c == ' ' || c == '\t' || c == '\n' || c == '\u000B' || c == '\u000C' || c == '\r'
+    // Rust's u8::is_ascii_whitespace (OpenIDEA) and the VS Code port's set: space, \t, \n, \f, \r.
+    // Not VT (U+000B): stripping it here made one payload restore in IntelliJ and be Corrupt elsewhere.
+    private fun isAsciiWs(c: Char) = c == ' ' || c == '\t' || c == '\n' || c == '\u000C' || c == '\r'
 
     private fun b64Value(c: Char): Int = when (c) {
         in 'A'..'Z' -> c - 'A'
@@ -74,7 +76,7 @@ object NonText {
     }
 
     /**
-     * Strips every ASCII whitespace character, decodes strictly, then checks the length and
+     * Strips every [isAsciiWs] character (VT is not one), decodes strictly, then checks the length and
      * SHA-256 against [header]. `java.util.Base64` alone accepts missing padding and non-zero
      * trailing bits, so [isStrictBase64] gates it.
      */
