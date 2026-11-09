@@ -24,7 +24,8 @@ class CopyFileContentSettings : PersistentStateComponent<CopyFileContentSettings
         var showCopyNotification: Boolean = true,
         var useFilters: Boolean = false,  // Master switch for filtering
         var useIncludeFilters: Boolean = true,  // Enable include filters
-        var useExcludeFilters: Boolean = true   // Enable exclude filters
+        var useExcludeFilters: Boolean = true,  // Enable exclude filters
+        var maxNonTextFileSizeKB: Int = 2048  // Non-text files carried as Base64: max raw size in KB (default 2 MB)
     )
     
     data class FilterRule(

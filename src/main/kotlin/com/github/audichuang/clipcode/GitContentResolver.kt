@@ -235,7 +235,7 @@ class GitContentResolver(
             // Revision reads decode bytes with a charset and never fail on binary input, so
             // without this guard a PNG reaches the payload as mojibake and Paste & Restore
             // writes that back over the real asset. The plain file copy path already skips
-            // binaries (CopyFileContentAction.isBinaryFile), and so does the VS Code sibling.
+            // non-UTF-8 bytes, and so does the VS Code sibling.
             when {
                 revision == null -> null
                 isBinaryRevision(revision) -> null

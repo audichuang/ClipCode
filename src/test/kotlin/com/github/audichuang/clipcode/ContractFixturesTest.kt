@@ -9,6 +9,7 @@ import kotlin.io.path.createDirectories
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * Cross-tool contract verification against the shared golden fixtures.
@@ -25,7 +26,7 @@ import kotlin.test.assertEquals
  */
 class ContractFixturesTest {
     private companion object {
-        const val EXPECTED_FIXTURES_SHA = "df317eb7b412d4bd71222d71d4cd64a1652fbcac2d82468ec417e4ce95ec2468"
+        const val EXPECTED_FIXTURES_SHA = "ca6da6eb43d66a7cf2932d9246d09540e0541abdbc4dfd6f155f3fbb25ce3d5f"
         const val RESOURCE = "/clipboard-contract.json"
     }
 
@@ -36,7 +37,19 @@ class ContractFixturesTest {
         val pathLayout: PathLayout,
         val pathCases: List<PathCase>,
         val restoreLayout: RestoreLayout,
-        val restoreCases: List<RestoreCase>
+        val restoreCases: List<RestoreCase>,
+        val nonTextBuildCases: List<NonTextBuildCase>,
+        val nonTextRestoreCases: List<NonTextRestoreCase>
+    )
+    private data class NtFile(val path: String, val base64: String?, val content: String?)
+    private data class NonTextBuildCase(val name: String, val headerFormat: String, val files: List<NtFile>, val wire: String)
+    private data class NtSkip(val rawPath: String, val reason: String)
+    private data class NonTextRestoreCase(
+        val name: String,
+        val headerFormat: String,
+        val payload: String,
+        val creates: List<NtFile>,
+        val skips: List<NtSkip>
     )
     private data class FileSpec(val text: String?, val base64: String?)
     private data class RestoreLayout(
@@ -125,6 +138,28 @@ class ContractFixturesTest {
                 else -> ClipboardPayloadFormatter.buildPayload(options)
             }
             assertEquals(case.wire, built, "build mismatch: ${case.name}")
+        }
+    }
+
+    @Test
+    fun `non-text build direction matches the golden wire bytes for every case`() {
+        assertTrue(fixtures.nonTextBuildCases.isNotEmpty())
+        fixtures.nonTextBuildCases.forEach { case ->
+            val options = ClipboardPayloadFormatter.Options(
+                headerFormat = case.headerFormat,
+                preText = "",
+                postText = "",
+                addExtraLineBetweenFiles = true,
+                files = case.files.map { file ->
+                    ClipboardPayloadFormatter.PayloadFile(
+                        path = file.path,
+                        content = file.content,
+                        nonText = file.base64?.let { java.util.Base64.getDecoder().decode(it) }
+                    )
+                },
+                sourceRoot = null
+            )
+            assertEquals(case.wire, ClipboardPayloadFormatter.buildPayload(options), "non-text build mismatch: ${case.name}")
         }
     }
 
@@ -280,5 +315,34 @@ class ContractFixturesTest {
         } finally {
             parent.toFile().deleteRecursively()
         }
+    }
+
+    /**
+     * Restore of non-text payloads into an EMPTY root: the planned creates (relative path plus
+     * Base64 of the bytes for a non-text file, text content otherwise) and skips must equal the
+     * frozen fixture, in order.
+     */
+    @Test
+    fun `non-text restore plans the frozen creates and skips`() {
+        assertTrue(fixtures.nonTextRestoreCases.isNotEmpty())
+        val parser = ClipboardRestoreParser()
+        val mismatches = fixtures.nonTextRestoreCases.mapNotNull { case ->
+            val root = Files.createTempDirectory("clipcode-nontext-restore").toRealPath()
+            try {
+                val plan = RestorePlanBuilder(ClipboardPathResolver.fromRootPaths(listOf(root.toString()), root.toString()))
+                    .build(parser.parse(case.payload, case.headerFormat))
+                val creates = plan.createOperations.map { op ->
+                    val bytes = op.nonTextBytes
+                    if (bytes != null) NtFile(op.relativePath, java.util.Base64.getEncoder().encodeToString(bytes), null)
+                    else NtFile(op.relativePath, null, op.content)
+                }
+                val skips = plan.skippedOperations.map { NtSkip(it.rawPath, it.reason.name) }
+                if (creates == case.creates && skips == case.skips) null
+                else "${case.name}:\n  expected ${case.creates} / ${case.skips}\n  got      $creates / $skips"
+            } finally {
+                root.toFile().deleteRecursively()
+            }
+        }
+        assertEquals(emptyList(), mismatches, "non-text restore mismatches:\n" + mismatches.joinToString("\n"))
     }
 }
