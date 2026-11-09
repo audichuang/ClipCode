@@ -6,10 +6,12 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VirtualFile
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
@@ -99,8 +101,26 @@ class CopyGitFilesContentAction(
         val unresolvedEntries = resolvedEntries.filter {
             it.changeType != ChangeTypeLabel.DELETED && !it.hasContent
         }
+        val contentEntries = resolvedEntries.filter { it.hasContent }
+        val deletedMarkerEntries = resolvedEntries.filter {
+            it.changeType == ChangeTypeLabel.DELETED && !it.hasContent
+        }
+        val settings = CopyFileContentSettings.getInstance(project)
+
+        // X3: nothing could be resolved to content (a binary revision, say), so the clipboard is left alone
+        // and "Nothing to copy" names every entry by category, like any copy where everything is skipped.
+        if (contentEntries.isEmpty() && deletedMarkerEntries.isEmpty()) {
+            GitClipboardPayloadBuilder.showNothingToCopy(
+                project,
+                GitClipboardPayloadBuilder.unresolvedOnly(unresolvedEntries, pathResolver, settings, EmptyProgressIndicator())
+            )
+            return
+        }
         if (unresolvedEntries.isNotEmpty()) {
-            val skippedPaths = unresolvedEntries.map { it.filePath.substringAfterLast('/') }
+            // Names go into HTML: escaped, control characters made visible.
+            val skippedPaths = unresolvedEntries.map {
+                StringUtil.escapeXmlEntities(PortableName.visibleName(it.filePath.substringAfterLast('/')))
+            }
             CopyFileContentAction.showNotification(
                 "<html><b>${unresolvedEntries.size} files could not be resolved:</b><br>${skippedPaths.joinToString(", ")}</html>",
                 NotificationType.WARNING,
@@ -108,21 +128,6 @@ class CopyGitFilesContentAction(
             )
         }
 
-        val contentEntries = resolvedEntries.filter { it.hasContent }
-        val deletedMarkerEntries = resolvedEntries.filter {
-            it.changeType == ChangeTypeLabel.DELETED && !it.hasContent
-        }
-
-        if (contentEntries.isEmpty() && deletedMarkerEntries.isEmpty()) {
-            CopyFileContentAction.showNotification(
-                "No accessible files found in Git selection.",
-                NotificationType.WARNING,
-                project
-            )
-            return
-        }
-
-        val settings = CopyFileContentSettings.getInstance(project)
         val headerFormat = settings?.state?.headerFormat ?: "// file: \$FILE_PATH"
 
         if (contentEntries.isNotEmpty() &&

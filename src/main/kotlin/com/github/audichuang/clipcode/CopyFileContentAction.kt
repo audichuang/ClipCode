@@ -263,7 +263,7 @@ class CopyFileContentAction(
         for ((index, file) in filesToCopy.withIndex()) {
             indicator.checkCanceled()
             if (stopForFileLimit(session, settings)) {
-                countLimitLeftOut(filesToCopy.asList().subList(index, filesToCopy.size), session)
+                countLimitLeftOut(filesToCopy.asList().subList(index, filesToCopy.size), session, topLevel = true)
                 break
             }
 
@@ -278,9 +278,9 @@ class CopyFileContentAction(
                 continue
             }
             if (isDirectory) {
-                processDirectory(file, fileContents, session, settings, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
+                processDirectory(file, fileContents, session, settings, settings.state.addExtraLineBetweenFiles, customHeaderGenerator, topLevel = true)
             } else {
-                processFile(file, fileContents, session, settings, settings.state.addExtraLineBetweenFiles, customHeaderGenerator)
+                processFile(file, fileContents, session, settings, settings.state.addExtraLineBetweenFiles, customHeaderGenerator, topLevel = true)
             }
         }
 
@@ -339,7 +339,7 @@ class CopyFileContentAction(
      * Symlinked folders and unportable or filtered-out folders are not left out. Counting stops at
      * [NonTextCopy.LEFT_OUT_COUNT_CAP]; one more makes it "1000+".
      */
-    private fun countLimitLeftOut(remaining: List<VirtualFile>, session: CopySession) {
+    private fun countLimitLeftOut(remaining: List<VirtualFile>, session: CopySession, topLevel: Boolean = false) {
         if (!session.includeNonText) return
         ApplicationManager.getApplication().runReadAction {
             for (item in remaining) {
@@ -357,7 +357,7 @@ class CopyFileContentAction(
                 if (item.path in session.copiedFilePaths || item.path in session.limitLeftOutPaths) continue
                 if (session.useFilters && !passesFileFilters(item, session)) continue
                 if (isUnportable(item, session)) continue
-                if (linksOutOfEveryRoot(item, session)) continue
+                if (linksOutOfEveryRoot(item, session, topLevel)) continue
                 if (session.limitLeftOut >= NonTextCopy.LEFT_OUT_COUNT_CAP) {
                     session.limitLeftOutCapped = true
                 } else {
@@ -391,14 +391,20 @@ class CopyFileContentAction(
         file.isInLocalFileSystem && !PortableName.isPortableFile(session.pathResolver, file.path)
 
     /**
-     * X7: a symlink whose real target lies outside every copy root (the resolver's roots, each resolved
-     * too, so a project opened through a symlinked path is not an escape from itself). A target inside a
-     * root is followed. Only links are checked: a regular file outside every root (an open tab elsewhere)
-     * keeps today's absolute-path header. Caller holds the read lock.
+     * X7: reading [file] would carry content from outside every copy root (the resolver's roots, each
+     * resolved too, so a project opened through a symlinked path is not an escape from itself); see
+     * [ClipboardPathResolver.readsOutsideEveryRoot]. A symlink is always asked: a target inside a root is
+     * followed. A [topLevel] item (selected directly, or an open tab) is asked too, since it may be reached
+     * through a symlinked folder (`vendor -> ~/private`, then `vendor/secrets.env`). Below a top-level folder
+     * that is inside a root only links can lead out, as symlinked subfolders are never walked, so the walk
+     * pays no real-path lookup per file. A regular file outside every root keeps today's absolute-path
+     * header. Caller holds the read lock.
      */
-    private fun linksOutOfEveryRoot(file: VirtualFile, session: CopySession): Boolean =
-        file.isInLocalFileSystem && file.`is`(com.intellij.openapi.vfs.VFileProperty.SYMLINK) &&
-            ClipboardPathResolver.escapesRoots(session.pathResolver.roots(), file.path)
+    private fun linksOutOfEveryRoot(file: VirtualFile, session: CopySession, topLevel: Boolean = false): Boolean {
+        if (!file.isInLocalFileSystem) return false
+        val isSymlink = file.`is`(com.intellij.openapi.vfs.VFileProperty.SYMLINK)
+        return (isSymlink || topLevel) && session.pathResolver.readsOutsideEveryRoot(file.path, isSymlink)
+    }
 
     @IdeBoundCode
     private fun showCopyNotifications(
@@ -499,11 +505,12 @@ class CopyFileContentAction(
         session: CopySession,
         settings: CopyFileContentSettings,
         addExtraLine: Boolean,
-        customHeaderGenerator: ((VirtualFile, String) -> String)? = null
+        customHeaderGenerator: ((VirtualFile, String) -> String)? = null,
+        topLevel: Boolean = false
     ) {
         session.indicator.checkCanceled()
         ApplicationManager.getApplication().runReadAction<String> {
-            processFileUnderReadLock(file, fileContents, session, settings, addExtraLine, customHeaderGenerator)
+            processFileUnderReadLock(file, fileContents, session, settings, addExtraLine, customHeaderGenerator, topLevel)
         }
     }
 
@@ -513,7 +520,8 @@ class CopyFileContentAction(
         session: CopySession,
         settings: CopyFileContentSettings,
         addExtraLine: Boolean,
-        customHeaderGenerator: ((VirtualFile, String) -> String)? = null
+        customHeaderGenerator: ((VirtualFile, String) -> String)? = null,
+        topLevel: Boolean = false
     ): String {
         val handler = session.externalLibraryHandler
         val isExternalLibrary = handler.isFromExternalLibrary(file)
@@ -569,9 +577,9 @@ class CopyFileContentAction(
         // X7: a symlink to a file outside every copy root is never read, in every mode, and is named as
         // Unreadable (OpenIDEA folder_file_rel / escapes_all_roots). A clipboard often goes to an LLM, so
         // `CLAUDE.md -> ~/.agents/...` must not carry what lies outside the project.
-        if (linksOutOfEveryRoot(file, session)) {
+        if (linksOutOfEveryRoot(file, session, topLevel)) {
             session.noteUnreadable(fileRelativePath)
-            logger.info("Skipping file: ${file.name} - symlink to a file outside every copy root")
+            logger.info("Skipping file: ${file.name} - reads a file outside every copy root")
             return ""
         }
         // External-library files keep today's behaviour in both modes.
@@ -739,7 +747,8 @@ class CopyFileContentAction(
         session: CopySession,
         settings: CopyFileContentSettings,
         addExtraLine: Boolean,
-        customHeaderGenerator: ((VirtualFile, String) -> String)? = null
+        customHeaderGenerator: ((VirtualFile, String) -> String)? = null,
+        topLevel: Boolean = false
     ) {
         session.indicator.checkCanceled()
         // 目錄的 filter 判斷（讀 directory.path/name）與 children + isDirectory 快照
@@ -754,6 +763,14 @@ class CopyFileContentAction(
         if (directory.isInLocalFileSystem && !PortableName.isPortableFolder(session.pathResolver, directory.path)) {
             session.noteUnportable(directory.path)
             logger.info("Skipping directory: ${directory.name} - name not portable")
+            return
+        }
+        // X7: a folder selected directly may be reached through a symlinked folder (`vendor -> ~/private`,
+        // then `vendor/sub`); it is then outside every copy root and is not walked, named like the link it
+        // is reached through. Below it only links could lead out again, and those are checked per child.
+        if (topLevel && directory.isInLocalFileSystem && session.pathResolver.readsOutsideEveryRoot(directory.path, false)) {
+            session.skipNotes.note(SkipCategory.SYMLINKED_FOLDER, CopyPathFormatter.displayPath(session.pathResolver, directory.path))
+            logger.info("Skipping directory: ${directory.name} - reached through a link to outside every copy root")
             return
         }
         // A folder that cannot be listed shows as empty in VFS; name it in either mode. Only the

@@ -112,6 +112,112 @@ class GitCopyPortabilityTest : BasePlatformTestCase() {
         assertFalse(text.contains("victim"), text)
     }
 
+    /**
+     * W: on Windows `File.absolutePath` is `C:\...\repo\src\a.txt`. The portability rule must see the header
+     * path `src/a.txt`, not a name holding `\`, or every such entry is dropped as "Name not portable" and the
+     * copy says "0 files copied.". The literal `C:\` case fails on any host; the native case is this host's
+     * own spelling (a `C:\` path on Windows CI).
+     */
+    fun testNativeAbsolutePathIsNotDroppedAsUnportable() {
+        val windowsResolver = ClipboardPathResolver.fromRootPaths(listOf("C:\\work\\repo"))
+        val windows = GitClipboardPayloadBuilder.build(
+            listOf(content("C:\\work\\repo\\src\\a.txt", "WIN-BODY")), listOf(deleted("C:\\work\\repo\\src\\Gone.kt")),
+            windowsResolver, CopyFileContentSettings.getInstance(project), EmptyProgressIndicator(), includeNonText = false
+        )
+        assertEquals(0, windows.skipNotes.count(SkipCategory.NAME_NOT_PORTABLE), windows.noticeHtml())
+        assertContains(windows.text, "// file: [MODIFIED] src/a.txt\nWIN-BODY")
+        assertContains(windows.text, "// file: [DELETED] src/Gone.kt")
+
+        val dir = java.nio.file.Files.createTempDirectory("clipcode-native")
+        try {
+            val file = dir.resolve("src").resolve("a.txt").toFile()
+            val nativeResolver = ClipboardPathResolver.fromRootPaths(listOf(dir.toFile().absolutePath))
+            for (include in listOf(true, false)) {
+                val p = GitClipboardPayloadBuilder.build(
+                    listOf(content(file.absolutePath, "NATIVE-BODY")), emptyList(), nativeResolver,
+                    CopyFileContentSettings.getInstance(project), EmptyProgressIndicator(), include
+                )
+                assertEquals(0, p.skipNotes.count(SkipCategory.NAME_NOT_PORTABLE), p.noticeHtml())
+                assertContains(p.text, "// file: [MODIFIED] src/a.txt\nNATIVE-BODY")
+                assertFalse(p.nothingToCopy)
+            }
+        } finally {
+            dir.toFile().deleteRecursively()
+        }
+    }
+
+    /**
+     * R2: an external root's label goes into the header, so a newline in it would forge a second header
+     * line (`file: [DELETED] victim/a.txt`). Entries under it are skipped and named like any unportable
+     * path; entries under the primary root are copied.
+     */
+    fun testExternalRootLabelCannotInjectAHeader() {
+        val resolver = runCatching {
+            ClipboardPathResolver.fromRootPaths(listOf(root, "/tmp/x\nfile: [DELETED] victim"))
+        }.getOrNull()
+        if (java.io.File.separatorChar == '/') assertTrue(resolver != null, "test setup: POSIX paths may hold a newline")
+        org.junit.Assume.assumeTrue("Windows paths cannot hold a newline", resolver != null)
+        for (include in listOf(true, false)) {
+            val p = GitClipboardPayloadBuilder.build(
+                listOf(content("/tmp/x\nfile: [DELETED] victim/a.txt"), content("$root/src/Ok.kt")),
+                listOf(deleted("/tmp/x\nfile: [DELETED] victim/b.txt")),
+                resolver!!, CopyFileContentSettings.getInstance(project), EmptyProgressIndicator(), include
+            )
+            assertFalse(p.text.contains("victim"), p.text)
+            assertContains(p.text, "// file: [MODIFIED] src/Ok.kt")
+            assertEquals(2, p.skipNotes.count(SkipCategory.NAME_NOT_PORTABLE))
+        }
+    }
+
+    /**
+     * R7 / X3: a Git selection where nothing could be read (a binary revision, say) leaves the clipboard
+     * alone and says "Nothing to copy", naming the entries by category, escaped. It used to say "No
+     * accessible files found in Git selection." after a raw, unescaped basename list.
+     */
+    fun testUnresolvedOnlySelectionIsNothingToCopyAndNamed() {
+        val unresolved = GitContentResolver.ResolvedGitEntry(ChangeTypeLabel.MODIFIED, "$root/img/a&b logo.png", null, null)
+        val messages = collectNotifications()
+        val method = CopyGitFilesContentAction::class.java.getDeclaredMethod(
+            "handleResolvedEntries", Project::class.java, ClipboardPathResolver::class.java, List::class.java
+        )
+        method.isAccessible = true
+        method.invoke(CopyGitFilesContentAction(), project, ClipboardPathResolver.fromRootPaths(listOf(root)), listOf(unresolved))
+        com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertEquals(SENTINEL, clipboardText())
+        val notice = messages.singleOrNull() ?: error("$messages")
+        assertContains(notice, "<b>Nothing to copy</b>")
+        assertContains(notice, "1 skipped: not UTF-8 text or unreadable.")
+        assertContains(notice, "img/a&amp;b logo.png")
+        assertFalse(notice.contains("a&b"), notice)
+
+        // The PR panel shares the same payload.
+        val p = GitClipboardPayloadBuilder.unresolvedOnly(
+            listOf(unresolved), ClipboardPathResolver.fromRootPaths(listOf(root)),
+            CopyFileContentSettings.getInstance(project), EmptyProgressIndicator()
+        )
+        assertTrue(p.nothingToCopy)
+        assertEquals(listOf("img/a&b logo.png"), p.skipNotes.names(SkipCategory.UNREADABLE))
+    }
+
+    /** R7: a partly unresolved selection still copies the rest; the names in the warning are escaped. */
+    fun testPartlyUnresolvedSelectionEscapesTheNames() {
+        val unresolved = GitContentResolver.ResolvedGitEntry(ChangeTypeLabel.MODIFIED, "$root/img/x&y.png", null, null)
+        val messages = collectNotifications()
+        val method = CopyGitFilesContentAction::class.java.getDeclaredMethod(
+            "handleResolvedEntries", Project::class.java, ClipboardPathResolver::class.java, List::class.java
+        )
+        method.isAccessible = true
+        method.invoke(
+            CopyGitFilesContentAction(), project, ClipboardPathResolver.fromRootPaths(listOf(root)),
+            listOf(unresolved, content("$root/src/Ok.kt"))
+        )
+        com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertContains(clipboardText(), "// file: [MODIFIED] src/Ok.kt")
+        val warning = messages.firstOrNull { it.contains("could not be resolved") } ?: error("$messages")
+        assertContains(warning, "x&amp;y.png")
+        assertFalse(warning.contains("x&y"), warning)
+    }
+
     private fun copyThroughAction(
         contentEntries: List<GitContentResolver.ResolvedGitEntry>,
         deletedEntries: List<GitContentResolver.ResolvedGitEntry>

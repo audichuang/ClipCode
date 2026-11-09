@@ -26,13 +26,17 @@ object PortableName {
         isPortableRelativePath(if (path.isEmpty()) "x" else "$path/x")
 
     /**
-     * What the rule is applied to: the raw path relative to the root the header is built from, or, for a
-     * file outside every root, its own name only. Absolute ancestors are never relative segments a reader
-     * restores, so a UNC (`//server/share`) or GVFS (`smb-share:server=x`) mount does not make a fine name
-     * unportable.
+     * What the rule is applied to: the header path before sanitising ([ClipboardPathResolver.rawClipboardPath]:
+     * the raw path under its root, behind an external root's label, which the header carries too), or, when
+     * the header is the absolute path, the raw path under its root or, outside every root, the file's own
+     * name. Absolute ancestors are never relative segments a reader restores, so a UNC (`//server/share`)
+     * or GVFS (`smb-share:server=x`) mount does not make a fine name unportable. A native Windows path is
+     * read with `\` as its separator ([ClipboardPathResolver.slashSeparated]).
      */
-    fun checkedPath(resolver: ClipboardPathResolver, absolutePath: String): String =
-        resolver.rawRelativePath(absolutePath) ?: absolutePath.substringAfterLast('/')
+    fun checkedPath(resolver: ClipboardPathResolver, absolutePath: String): String {
+        val path = ClipboardPathResolver.slashSeparated(absolutePath)
+        return resolver.rawClipboardPath(path) ?: resolver.rawRelativePath(path) ?: path.substringAfterLast('/')
+    }
 
     /** The rule for a file at [absolutePath]; see [checkedPath] and [headerStaysOneLine]. */
     fun isPortableFile(resolver: ClipboardPathResolver, absolutePath: String): Boolean =
@@ -43,12 +47,14 @@ object PortableName {
         isPortableFolderPath(checkedPath(resolver, absolutePath)) && headerStaysOneLine(resolver, absolutePath)
 
     /**
-     * Outside every root the header is the absolute path, so a control character in an ancestor (a newline
-     * in `/tmp/x\nfile: [DELETED] victim.txt/notes.txt`) would put a second, forged header line on the
-     * clipboard. Under a root the ancestors are not in the header and [checkedPath] covers every segment.
+     * When the header is the absolute path (outside every root, or under an external root whose label is
+     * ambiguous), a control character in an ancestor (a newline in
+     * `/tmp/x\nfile: [DELETED] victim.txt/notes.txt`) would put a second, forged header line on the
+     * clipboard. Otherwise the header is the root-relative path, label included, and [checkedPath] covers
+     * every segment of it.
      */
     private fun headerStaysOneLine(resolver: ClipboardPathResolver, absolutePath: String): Boolean =
-        resolver.rawRelativePath(absolutePath) != null || absolutePath.none { it.code < 0x20 }
+        resolver.rawClipboardPath(absolutePath) != null || absolutePath.none { it.code < 0x20 }
 
     /** A name for a notice: control characters (a tab, a newline) are made visible. Mirror of OpenIDEA visibleName. */
     fun visibleName(name: String): String = buildString {
