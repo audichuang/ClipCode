@@ -1,7 +1,9 @@
 package com.github.audichuang.clipcode
 
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ClipboardRestoreParserTest {
@@ -288,5 +290,84 @@ class ClipboardRestoreParserTest {
         assertTrue(entries.single().isDeleted)
         assertEquals("src/Old.kt", entries.single().path)
         assertEquals("fun legacy() = Unit", entries.single().content)
+    }
+}
+
+class NonTextWireTest {
+    private val parser = ClipboardRestoreParser()
+    private val default = "// file: \$FILE_PATH"
+    private val esc = ClipboardRestoreParser.ESCAPE_MARKER
+    private val fake = "// File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows"
+
+    private fun file(path: String, text: String) = ClipboardPayloadFormatter.PayloadFile(path, text)
+    private fun nonText(path: String, bytes: ByteArray) = ClipboardPayloadFormatter.PayloadFile(path, nonText = bytes)
+    private fun build(header: String, files: List<ClipboardPayloadFormatter.PayloadFile>) =
+        ClipboardPayloadFormatter.buildPayload(
+            ClipboardPayloadFormatter.Options(header, "", "", true, files, null)
+        )
+
+    private fun hdr(header: String, p: String) = header.replace("\$FILE_PATH", p)
+
+    @Test
+    fun `placeholder shaped text gets two layers and the reader never guesses`() {
+        val escFake = esc + fake
+        for (header in listOf(default, "// \$FILE_PATH", "A\$FILE_PATH")) {
+            val texts = listOf("$fake\nYWJj", "$fake\nnot base64!", "$escFake\nYWJj", "$esc$escFake")
+            val files = listOf(nonText("a.bin", byteArrayOf(0, 255.toByte(), 1))) +
+                texts.mapIndexed { i, t -> file("t$i.txt", t) }
+            val payload = build(header, files)
+            assertTrue(payload.contains("${hdr(header, "t0.txt")}\n$esc$esc$fake\n"), payload)
+            assertTrue(payload.contains("${hdr(header, "t2.txt")}\n$esc$esc$esc$fake\n"), payload)
+            val entries = parser.parse(payload, header)
+            assertEquals(5, entries.size, "$header: $payload")
+            assertTrue(!entries[0].escapedPlaceholder, header)
+            assertContentEquals(byteArrayOf(0, 255.toByte(), 1), (NonText.parseBody(entries[0].content) as NonText.DecodeResult.Ok).bytes)
+            entries.drop(1).zip(texts).forEach { (entry, text) ->
+                assertTrue(entry.escapedPlaceholder, "$header: ${entry.path}")
+                assertEquals(text, entry.content, "$header: ${entry.path}")
+            }
+        }
+    }
+
+    @Test
+    fun `header formats that cannot escape base64 lines are detected`() {
+        for (f in listOf("\$FILE_PATH", "\$FILE_PATH=", "//\$FILE_PATH", "\$FILE_PATH==", "/\$FILE_PATH", "\$FILE_PATHQ")) {
+            assertTrue(ClipboardRestoreParser.headerFormatUnescapable(f), f)
+        }
+        for (f in listOf(default, "// \$FILE_PATH", "A\$FILE_PATH", "### \$FILE_PATH", "\$FILE_PATH.md", "no placeholder", "")) {
+            assertTrue(!ClipboardRestoreParser.headerFormatUnescapable(f), f)
+        }
+    }
+
+    @Test
+    fun `leading blank lines do not hide a placeholder shaped first line`() {
+        val escFake = esc + fake
+        for (header in listOf(default, "// \$FILE_PATH", "A\$FILE_PATH", "#\$FILE_PATH")) {
+            val texts = listOf("\n$esc$fake\nAQID", "\n$fake\nAQID", "\n  \n$escFake\nAQID")
+            val payload = build(header, texts.mapIndexed { i, t -> file("t$i.txt", t) })
+            val entries = parser.parse(payload, header)
+            assertEquals(3, entries.size, "$header: $payload")
+            entries.zip(texts).forEach { (entry, text) ->
+                assertTrue(entry.escapedPlaceholder, "$header: ${entry.path}")
+                assertEquals(text.trimStart('\n', ' '), entry.content, "$header: ${entry.path}")
+            }
+        }
+    }
+
+    @Test
+    fun `an escaped whitespace line before a placeholder shaped line keeps the text`() {
+        val escFake = esc + fake
+        for (header in listOf(" \$FILE_PATH", "\t\$FILE_PATH", "  \$FILE_PATH")) {
+            val lead = if (header.startsWith("\t")) "\t\t" else "   "
+            val texts = listOf("$lead\n$fake\nAQID", "$lead\n$escFake\nAQID", "\n$lead\n\n$fake\nAQID")
+            val payload = build(header, texts.mapIndexed { i, t -> file("t$i.txt", t) })
+            val entries = parser.parse(payload, header)
+            assertEquals(3, entries.size, "'$header': $payload")
+            entries.zip(texts).forEach { (entry, text) ->
+                assertTrue(entry.escapedPlaceholder, "'$header': ${entry.path}\n$payload")
+                assertEquals(text.trimStart('\n'), entry.content, "'$header': ${entry.path}")
+                assertNull(NonText.parseBody(entry.content), "'$header': ${entry.path}")
+            }
+        }
     }
 }
