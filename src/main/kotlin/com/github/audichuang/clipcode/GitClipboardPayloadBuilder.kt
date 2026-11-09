@@ -373,8 +373,7 @@ object GitClipboardPayloadBuilder {
 
     /**
      * Include mode, working-tree file: classified by [NonTextCopy.classify] exactly like the files copy and
-     * held to the limit of its kind. A binary FILE TYPE is not consulted (isBinaryType = false) because
-     * today's Git path does not either: strict UTF-8 text stays text. Must run under a ReadAction.
+     * held to the limit of its kind: the bytes decide, never the IDE file type. Must run under a ReadAction.
      */
     private fun resolveWorkingTreeIncludingNonText(
         entry: GitContentResolver.ResolvedGitEntry,
@@ -386,7 +385,6 @@ object GitClipboardPayloadBuilder {
         val changeType = entry.changeType
         val outcome = NonTextCopy.classify(
             length = virtualFile.length,
-            isBinaryType = false,
             textLimitBytes = maxFileSizeBytes,
             nonTextLimitBytes = maxNonTextBytes
         ) {

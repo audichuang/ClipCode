@@ -196,6 +196,13 @@ class CopyFileContentAction(
             override fun onSuccess() {
                 if (project.isDisposed) return
                 val result = payload ?: return
+                // X3: nothing was copied (every item skipped, or only size placeholders): the user's
+                // clipboard is not overwritten with an empty wrapper. Include always carries at least one
+                // file, so this is the only place it can happen, with or without the dialog.
+                if (result.fileCount == 0) {
+                    showNothingToCopy(project, result)
+                    return
+                }
                 copyToClipboard(result.text)
                 showCopyNotifications(project, settings, result.copy(limitLeftOut = knownLimitLeftOut, limitLeftOutCapped = knownLimitLeftOutCapped))
             }
@@ -350,6 +357,7 @@ class CopyFileContentAction(
                 if (item.path in session.copiedFilePaths || item.path in session.limitLeftOutPaths) continue
                 if (session.useFilters && !passesFileFilters(item, session)) continue
                 if (isUnportable(item, session)) continue
+                if (linksOutOfEveryRoot(item, session)) continue
                 if (session.limitLeftOut >= NonTextCopy.LEFT_OUT_COUNT_CAP) {
                     session.limitLeftOutCapped = true
                 } else {
@@ -381,6 +389,16 @@ class CopyFileContentAction(
      */
     private fun isUnportable(file: VirtualFile, session: CopySession): Boolean =
         file.isInLocalFileSystem && !PortableName.isPortableFile(session.pathResolver, file.path)
+
+    /**
+     * X7: a symlink whose real target lies outside every copy root (the resolver's roots, each resolved
+     * too, so a project opened through a symlinked path is not an escape from itself). A target inside a
+     * root is followed. Only links are checked: a regular file outside every root (an open tab elsewhere)
+     * keeps today's absolute-path header. Caller holds the read lock.
+     */
+    private fun linksOutOfEveryRoot(file: VirtualFile, session: CopySession): Boolean =
+        file.isInLocalFileSystem && file.`is`(com.intellij.openapi.vfs.VFileProperty.SYMLINK) &&
+            ClipboardPathResolver.escapesRoots(session.pathResolver.roots(), file.path)
 
     @IdeBoundCode
     private fun showCopyNotifications(
@@ -463,6 +481,13 @@ class CopyFileContentAction(
         )
     }
 
+    /** X3: shown even when the copy notification is off, since the clipboard was left as it was. */
+    @IdeBoundCode
+    private fun showNothingToCopy(project: Project, result: CopyPayload) {
+        val lines = NonTextCopy.nothingToCopyLines(result.skippedFileSizeCount, result.skipNotes)
+        showNotification("<html><b>Nothing to copy</b>${noticeLinesHtml(lines)}</html>", NotificationType.WARNING, project)
+    }
+
     /** Plain notice lines → HTML, one category per line. */
     private fun noticeLinesHtml(lines: List<String>): String =
         lines.joinToString("") { "<br>" + com.intellij.openapi.util.text.StringUtil.escapeXmlEntities(it) }
@@ -541,6 +566,14 @@ class CopyFileContentAction(
             logger.info("Skipping file: ${file.name} - name not portable")
             return ""
         }
+        // X7: a symlink to a file outside every copy root is never read, in every mode, and is named as
+        // Unreadable (OpenIDEA folder_file_rel / escapes_all_roots). A clipboard often goes to an LLM, so
+        // `CLAUDE.md -> ~/.agents/...` must not carry what lies outside the project.
+        if (linksOutOfEveryRoot(file, session)) {
+            session.noteUnreadable(fileRelativePath)
+            logger.info("Skipping file: ${file.name} - symlink to a file outside every copy root")
+            return ""
+        }
         // External-library files keep today's behaviour in both modes.
         if (session.includeNonText && !isExternalLibrary) {
             processFileIncludingNonText(file, fileRelativePath, fileContents, session, settings, addExtraLine, customHeaderGenerator)
@@ -601,36 +634,30 @@ class CopyFileContentAction(
                 logger.info("Skipping file: ${file.name} - Could not read content from external library")
             }
         } else {
-            // Handle regular project files (size already checked above)
-            if (!isBinaryFile(file)) {
-                content = readFileContents(file) ?: run {
-                    session.noteUnreadable(fileRelativePath)
-                    return ""
-                }
+            // Regular project files (size already checked above). The bytes alone decide (X16): an IDE
+            // binary file type holding strict UTF-8 is text; non-UTF-8 bytes are counted and named,
+            // as VS Code's decodeUtf8OrSkip does.
+            content = readFileContents(file) ?: run {
+                session.noteUnreadable(fileRelativePath)
+                return ""
+            }
 
-                if (content.isNotEmpty() || file.length == 0L) {
-                    val header = customHeaderGenerator?.invoke(file, fileRelativePath)
-                        ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
-                    fileContents.add(header)
-                    fileContents.add(ClipboardRestoreParser.escapeTextBody(content, settings.state.headerFormat))
-                    session.fileCount++
-                    if (addExtraLine) {
-                        fileContents.add("")
-                    }
-                } else {
-                    // Same class of silent drop as the external-library twin above. Strict
-                    // decoding makes this branch near-unreachable (non-empty bytes decode to
-                    // a non-empty string), but "near" is not "never" and an uncounted drop
-                    // is exactly what this counter exists to stop.
-                    session.noteUnreadable(fileRelativePath)
-                    logger.info("Skipping file: ${file.name} - Could not read content")
+            if (content.isNotEmpty() || file.length == 0L) {
+                val header = customHeaderGenerator?.invoke(file, fileRelativePath)
+                    ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
+                fileContents.add(header)
+                fileContents.add(ClipboardRestoreParser.escapeTextBody(content, settings.state.headerFormat))
+                session.fileCount++
+                if (addExtraLine) {
+                    fileContents.add("")
                 }
             } else {
-                // Counted too: VS Code reaches the same verdict through decodeUtf8OrSkip's
-                // NUL check and counts it there, so leaving this one silent would make the
-                // two tools report different numbers for the same folder.
+                // Same class of silent drop as the external-library twin above. Strict
+                // decoding makes this branch near-unreachable (non-empty bytes decode to
+                // a non-empty string), but "near" is not "never" and an uncounted drop
+                // is exactly what this counter exists to stop.
                 session.noteUnreadable(fileRelativePath)
-                logger.info("Skipping file: ${file.name} - Binary file")
+                logger.info("Skipping file: ${file.name} - Could not read content")
             }
         }
         // Returned only so processFile can count it once the read lock is released.
@@ -664,7 +691,6 @@ class CopyFileContentAction(
 
         val outcome = NonTextCopy.classify(
             length = file.length,
-            isBinaryType = isBinaryFile(file),
             textLimitBytes = settings.state.maxFileSizeKB * 1024L,
             nonTextLimitBytes = session.maxNonTextBytes
         ) { readBytesOrNull(file) }
@@ -689,7 +715,7 @@ class CopyFileContentAction(
                 session.fileCount++
                 session.nonTextCarried.add(NonTextCopySummary.Item(fileRelativePath, outcome.bytes.size.toLong()))
             }
-            NonTextCopy.Outcome.Unreadable -> unreadable("unreadable, or a binary file type holding UTF-8 text")
+            NonTextCopy.Outcome.Unreadable -> unreadable("unreadable")
         }
     }
 
@@ -735,7 +761,6 @@ class CopyFileContentAction(
         if (snapshot.second.isEmpty()) {
             noteIfUnlistable(directory, session)
         }
-        noteNamesHiddenByVfs(directory, snapshot.second.map { it.first.name }.toSet(), session)
         // Track only current ancestors: normal package aliases keep their selected paths.
         if (!session.directoryAncestors.add(snapshot.first)) return
         try {
@@ -761,30 +786,6 @@ class CopyFileContentAction(
         } finally {
             session.directoryAncestors.remove(snapshot.first)
         }
-    }
-
-    /**
-     * The IntelliJ VFS never lists a child whose name holds a backslash (it is a separator there), so
-     * such a file or folder could never be copied, but it was left out silently. Decision D2 names it:
-     * the directory is listed once more on disk and every name the VFS hid that fails the portability
-     * rule is named under "Name not portable" (a folder once, not walked). A hidden name that IS
-     * portable is only an unrefreshed VFS and stays out of the notice. One extra readdir per folder.
-     */
-    private fun noteNamesHiddenByVfs(directory: VirtualFile, listed: Set<String>, session: CopySession) {
-        val nioPath = ApplicationManager.getApplication().runReadAction<java.nio.file.Path?> {
-            directory.fileSystem.getNioPath(directory)
-        } ?: return
-        val onDisk = try {
-            java.nio.file.Files.newDirectoryStream(nioPath).use { stream -> stream.map { it.fileName.toString() } }
-        } catch (e: ProcessCanceledException) {
-            throw e
-        } catch (e: Exception) {
-            // An unlistable folder is already named Unreadable by noteIfUnlistable.
-            return
-        }
-        onDisk.sorted()
-            .filter { it !in listed && !PortableName.isPortableFolderPath(it) }
-            .forEach { session.noteUnportable("${directory.path}/$it") }
     }
 
     private fun noteIfUnlistable(directory: VirtualFile, session: CopySession) {
@@ -874,9 +875,6 @@ class CopyFileContentAction(
         }
     }
 
-    @IdeBoundCode
-    private fun isBinaryFile(file: VirtualFile): Boolean = file.fileType.isBinary
-    
     /** Uncached entry point; kept because `CopyFileContentInternalTest` calls it by reflection. */
     private fun matchesPattern(fileName: String, pattern: String): Boolean =
         CopyFilterMatcher.matchesPattern(fileName, pattern, null)

@@ -102,13 +102,11 @@ object NonTextCopy {
 
     /**
      * Include-mode decision for one file. A file over both limits is never read. A read file is held to
-     * the limit of its kind. A file of a binary file type whose bytes decode as strict UTF-8 keeps
-     * today's behaviour: size placeholder over the text limit, otherwise skipped.
-     * [read] returns null when the file cannot be read.
+     * the limit of its kind. The bytes alone decide (X16): an IDE file type is never consulted, so a
+     * binary-typed file whose bytes are strict UTF-8 is text. [read] returns null when the file cannot be read.
      */
     fun classify(
         length: Long,
-        isBinaryType: Boolean,
         textLimitBytes: Long,
         nonTextLimitBytes: Long,
         read: () -> ByteArray?
@@ -121,7 +119,6 @@ object NonTextCopy {
         val text = Utf8Text.decodeOrNull(bytes)
         if (text != null) {
             if (size > textLimitBytes) return Outcome.SizePlaceholder(size, unread = false, nonTextOverLimit = false)
-            if (isBinaryType) return Outcome.Unreadable
             return Outcome.Text(text)
         }
         if (size > nonTextLimitBytes) return Outcome.SizePlaceholder(size, unread = false, nonTextOverLimit = true)
@@ -245,6 +242,18 @@ object NonTextCopy {
         unreadableLines(notes.count(SkipCategory.UNREADABLE), notes.names(SkipCategory.UNREADABLE)).drop(1) +
             SkipCategory.entries.filter { it != SkipCategory.UNREADABLE }
                 .flatMap { skipLines(it, notes.count(it), notes.names(it)) }
+
+    /**
+     * X3: the lines under "Nothing to copy" when every selected item was skipped and the clipboard was left
+     * alone. The same sentences and category blocks as the normal Exclude / no-dialog notice, one per line,
+     * so the user sees why nothing was copied.
+     */
+    fun nothingToCopyLines(sizeSkipped: Int, notes: SkipNotes): List<String> = buildList {
+        if (sizeSkipped > 0) add("$sizeSkipped skipped: size exceeded.")
+        val unreadable = notes.count(SkipCategory.UNREADABLE)
+        if (unreadable > 0) add("$unreadable skipped: not UTF-8 text or unreadable.")
+        addAll(excludeNoticeLines(notes))
+    }
 
     fun unreadableLines(unreadableCount: Int, unreadablePaths: List<String>): List<String> =
         skipLines(SkipCategory.UNREADABLE, unreadableCount, unreadablePaths)
