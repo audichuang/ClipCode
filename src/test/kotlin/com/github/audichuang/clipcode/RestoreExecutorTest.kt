@@ -397,5 +397,100 @@ class RestoreExecutorTest : BasePlatformTestCase() {
         }
     }
 
+    fun testUserErrorTextMapsOsErrorsToPlainWords() {
+        assertEquals("Folder is not writable", userErrorText(java.nio.file.AccessDeniedException("/x")))
+        assertEquals("Folder is not writable", userErrorText(java.io.IOException("Permission denied (os error 13)")))
+        assertEquals("File or folder not found", userErrorText(java.nio.file.NoSuchFileException("/x")))
+        assertEquals("A file or folder already exists at that path", userErrorText(java.nio.file.FileAlreadyExistsException("/x")))
+        assertEquals("A file is in the way of its parent folder", userErrorText(java.nio.file.NotDirectoryException("/x")))
+        assertEquals("A file is in the way of its parent folder", userErrorText(java.io.IOException("Not a directory (os error 20)")))
+        assertEquals("Could not apply the change", userErrorText(IllegalStateException("boom /secret/path")))
+    }
+
+    private fun nonTextOp(root: Path, rel: String, bytes: ByteArray, existed: Boolean, identical: Boolean = false) =
+        RestorePlan.CreateOperation(
+            relativePath = rel,
+            absolutePath = root.resolve(rel).systemIndependentPath(),
+            rootPath = root.systemIndependentPath(),
+            content = "",
+            existed = existed,
+            nonTextBytes = bytes,
+            identical = identical
+        )
+
+    private fun planOf(root: Path, vararg ops: RestorePlan.CreateOperation) = RestorePlan(
+        createOperations = ops.toList(),
+        deleteOperations = emptyList(),
+        skippedOperations = emptyList(),
+        roots = listOf(root.systemIndependentPath())
+    )
+
+    fun testNonTextBytesAreWrittenByteForByteAndUnchangedIsCounted() {
+        val root = Files.createTempDirectory("clipcode-nt-exec")
+        try {
+            // Bytes that are neither UTF-8 nor free of NUL: any charset round trip would corrupt them.
+            val bytes = byteArrayOf(0, 0xa4.toByte(), 0xe9.toByte(), 0x0d, 0x0a, 0xff.toByte(), 0)
+            Files.write(root.resolve("same.bin"), bytes)
+            Files.write(root.resolve("old.bin"), byteArrayOf(9, 9))
+            val plan = planOf(
+                root,
+                nonTextOp(root, "new/dir/n.bin", bytes, existed = false),
+                nonTextOp(root, "same.bin", bytes, existed = true, identical = true),
+                nonTextOp(root, "old.bin", bytes, existed = true)
+            )
+            val executor = RestoreExecutor(project)
+            // identical targets need no overwrite permission
+            assertEquals(listOf("old.bin"), executor.collectExistingCreatePaths(plan))
+            val result = executor.execute(plan, overwriteExisting = true, skipExisting = false)
+            assertTrue(result.errors.isEmpty(), result.errors.toString())
+            assertEquals(1, result.createdCount)
+            assertEquals(1, result.overwrittenCount)
+            assertEquals(1, result.unchangedCount)
+            listOf("new/dir/n.bin", "same.bin", "old.bin").forEach {
+                assertEquals(bytes.toList(), Files.readAllBytes(root.resolve(it)).toList(), it)
+            }
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    fun testNonTextOverwriteIsSkippedWithoutPermissionAndNeverTouchesFolders() {
+        val root = Files.createTempDirectory("clipcode-nt-exec-skip")
+        try {
+            val old = byteArrayOf(1, 2, 3)
+            Files.write(root.resolve("old.bin"), old)
+            root.resolve("folder").createDirectories()
+            val bytes = byteArrayOf(0, 7)
+            val plan = planOf(
+                root,
+                nonTextOp(root, "old.bin", bytes, existed = true),
+                nonTextOp(root, "folder", bytes, existed = true)
+            )
+            val result = RestoreExecutor(project).execute(plan, overwriteExisting = false, skipExisting = true)
+            assertEquals(2, result.skippedExistingCount)
+            assertEquals(old.toList(), Files.readAllBytes(root.resolve("old.bin")).toList())
+            assertTrue(Files.isDirectory(root.resolve("folder")))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    fun testNonTextOverwriteOfNonUtf8TargetIsNotRefused() {
+        val root = Files.createTempDirectory("clipcode-nt-exec-big5")
+        try {
+            Files.write(root.resolve("big5.txt"), byteArrayOf(0xa4.toByte(), 0xe9.toByte(), 0xa5.toByte(), 0xbb.toByte()))
+            val bytes = byteArrayOf(0xa4.toByte(), 0xe9.toByte(), 0x00)
+            val result = RestoreExecutor(project).execute(
+                planOf(root, nonTextOp(root, "big5.txt", bytes, existed = true)),
+                overwriteExisting = true,
+                skipExisting = false
+            )
+            assertEquals(1, result.overwrittenCount)
+            assertEquals(bytes.toList(), Files.readAllBytes(root.resolve("big5.txt")).toList())
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     private fun Path.systemIndependentPath(): String = toString().replace('\\', '/')
 }

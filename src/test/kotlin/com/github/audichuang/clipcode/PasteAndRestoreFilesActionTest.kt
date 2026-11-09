@@ -211,6 +211,51 @@ class PasteAndRestoreFilesActionTest : BasePlatformTestCase() {
         assertFalse(event.presentation.isEnabledAndVisible)
     }
 
+    fun testFormatByteSize() {
+        assertEquals("83 B", formatByteSize(83))
+        assertEquals("4.0 KB", formatByteSize(4096))
+        assertEquals("2.1 MB", formatByteSize((2.1 * 1024 * 1024).toLong()))
+    }
+
+    fun testNonTextRowsShowSizeAndIdenticalTargetsGetTheirOwnSection() {
+        val bytes = ByteArray(4096)
+        val plan = RestorePlan(
+            createOperations = listOf(
+                createOp("img/new.png", "/r/img/new.png", existed = false).copy(content = "", nonTextBytes = bytes),
+                createOp("img/diff.png", "/r/img/diff.png", existed = true).copy(content = "", nonTextBytes = bytes),
+                createOp("img/same.png", "/r/img/same.png", existed = true).copy(content = "", nonTextBytes = bytes, identical = true)
+            ),
+            deleteOperations = emptyList(),
+            skippedOperations = emptyList(),
+            roots = emptyList()
+        )
+        val message = PasteAndRestoreFilesAction().confirmationMessage(plan)
+        assertContains(message, "+ img/new.png  (non-text file \u00B7 4.0 KB)")
+        assertContains(message, "Files to OVERWRITE (existing) (1):")
+        assertContains(message, "UNCHANGED (identical) (1):")
+        assertContains(message, "= img/same.png")
+        assertFalse(message.contains("Files to OVERWRITE (existing) (2):"))
+    }
+
+    fun testSkippedSummaryHasUserTextForEveryNewReason() {
+        val action = PasteAndRestoreFilesAction()
+        val summary = action.skippedSummary(
+            listOf(
+                skipped("a", null, RestorePlan.SkipReason.CORRUPT_NON_TEXT),
+                skipped("b", "b", RestorePlan.SkipReason.TARGET_NOT_FILE),
+                skipped("c", "c", RestorePlan.SkipReason.PARENT_NOT_FOLDER),
+                skipped("d", "d", RestorePlan.SkipReason.TARGET_COLLISION)
+            )
+        )
+        assertContains(summary, "Corrupt non-text file: 1")
+        assertContains(summary, "The target is a folder: 1")
+        assertContains(summary, "A file is in the way of its parent folder: 1")
+        assertContains(summary, "Another entry maps to the same file (letter case): 1")
+        RestorePlan.SkipReason.values().forEach {
+            assertFalse(skipDetailText(it).contains("_"), "raw enum name leaked for $it")
+        }
+    }
+
     // === reflection helpers ===
 
     private fun PasteAndRestoreFilesAction.confirmationMessage(plan: RestorePlan): String =

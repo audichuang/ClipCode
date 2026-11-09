@@ -316,4 +316,33 @@ class ContractFixturesTest {
             parent.toFile().deleteRecursively()
         }
     }
+
+    /**
+     * Restore of non-text payloads into an EMPTY root: the planned creates (relative path plus
+     * Base64 of the bytes for a non-text file, text content otherwise) and skips must equal the
+     * frozen fixture, in order.
+     */
+    @Test
+    fun `non-text restore plans the frozen creates and skips`() {
+        assertTrue(fixtures.nonTextRestoreCases.isNotEmpty())
+        val parser = ClipboardRestoreParser()
+        val mismatches = fixtures.nonTextRestoreCases.mapNotNull { case ->
+            val root = Files.createTempDirectory("clipcode-nontext-restore").toRealPath()
+            try {
+                val plan = RestorePlanBuilder(ClipboardPathResolver.fromRootPaths(listOf(root.toString()), root.toString()))
+                    .build(parser.parse(case.payload, case.headerFormat))
+                val creates = plan.createOperations.map { op ->
+                    val bytes = op.nonTextBytes
+                    if (bytes != null) NtFile(op.relativePath, java.util.Base64.getEncoder().encodeToString(bytes), null)
+                    else NtFile(op.relativePath, null, op.content)
+                }
+                val skips = plan.skippedOperations.map { NtSkip(it.rawPath, it.reason.name) }
+                if (creates == case.creates && skips == case.skips) null
+                else "${case.name}:\n  expected ${case.creates} / ${case.skips}\n  got      $creates / $skips"
+            } finally {
+                root.toFile().deleteRecursively()
+            }
+        }
+        assertEquals(emptyList(), mismatches, "non-text restore mismatches:\n" + mismatches.joinToString("\n"))
+    }
 }
