@@ -618,26 +618,19 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         val actual = clipboardText()
         assertFalse(actual.contains("base64 follows"))
         assertContains(actual, "text-30")
-        // Today's warning, unchanged: the Include walk stopped at the limit, so nothing was counted.
+        // Spec case 15: no dialog, but the notice still says how many files the limit left out.
         val warning = messages.firstOrNull { it.contains("File Limit Reached") } ?: error("$messages")
-        assertContains(warning, "The file limit of 30 files was reached.\n</html>")
-        assertFalse(messages.any { it.contains("left out") }, "$messages")
+        assertContains(warning, "The file limit of 30 files was reached. The file-count limit left out 5 files.")
     }
 
-    /** No non-text file carried when the limit is reached: the Include walk stops there, as today's does. */
-    fun testIncludeWalkStopsAtLimitWithoutNonText() {
+    /** No non-text file carried when the limit is reached: the Include walk still counts the rest exactly. */
+    fun testIncludeWalkCountsLeftOutWithoutNonText() {
         val settings = CopyFileContentSettings.getInstance(project)!!
         settings.state.setMaxFileCount = true
         settings.state.fileCountLimit = 30
         (1..200).forEach { myFixture.addFileToProject("big/t%03d.kt".format(it), "text-$it") }
         val dir = myFixture.findFileInTempDir("big") ?: error("dir not found")
-        // processFile / processDirectory each check for cancellation once, so this counts what was visited.
-        val indicator = object : com.intellij.openapi.progress.ProgressIndicator by com.intellij.openapi.progress.EmptyProgressIndicator() {
-            var checks = 0
-            override fun checkCanceled() {
-                checks++
-            }
-        }
+        val indicator = com.intellij.openapi.progress.EmptyProgressIndicator()
         val method = CopyFileContentAction::class.java.getDeclaredMethod(
             "buildCopyPayload",
             com.intellij.openapi.project.Project::class.java, Array<VirtualFile>::class.java,
@@ -649,13 +642,11 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
 
         assertEquals(30, field("fileCount"))
         assertEquals(true, field("fileLimitReached"))
-        assertEquals(null, field("limitLeftOut"))
-        assertTrue(indicator.checks < 60, "walk visited ${indicator.checks} checkpoints for a 30-file limit")
+        assertEquals(170, field("limitLeftOut"))
     }
 
-    /** The no-dialog notice is today's sentence; nothing from the Include walk is mixed in. */
-    fun testNoDialogNoticeKeepsTodaysUnreadableSentence() {
-        // An unlistable folder is named by the Include walk only; today's walk sees it as empty.
+    /** The no-dialog notice names unreadable items from the walk whose payload went on the clipboard. */
+    fun testNoDialogNoticeNamesUnreadableFolder() {
         val root = Files.createTempDirectory("clipcode-nodialog")
         val lockedDir = root.resolve("lockedDir").createDirectories()
         Files.writeString(lockedDir.resolve("inner.txt"), "inner")
@@ -672,7 +663,39 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
 
             assertTrue(chooser.summaries.isEmpty())
             val notice = messages.firstOrNull { it.contains("file copied") || it.contains("files copied") } ?: error("$messages")
-            assertEquals("<html><b>1 file copied.</b></html>", notice)
+            assertContains(notice, "<b>1 file copied.</b> 1 skipped: not UTF-8 text or unreadable.<br>")
+            assertContains(notice, "lockedDir")
+        } finally {
+            lockedDir.toFile().setReadable(true, false)
+            lockedDir.toFile().setExecutable(true, false)
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    /** Spec case 19: a selected unreadable folder plus a readable file — the file is copied, the folder named. */
+    fun testSelectedUnreadableFolderIsNamedAndFileCopied() {
+        val root = Files.createTempDirectory("clipcode-selectedlocked")
+        val lockedDir = root.resolve("lockedDir").createDirectories()
+        Files.writeString(lockedDir.resolve("inner.txt"), "inner")
+        Files.writeString(root.resolve("ok.txt"), "fine")
+        try {
+            val dir = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root) ?: error("no vfs dir")
+            com.intellij.openapi.vfs.VfsUtil.markDirtyAndRefresh(false, true, true, dir)
+            val lockedVfs = dir.findChild("lockedDir") ?: error("no locked vfs")
+            val okVfs = dir.findChild("ok.txt") ?: error("no ok vfs")
+            lockedDir.toFile().setReadable(false, false)
+            lockedDir.toFile().setExecutable(false, false)
+            com.intellij.openapi.vfs.VfsUtil.markDirtyAndRefresh(false, true, true, dir)
+            CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
+            val messages = collectNotifications()
+            val chooser = RecordingChooser(NonTextChoice.INCLUDE)
+            CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(lockedVfs, okVfs))
+
+            assertTrue(chooser.summaries.isEmpty())
+            assertContains(clipboardText(), "fine")
+            val notice = messages.firstOrNull { it.contains("file copied") || it.contains("files copied") } ?: error("$messages")
+            assertContains(notice, "<b>1 file copied.</b> 1 skipped: not UTF-8 text or unreadable.<br>")
+            assertContains(notice, "lockedDir")
         } finally {
             lockedDir.toFile().setReadable(true, false)
             lockedDir.toFile().setExecutable(true, false)

@@ -157,8 +157,10 @@ class CopyFileContentAction(
                     // No dialog, and today's build always runs instead of reusing the Include payload:
                     // the two can still differ (a non-text file over its own limit is a size placeholder
                     // in Include and silently skipped today), and Exclude must stay byte-identical to
-                    // today — its notice included, so nothing from the Include walk is passed on.
-                    copyWithoutNonText(project, filesToCopy, settings, customHeaderGenerator)
+                    // today. Only the left-out count is taken from the Include walk: no non-text file took
+                    // a file-count slot, so it stopped at the same place, and today's walk does not count
+                    // past the limit. Unreadable items come from the walk whose payload is copied.
+                    copyWithoutNonText(project, filesToCopy, settings, customHeaderGenerator, include.limitLeftOut)
                     return
                 }
                 when (nonTextChooser.choose(project, include.toSummary(settings))) {
@@ -167,19 +169,20 @@ class CopyFileContentAction(
                         showCopyNotifications(project, settings, include)
                     }
                     NonTextChoice.EXCLUDE ->
-                        copyWithoutNonText(project, filesToCopy, settings, customHeaderGenerator)
+                        copyWithoutNonText(project, filesToCopy, settings, customHeaderGenerator, null)
                     NonTextChoice.CANCEL -> Unit
                 }
             }
         })
     }
 
-    /** Today's copy and today's notices: non-text files are skipped. */
+    /** Today's copy: non-text files are skipped. [knownLimitLeftOut] only feeds the notice. */
     private fun copyWithoutNonText(
         project: Project,
         filesToCopy: Array<VirtualFile>,
         settings: CopyFileContentSettings,
-        customHeaderGenerator: ((VirtualFile, String) -> String)?
+        customHeaderGenerator: ((VirtualFile, String) -> String)?,
+        knownLimitLeftOut: Int?
     ) {
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Copying file content…", true) {
             private var payload: CopyPayload? = null
@@ -193,7 +196,7 @@ class CopyFileContentAction(
                 if (project.isDisposed) return
                 val result = payload ?: return
                 copyToClipboard(result.text)
-                showCopyNotifications(project, settings, result)
+                showCopyNotifications(project, settings, result.copy(limitLeftOut = knownLimitLeftOut))
             }
         })
     }
@@ -294,17 +297,16 @@ class CopyFileContentAction(
     }
 
     /**
-     * Today's file-count check, shared by the top-level loop and [processDirectory]. The walk stops
-     * (true) exactly as before unless Include has carried a non-text file: only then is the dialog
-     * shown, so only then does it keep walking in counting-only mode to make the number of files the
-     * limit left out exact. Nothing past the limit is read or written. Counting the rest of a large
-     * tree when no dialog will ever show it is what made folder copies slower than today's.
+     * Today's file-count check, shared by the top-level loop and [processDirectory]. Exclude stops
+     * walking (true) exactly as before. Include keeps walking in counting-only mode so the number of
+     * files the limit left out is exact — the dialog and, when there is no dialog, the completion
+     * notice both report it. Nothing past the limit is read or written.
      */
     private fun stopForFileLimit(session: CopySession, settings: CopyFileContentSettings): Boolean {
         if (session.countingOnly) return false
         if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
             session.fileLimitReached = true
-            if (!session.includeNonText || session.nonTextCarried.isEmpty()) return true
+            if (!session.includeNonText) return true
             session.countingOnly = true
         }
         return false
@@ -337,12 +339,16 @@ class CopyFileContentAction(
             else -> "${result.fileCount} files copied."
         }
         // Reported, never silent — the VS Code half says the same sentence. After Include the
-        // non-text files are carried, so what is skipped is called "Unreadable" instead.
+        // non-text files are carried, so what is skipped is called "Unreadable" instead. Otherwise
+        // today's sentence carries the count and the paths follow, one per line (the same first-N
+        // and "and N more" lines as after Include, minus their "Unreadable: N" count line).
         val unreadableMessage = when {
             result.nonTextCarried.isNotEmpty() -> noticeLinesHtml(
                 NonTextCopy.includeNoticeLines(result.nonTextCarried.size, result.skippedUnreadableCount, result.unreadablePaths)
             )
-            result.skippedUnreadableCount > 0 -> " ${result.skippedUnreadableCount} skipped: not UTF-8 text or unreadable."
+            result.skippedUnreadableCount > 0 ->
+                " ${result.skippedUnreadableCount} skipped: not UTF-8 text or unreadable." +
+                    noticeLinesHtml(NonTextCopy.unreadableLines(result.skippedUnreadableCount, result.unreadablePaths).drop(1))
             else -> ""
         }
 
@@ -648,8 +654,9 @@ class CopyFileContentAction(
             if (!directoryPassesFilters(directory, session)) null
             else (directory.canonicalPath ?: directory.path) to directory.children.map { it to it.isDirectory }
         } ?: return
-        // Include mode names a folder that cannot be listed: VFS shows it as empty.
-        if (session.includeNonText && !session.countingOnly && snapshot.second.isEmpty()) {
+        // A folder that cannot be listed shows as empty in VFS; name it in either mode. Only the
+        // notice changes — nothing is added to the payload.
+        if (!session.countingOnly && snapshot.second.isEmpty()) {
             noteIfUnlistable(directory, session)
         }
         // Track only current ancestors: normal package aliases keep their selected paths.
