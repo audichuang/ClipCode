@@ -44,8 +44,17 @@ class NonTextTest {
     @Test
     fun `decode verified accepts clean and whitespace-laden input`() {
         assertContentEquals(bytes, ok(NonText.decodeVerified(b64, header)))
-        val messy = " ${b64.take(3)}\r\n\u000B\u000C${b64.drop(3)}\t\n"
+        val messy = " ${b64.take(3)}\r\n\u000C${b64.drop(3)}\t\n"
         assertContentEquals(bytes, ok(NonText.decodeVerified(messy, header)))
+    }
+
+    /** The stripped set is Rust's is_ascii_whitespace (OpenIDEA) and the VS Code port's: VT is not in it. */
+    @Test
+    fun `decode verified rejects vertical tab inside base64`() {
+        val withVt = "${b64.take(4)}\u000B${b64.drop(4)}"
+        assertEquals(NonText.Reason.BASE64, corrupt(NonText.decodeVerified(withVt, header)))
+        val withFf = "${b64.take(4)}\u000C${b64.drop(4)}"
+        assertContentEquals(bytes, ok(NonText.decodeVerified(withFf, header)))
     }
 
     @Test

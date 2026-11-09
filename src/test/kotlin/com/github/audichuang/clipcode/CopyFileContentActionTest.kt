@@ -618,7 +618,87 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         val actual = clipboardText()
         assertFalse(actual.contains("base64 follows"))
         assertContains(actual, "text-30")
-        assertTrue(messages.any { it.contains("left out 5 files") }, "$messages")
+        // Today's warning, unchanged: the Include walk stopped at the limit, so nothing was counted.
+        val warning = messages.firstOrNull { it.contains("File Limit Reached") } ?: error("$messages")
+        assertContains(warning, "The file limit of 30 files was reached.\n</html>")
+        assertFalse(messages.any { it.contains("left out") }, "$messages")
+    }
+
+    /** No non-text file carried when the limit is reached: the Include walk stops there, as today's does. */
+    fun testIncludeWalkStopsAtLimitWithoutNonText() {
+        val settings = CopyFileContentSettings.getInstance(project)!!
+        settings.state.setMaxFileCount = true
+        settings.state.fileCountLimit = 30
+        (1..200).forEach { myFixture.addFileToProject("big/t%03d.kt".format(it), "text-$it") }
+        val dir = myFixture.findFileInTempDir("big") ?: error("dir not found")
+        // processFile / processDirectory each check for cancellation once, so this counts what was visited.
+        val indicator = object : com.intellij.openapi.progress.ProgressIndicator by com.intellij.openapi.progress.EmptyProgressIndicator() {
+            var checks = 0
+            override fun checkCanceled() {
+                checks++
+            }
+        }
+        val method = CopyFileContentAction::class.java.getDeclaredMethod(
+            "buildCopyPayload",
+            com.intellij.openapi.project.Project::class.java, Array<VirtualFile>::class.java,
+            CopyFileContentSettings::class.java, kotlin.jvm.functions.Function2::class.java,
+            com.intellij.openapi.progress.ProgressIndicator::class.java, Boolean::class.javaPrimitiveType
+        ).apply { isAccessible = true }
+        val result = method.invoke(CopyFileContentAction(), project, arrayOf(dir), settings, null, indicator, true)!!
+        fun field(name: String) = result.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(result)
+
+        assertEquals(30, field("fileCount"))
+        assertEquals(true, field("fileLimitReached"))
+        assertEquals(null, field("limitLeftOut"))
+        assertTrue(indicator.checks < 60, "walk visited ${indicator.checks} checkpoints for a 30-file limit")
+    }
+
+    /** The no-dialog notice is today's sentence; nothing from the Include walk is mixed in. */
+    fun testNoDialogNoticeKeepsTodaysUnreadableSentence() {
+        // An unlistable folder is named by the Include walk only; today's walk sees it as empty.
+        val root = Files.createTempDirectory("clipcode-nodialog")
+        val lockedDir = root.resolve("lockedDir").createDirectories()
+        Files.writeString(lockedDir.resolve("inner.txt"), "inner")
+        Files.writeString(root.resolve("ok.txt"), "fine")
+        try {
+            lockedDir.toFile().setReadable(false, false)
+            lockedDir.toFile().setExecutable(false, false)
+            val dir = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root) ?: error("no vfs dir")
+            com.intellij.openapi.vfs.VfsUtil.markDirtyAndRefresh(false, true, true, dir)
+            CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
+            val messages = collectNotifications()
+            val chooser = RecordingChooser(NonTextChoice.INCLUDE)
+            CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(dir))
+
+            assertTrue(chooser.summaries.isEmpty())
+            val notice = messages.firstOrNull { it.contains("file copied") || it.contains("files copied") } ?: error("$messages")
+            assertEquals("<html><b>1 file copied.</b></html>", notice)
+        } finally {
+            lockedDir.toFile().setReadable(true, false)
+            lockedDir.toFile().setExecutable(true, false)
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    /** Every unreadable item the Include notice counts is also named: an external-library .dll too. */
+    fun testIncludeNoticeNamesExternalLibraryDrops() {
+        val libRoot = java.io.File(project.basePath!!, "$name/vendorlib").apply { mkdirs() }
+        java.io.File(libRoot, "native.dll").writeBytes(byteArrayOf(1, 2, 3))
+        val lib = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(libRoot)!!
+        lib.refresh(false, true)
+        com.intellij.openapi.roots.ModuleRootModificationUtil.addModuleLibrary(module, lib.url)
+        val dll = lib.findChild("native.dll")!!
+        assertTrue(ExternalLibraryHandler(project).isFromExternalLibrary(dll), "test setup: dll must be a library file")
+        val png = binaryFile("libmix/logo.png", pngBytes(5))
+        CopyFileContentSettings.getInstance(project)!!.state.showCopyNotification = true
+        val messages = collectNotifications()
+        val chooser = RecordingChooser(NonTextChoice.INCLUDE)
+        CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(png, dll))
+
+        assertEquals(1, chooser.summaries.size)
+        val notice = messages.firstOrNull { it.contains("Non-text files copied as Base64: 1.") } ?: error("$messages")
+        assertContains(notice, "Unreadable: 1")
+        assertContains(notice, "native.dll")
     }
 
     /** chmod 000 file, dangling symlink and an unlistable folder are named after Include. */

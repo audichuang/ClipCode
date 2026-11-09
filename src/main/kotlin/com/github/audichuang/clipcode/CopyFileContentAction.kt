@@ -157,9 +157,8 @@ class CopyFileContentAction(
                     // No dialog, and today's build always runs instead of reusing the Include payload:
                     // the two can still differ (a non-text file over its own limit is a size placeholder
                     // in Include and silently skipped today), and Exclude must stay byte-identical to
-                    // today. No non-text file took a file-count slot, so the Include walk stopped at the
-                    // same place and its left-out count and unreadable paths describe this copy too.
-                    copyWithoutNonText(project, filesToCopy, settings, customHeaderGenerator, include.limitLeftOut, include.unreadablePaths)
+                    // today — its notice included, so nothing from the Include walk is passed on.
+                    copyWithoutNonText(project, filesToCopy, settings, customHeaderGenerator)
                     return
                 }
                 when (nonTextChooser.choose(project, include.toSummary(settings))) {
@@ -168,21 +167,19 @@ class CopyFileContentAction(
                         showCopyNotifications(project, settings, include)
                     }
                     NonTextChoice.EXCLUDE ->
-                        copyWithoutNonText(project, filesToCopy, settings, customHeaderGenerator, null, emptyList())
+                        copyWithoutNonText(project, filesToCopy, settings, customHeaderGenerator)
                     NonTextChoice.CANCEL -> Unit
                 }
             }
         })
     }
 
-    /** Today's copy: non-text files are skipped. [knownLimitLeftOut] / [unreadablePaths] only feed the notice. */
+    /** Today's copy and today's notices: non-text files are skipped. */
     private fun copyWithoutNonText(
         project: Project,
         filesToCopy: Array<VirtualFile>,
         settings: CopyFileContentSettings,
-        customHeaderGenerator: ((VirtualFile, String) -> String)?,
-        knownLimitLeftOut: Int?,
-        unreadablePaths: List<String>
+        customHeaderGenerator: ((VirtualFile, String) -> String)?
     ) {
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Copying file content…", true) {
             private var payload: CopyPayload? = null
@@ -196,11 +193,7 @@ class CopyFileContentAction(
                 if (project.isDisposed) return
                 val result = payload ?: return
                 copyToClipboard(result.text)
-                showCopyNotifications(
-                    project,
-                    settings,
-                    result.copy(limitLeftOut = knownLimitLeftOut, unreadablePaths = unreadablePaths)
-                )
+                showCopyNotifications(project, settings, result)
             }
         })
     }
@@ -294,22 +287,24 @@ class CopyFileContentAction(
             nonTextCarried = session.nonTextCarried.toList(),
             nonTextOverLimit = session.nonTextOverLimit,
             unreadOverLimit = session.unreadOverLimit,
-            limitLeftOut = if (includeNonText) session.limitLeftOut else null,
+            limitLeftOut = if (session.countingOnly) session.limitLeftOut else null,
             unreadablePaths = session.unreadablePaths.toList(),
             utf8Bytes = if (session.nonTextCarried.isNotEmpty()) NonTextCopy.utf8Length(text) else 0L
         )
     }
 
     /**
-     * Today's file-count check, shared by the top-level loop and [processDirectory]. Exclude stops
-     * walking (true) exactly as before. Include keeps walking in counting-only mode so the number of
-     * files the limit left out is exact; nothing past the limit is read or written.
+     * Today's file-count check, shared by the top-level loop and [processDirectory]. The walk stops
+     * (true) exactly as before unless Include has carried a non-text file: only then is the dialog
+     * shown, so only then does it keep walking in counting-only mode to make the number of files the
+     * limit left out exact. Nothing past the limit is read or written. Counting the rest of a large
+     * tree when no dialog will ever show it is what made folder copies slower than today's.
      */
     private fun stopForFileLimit(session: CopySession, settings: CopyFileContentSettings): Boolean {
         if (session.countingOnly) return false
         if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
             session.fileLimitReached = true
-            if (!session.includeNonText) return true
+            if (!session.includeNonText || session.nonTextCarried.isEmpty()) return true
             session.countingOnly = true
         }
         return false
@@ -343,17 +338,12 @@ class CopyFileContentAction(
         }
         // Reported, never silent — the VS Code half says the same sentence. After Include the
         // non-text files are carried, so what is skipped is called "Unreadable" instead.
-        val unreadableMessage = if (result.nonTextCarried.isNotEmpty()) {
-            noticeLinesHtml(
+        val unreadableMessage = when {
+            result.nonTextCarried.isNotEmpty() -> noticeLinesHtml(
                 NonTextCopy.includeNoticeLines(result.nonTextCarried.size, result.skippedUnreadableCount, result.unreadablePaths)
             )
-        } else {
-            val today = if (result.skippedUnreadableCount > 0) {
-                " ${result.skippedUnreadableCount} skipped: not UTF-8 text or unreadable."
-            } else {
-                ""
-            }
-            today + noticeLinesHtml(NonTextCopy.unreadableLines(result.unreadablePaths.size, result.unreadablePaths))
+            result.skippedUnreadableCount > 0 -> " ${result.skippedUnreadableCount} skipped: not UTF-8 text or unreadable."
+            else -> ""
         }
 
         showPayloadNotification("", result.text, project)
@@ -375,7 +365,7 @@ class CopyFileContentAction(
         val nonTextCarried: List<NonTextCopySummary.Item> = emptyList(),
         val nonTextOverLimit: Int = 0,
         val unreadOverLimit: Int = 0,
-        /** Files the file-count limit left out; null when not known (an Exclude build stops walking). */
+        /** Files the file-count limit left out; null when not counted (the walk stopped at the limit). */
         val limitLeftOut: Int? = null,
         val unreadablePaths: List<String> = emptyList(),
         /** UTF-8 length of [text]; computed on the background thread, only when non-text files were carried. */
@@ -512,14 +502,14 @@ class CopyFileContentAction(
                 // Counted like every other drop. VS Code has no extension blocklist, so the
                 // two tools still disagree on WHICH library files they copy — but a drop the
                 // user is never told about is the part that is simply a bug.
-                session.skippedUnreadableCount++
+                session.noteUnreadable(fileRelativePath)
                 logger.info("Skipping external library file: ${file.name}")
                 return ""
             }
             
             // Try to read content from external library (size already checked above)
             content = handler.readContent(file) ?: run {
-                session.skippedUnreadableCount++
+                session.noteUnreadable(fileRelativePath)
                 return ""
             }
             
@@ -533,14 +523,14 @@ class CopyFileContentAction(
                     fileContents.add("")
                 }
             } else {
-                session.skippedUnreadableCount++
+                session.noteUnreadable(fileRelativePath)
                 logger.info("Skipping file: ${file.name} - Could not read content from external library")
             }
         } else {
             // Handle regular project files (size already checked above)
             if (!isBinaryFile(file)) {
                 content = readFileContents(file) ?: run {
-                    session.skippedUnreadableCount++
+                    session.noteUnreadable(fileRelativePath)
                     return ""
                 }
 
@@ -558,14 +548,14 @@ class CopyFileContentAction(
                     // decoding makes this branch near-unreachable (non-empty bytes decode to
                     // a non-empty string), but "near" is not "never" and an uncounted drop
                     // is exactly what this counter exists to stop.
-                    session.skippedUnreadableCount++
+                    session.noteUnreadable(fileRelativePath)
                     logger.info("Skipping file: ${file.name} - Could not read content")
                 }
             } else {
                 // Counted too: VS Code reaches the same verdict through decodeUtf8OrSkip's
                 // NUL check and counts it there, so leaving this one silent would make the
                 // two tools report different numbers for the same folder.
-                session.skippedUnreadableCount++
+                session.noteUnreadable(fileRelativePath)
                 logger.info("Skipping file: ${file.name} - Binary file")
             }
         }
@@ -594,8 +584,7 @@ class CopyFileContentAction(
             if (addExtraLine) fileContents.add("")
         }
         fun unreadable(reason: String) {
-            session.skippedUnreadableCount++
-            session.unreadablePaths.add(fileRelativePath)
+            session.noteUnreadable(fileRelativePath)
             logger.info("Skipping file: ${file.name} - $reason")
         }
 
@@ -691,8 +680,7 @@ class CopyFileContentAction(
             directory.fileSystem.getNioPath(directory)
         } ?: return
         if (java.nio.file.Files.isReadable(nioPath)) return
-        session.skippedUnreadableCount++
-        session.unreadablePaths.add(CopyPathFormatter.displayPath(session.pathResolver, directory.path))
+        session.noteUnreadable(CopyPathFormatter.displayPath(session.pathResolver, directory.path))
         logger.info("Skipping directory: ${directory.name} - cannot be listed")
     }
 
@@ -878,7 +866,16 @@ class CopyFileContentAction(
         var nonTextOverLimit: Int = 0,
         var unreadOverLimit: Int = 0,
         val unreadablePaths: MutableList<String> = mutableListOf()
-    )
+    ) {
+        /**
+         * The only way to count an unreadable item: the count and the named paths move together, so
+         * the Include notice never says "Unreadable: 2" while listing one path.
+         */
+        fun noteUnreadable(path: String) {
+            skippedUnreadableCount++
+            unreadablePaths.add(path)
+        }
+    }
 
     @IdeBoundCode
     private fun showNotificationWithSettingsAction(message: String, notificationType: NotificationType, project: Project?) {

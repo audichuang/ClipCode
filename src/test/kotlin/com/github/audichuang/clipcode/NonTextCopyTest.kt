@@ -217,6 +217,17 @@ class NonTextCopyTest {
         )
     }
 
+    /** "and N more" counts what the count names but the list does not show, so the two always agree. */
+    @Test
+    fun `unreadable lines count the paths not shown`() {
+        assertEquals(listOf("Unreadable: 2", "p", "and 1 more"), NonTextCopy.unreadableLines(2, listOf("p")))
+        val paths = (1..6).map { "u$it" }
+        assertEquals(
+            listOf("Unreadable: 8", "u1", "u2", "u3", "u4", "u5", "and 3 more"),
+            NonTextCopy.unreadableLines(8, paths)
+        )
+    }
+
     @Test
     fun `utf8 length`() {
         assertEquals(0L, NonTextCopy.utf8Length(""))
