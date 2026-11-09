@@ -57,6 +57,16 @@ object ClipboardPayloadFormatter {
     /** Git copy: empty pre/post wrappers are omitted (mirrors buildGitPayload). */
     fun buildGitPayload(options: Options): String = buildInternal(options, includeEmptyWrappers = false)
 
+    /**
+     * Body of a carried non-text entry: placeholder line + wrapped Base64, every line through the
+     * same content escaping. The ONE builder of this body; CopyFileContentAction's inline path calls
+     * it too, so both produce identical bytes for the same file.
+     */
+    fun nonTextBody(bytes: ByteArray, headerFormat: String): String {
+        val placeholder = NonText.placeholderLine(bytes.size.toLong(), NonText.sha256Hex(bytes))
+        return ClipboardRestoreParser.escapeContent(placeholder + "\n" + NonText.encodeWrapped(bytes), headerFormat)
+    }
+
     private fun buildInternal(options: Options, includeEmptyWrappers: Boolean): String {
         val headerFormat = options.headerFormat
         val lines = mutableListOf<String>()
@@ -96,9 +106,7 @@ object ClipboardPayloadFormatter {
             val body = if (!file.skippedReason.isNullOrEmpty()) {
                 ClipboardRestoreParser.escapeContent("// File skipped: ${file.skippedReason}", headerFormat)
             } else if (bytes != null) {
-                val placeholder = NonText.placeholderLine(bytes.size.toLong(), NonText.sha256Hex(bytes))
-                val text = placeholder + "\n" + NonText.encodeWrapped(bytes)
-                ClipboardRestoreParser.escapeContent(text, headerFormat)
+                nonTextBody(bytes, headerFormat)
             } else {
                 ClipboardRestoreParser.escapeTextBody(file.content ?: "", headerFormat)
             }

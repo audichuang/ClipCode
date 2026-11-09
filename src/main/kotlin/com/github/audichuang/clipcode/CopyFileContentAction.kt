@@ -20,7 +20,13 @@ import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.util.Locale
 
-class CopyFileContentAction : AnAction() {
+/**
+ * [nonTextChooser] decides Include / Exclude / Cancel when a copy would carry non-text files; the
+ * default shows [NonTextCopyDialog]. All-default parameters keep the no-arg constructor plugin.xml needs.
+ */
+class CopyFileContentAction(
+    private val nonTextChooser: NonTextChooser = NonTextCopyDialog.CHOOSER
+) : AnAction() {
     private val logger = Logger.getInstance(CopyFileContentAction::class.java)
 
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
@@ -134,29 +140,87 @@ class CopyFileContentAction : AnAction() {
             return
         }
 
+        // The Include result is built first: whether to ask, and every number the dialog shows, come
+        // from it (spec non-text-files.md, "Asking the user").
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Copying file content…", true) {
             private var payload: CopyPayload? = null
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                payload = buildCopyPayload(project, filesToCopy, settings, customHeaderGenerator, indicator)
+                payload = buildCopyPayload(project, filesToCopy, settings, customHeaderGenerator, indicator, includeNonText = true)
+            }
+
+            override fun onSuccess() {
+                if (project.isDisposed) return
+                val include = payload ?: return
+                if (include.nonTextCarried.isEmpty()) {
+                    // No dialog, and today's build always runs instead of reusing the Include payload:
+                    // the two can still differ (a non-text file over its own limit is a size placeholder
+                    // in Include and silently skipped today), and Exclude must stay byte-identical to
+                    // today. No non-text file took a file-count slot, so the Include walk stopped at the
+                    // same place and its left-out count and unreadable paths describe this copy too.
+                    copyWithoutNonText(project, filesToCopy, settings, customHeaderGenerator, include.limitLeftOut, include.unreadablePaths)
+                    return
+                }
+                when (nonTextChooser.choose(project, include.toSummary(settings))) {
+                    NonTextChoice.INCLUDE -> {
+                        copyToClipboard(include.text)
+                        showCopyNotifications(project, settings, include)
+                    }
+                    NonTextChoice.EXCLUDE ->
+                        copyWithoutNonText(project, filesToCopy, settings, customHeaderGenerator, null, emptyList())
+                    NonTextChoice.CANCEL -> Unit
+                }
+            }
+        })
+    }
+
+    /** Today's copy: non-text files are skipped. [knownLimitLeftOut] / [unreadablePaths] only feed the notice. */
+    private fun copyWithoutNonText(
+        project: Project,
+        filesToCopy: Array<VirtualFile>,
+        settings: CopyFileContentSettings,
+        customHeaderGenerator: ((VirtualFile, String) -> String)?,
+        knownLimitLeftOut: Int?,
+        unreadablePaths: List<String>
+    ) {
+        ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Copying file content…", true) {
+            private var payload: CopyPayload? = null
+
+            override fun run(indicator: ProgressIndicator) {
+                indicator.isIndeterminate = true
+                payload = buildCopyPayload(project, filesToCopy, settings, customHeaderGenerator, indicator, includeNonText = false)
             }
 
             override fun onSuccess() {
                 if (project.isDisposed) return
                 val result = payload ?: return
                 copyToClipboard(result.text)
-                showCopyNotifications(project, settings, result)
+                showCopyNotifications(
+                    project,
+                    settings,
+                    result.copy(limitLeftOut = knownLimitLeftOut, unreadablePaths = unreadablePaths)
+                )
             }
         })
     }
 
+    /** Today's build (non-text files skipped); NodeModulesCopyTest / CopyResponsivenessTest call it by reflection. */
     private fun buildCopyPayload(
         project: Project,
         filesToCopy: Array<VirtualFile>,
         settings: CopyFileContentSettings,
         customHeaderGenerator: ((VirtualFile, String) -> String)?,
         indicator: ProgressIndicator
+    ): CopyPayload = buildCopyPayload(project, filesToCopy, settings, customHeaderGenerator, indicator, includeNonText = false)
+
+    private fun buildCopyPayload(
+        project: Project,
+        filesToCopy: Array<VirtualFile>,
+        settings: CopyFileContentSettings,
+        customHeaderGenerator: ((VirtualFile, String) -> String)?,
+        indicator: ProgressIndicator,
+        includeNonText: Boolean
     ): CopyPayload {
         // 在 BGT 跑；VFS 存取需要 read lock（2024.3+ strict mode），但改為「逐檔」取
         // ReadAction（見 processFile / processDirectory），不用單一長 read action 包住
@@ -173,7 +237,9 @@ class CopyFileContentAction : AnAction() {
                 useIncludeFilters = settings.state.useIncludeFilters,
                 useExcludeFilters = settings.state.useExcludeFilters,
                 includeRules = enabledRules.filter { it.action == CopyFileContentSettings.FilterAction.INCLUDE },
-                excludeRules = enabledRules.filter { it.action == CopyFileContentSettings.FilterAction.EXCLUDE }
+                excludeRules = enabledRules.filter { it.action == CopyFileContentSettings.FilterAction.EXCLUDE },
+                includeNonText = includeNonText,
+                maxNonTextBytes = settings.state.maxNonTextFileSizeKB * 1024L
             )
         }
 
@@ -192,10 +258,7 @@ class CopyFileContentAction : AnAction() {
 
         for (file in filesToCopy) {
             indicator.checkCanceled()
-            if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
-                session.fileLimitReached = true
-                break
-            }
+            if (stopForFileLimit(session, settings)) break
 
             val isDirectory = ApplicationManager.getApplication().runReadAction<Boolean> { file.isDirectory }
             if (isDirectory) {
@@ -227,8 +290,29 @@ class CopyFileContentAction : AnAction() {
             fileCount = session.fileCount,
             skippedFileSizeCount = session.skippedFileSizeCount,
             skippedUnreadableCount = session.skippedUnreadableCount,
-            fileLimitReached = session.fileLimitReached
+            fileLimitReached = session.fileLimitReached,
+            nonTextCarried = session.nonTextCarried.toList(),
+            nonTextOverLimit = session.nonTextOverLimit,
+            unreadOverLimit = session.unreadOverLimit,
+            limitLeftOut = if (includeNonText) session.limitLeftOut else null,
+            unreadablePaths = session.unreadablePaths.toList(),
+            utf8Bytes = if (session.nonTextCarried.isNotEmpty()) NonTextCopy.utf8Length(text) else 0L
         )
+    }
+
+    /**
+     * Today's file-count check, shared by the top-level loop and [processDirectory]. Exclude stops
+     * walking (true) exactly as before. Include keeps walking in counting-only mode so the number of
+     * files the limit left out is exact; nothing past the limit is read or written.
+     */
+    private fun stopForFileLimit(session: CopySession, settings: CopyFileContentSettings): Boolean {
+        if (session.countingOnly) return false
+        if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
+            session.fileLimitReached = true
+            if (!session.includeNonText) return true
+            session.countingOnly = true
+        }
+        return false
     }
 
     @IdeBoundCode
@@ -238,9 +322,10 @@ class CopyFileContentAction : AnAction() {
         result: CopyPayload
     ) {
         if (result.fileLimitReached) {
+            val leftOut = result.limitLeftOut?.takeIf { it > 0 }?.let { " ${NonTextCopy.limitLeftOutSentence(it)}." } ?: ""
             val fileLimitWarningMessage = """
                 <html>
-                <b>File Limit Reached:</b> The file limit of ${settings.state.fileCountLimit} files was reached.
+                <b>File Limit Reached:</b> The file limit of ${settings.state.fileCountLimit} files was reached.$leftOut
                 </html>
             """.trimIndent()
             showNotificationWithSettingsAction(fileLimitWarningMessage, NotificationType.WARNING, project)
@@ -256,11 +341,19 @@ class CopyFileContentAction : AnAction() {
             result.fileCount == 1 -> "1 file copied."
             else -> "${result.fileCount} files copied."
         }
-        // Reported, never silent — the VS Code half says the same sentence.
-        val unreadableMessage = if (result.skippedUnreadableCount > 0) {
-            " ${result.skippedUnreadableCount} skipped: not UTF-8 text or unreadable."
+        // Reported, never silent — the VS Code half says the same sentence. After Include the
+        // non-text files are carried, so what is skipped is called "Unreadable" instead.
+        val unreadableMessage = if (result.nonTextCarried.isNotEmpty()) {
+            noticeLinesHtml(
+                NonTextCopy.includeNoticeLines(result.nonTextCarried.size, result.skippedUnreadableCount, result.unreadablePaths)
+            )
         } else {
-            ""
+            val today = if (result.skippedUnreadableCount > 0) {
+                " ${result.skippedUnreadableCount} skipped: not UTF-8 text or unreadable."
+            } else {
+                ""
+            }
+            today + noticeLinesHtml(NonTextCopy.unreadableLines(result.unreadablePaths.size, result.unreadablePaths))
         }
 
         showPayloadNotification("", result.text, project)
@@ -277,8 +370,31 @@ class CopyFileContentAction : AnAction() {
         val fileCount: Int,
         val skippedFileSizeCount: Int,
         val skippedUnreadableCount: Int,
-        val fileLimitReached: Boolean
-    )
+        val fileLimitReached: Boolean,
+        /** Include only: carried non-text files in payload order. */
+        val nonTextCarried: List<NonTextCopySummary.Item> = emptyList(),
+        val nonTextOverLimit: Int = 0,
+        val unreadOverLimit: Int = 0,
+        /** Files the file-count limit left out; null when not known (an Exclude build stops walking). */
+        val limitLeftOut: Int? = null,
+        val unreadablePaths: List<String> = emptyList(),
+        /** UTF-8 length of [text]; computed on the background thread, only when non-text files were carried. */
+        val utf8Bytes: Long = 0
+    ) {
+        fun toSummary(settings: CopyFileContentSettings) = NonTextCopySummary(
+            carried = nonTextCarried,
+            estimatedPayloadBytes = utf8Bytes,
+            nonTextOverLimit = nonTextOverLimit,
+            unreadOverLimit = unreadOverLimit,
+            limitLeftOut = limitLeftOut ?: 0,
+            nonTextLimitBytes = settings.state.maxNonTextFileSizeKB * 1024L,
+            headerFormat = settings.state.headerFormat
+        )
+    }
+
+    /** Plain notice lines → HTML, one category per line. */
+    private fun noticeLinesHtml(lines: List<String>): String =
+        lines.joinToString("") { "<br>" + com.intellij.openapi.util.text.StringUtil.escapeXmlEntities(it) }
 
     // 每個檔案各取一次 read lock，讓 EDT 的 write action 可以在檔案之間插隊
     private fun processFile(
@@ -356,6 +472,17 @@ class CopyFileContentAction : AnAction() {
             }
         }
 
+        // Include mode past the file-count limit: count what the limit left out, read nothing.
+        if (session.countingOnly) {
+            session.limitLeftOut++
+            return ""
+        }
+        // External-library files keep today's behaviour in both modes.
+        if (session.includeNonText && !isExternalLibrary) {
+            processFileIncludingNonText(file, fileRelativePath, fileContents, session, settings, addExtraLine, customHeaderGenerator)
+            return ""
+        }
+
         val maxFileSizeBytes = settings.state.maxFileSizeKB * 1024L
         
         // ✅ 修復 OOM 風險：先檢查檔案大小（file.length 只讀 metadata，不載入內容）
@@ -400,7 +527,7 @@ class CopyFileContentAction : AnAction() {
                 val header = customHeaderGenerator?.invoke(file, fileRelativePath)
                     ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
                 fileContents.add(header)
-                fileContents.add(ClipboardRestoreParser.escapeContent(content, settings.state.headerFormat))
+                fileContents.add(ClipboardRestoreParser.escapeTextBody(content, settings.state.headerFormat))
                 session.fileCount++
                 if (addExtraLine) {
                     fileContents.add("")
@@ -421,7 +548,7 @@ class CopyFileContentAction : AnAction() {
                     val header = customHeaderGenerator?.invoke(file, fileRelativePath)
                         ?: settings.state.headerFormat.replace("\$FILE_PATH", fileRelativePath)
                     fileContents.add(header)
-                    fileContents.add(ClipboardRestoreParser.escapeContent(content, settings.state.headerFormat))
+                    fileContents.add(ClipboardRestoreParser.escapeTextBody(content, settings.state.headerFormat))
                     session.fileCount++
                     if (addExtraLine) {
                         fileContents.add("")
@@ -446,6 +573,77 @@ class CopyFileContentAction : AnAction() {
         return content
     }
 
+    /**
+     * Include mode, one project file: classified by [NonTextCopy.classify] and held to the limit of its
+     * kind. A carried non-text file takes a file-count slot exactly like a text file; size placeholders
+     * and unreadable items do not, as today. Caller holds the read lock.
+     */
+    private fun processFileIncludingNonText(
+        file: VirtualFile,
+        fileRelativePath: String,
+        fileContents: MutableList<String>,
+        session: CopySession,
+        settings: CopyFileContentSettings,
+        addExtraLine: Boolean,
+        customHeaderGenerator: ((VirtualFile, String) -> String)?
+    ) {
+        val headerFormat = settings.state.headerFormat
+        fun addEntry(body: String) {
+            fileContents.add(customHeaderGenerator?.invoke(file, fileRelativePath) ?: headerFormat.replace("\$FILE_PATH", fileRelativePath))
+            fileContents.add(body)
+            if (addExtraLine) fileContents.add("")
+        }
+        fun unreadable(reason: String) {
+            session.skippedUnreadableCount++
+            session.unreadablePaths.add(fileRelativePath)
+            logger.info("Skipping file: ${file.name} - $reason")
+        }
+
+        val outcome = NonTextCopy.classify(
+            length = file.length,
+            isBinaryType = isBinaryFile(file),
+            textLimitBytes = settings.state.maxFileSizeKB * 1024L,
+            nonTextLimitBytes = session.maxNonTextBytes
+        ) { readBytesOrNull(file) }
+        when (outcome) {
+            is NonTextCopy.Outcome.SizePlaceholder -> {
+                session.skippedFileSizeCount++
+                if (outcome.unread) session.unreadOverLimit++
+                if (outcome.nonTextOverLimit) session.nonTextOverLimit++
+                addEntry(ClipboardRestoreParser.escapeContent(NonTextCopy.sizePlaceholderLine(outcome.size), headerFormat))
+            }
+            is NonTextCopy.Outcome.Text -> {
+                // Same guard as today's branch: strict decoding of non-empty bytes is never empty.
+                if (outcome.content.isEmpty() && file.length != 0L) {
+                    unreadable("Could not read content")
+                } else {
+                    addEntry(ClipboardRestoreParser.escapeTextBody(outcome.content, headerFormat))
+                    session.fileCount++
+                }
+            }
+            is NonTextCopy.Outcome.Carried -> {
+                addEntry(ClipboardPayloadFormatter.nonTextBody(outcome.bytes, headerFormat))
+                session.fileCount++
+                session.nonTextCarried.add(NonTextCopySummary.Item(fileRelativePath, outcome.bytes.size.toLong()))
+            }
+            NonTextCopy.Outcome.Unreadable -> unreadable("unreadable, or a binary file type holding UTF-8 text")
+        }
+    }
+
+    /** Raw bytes, or null when the file cannot be read (permission denied, dangling symlink). */
+    private fun readBytesOrNull(file: VirtualFile): ByteArray? {
+        if (file.`is`(com.intellij.openapi.vfs.VFileProperty.SYMLINK) && file.canonicalPath == null) return null
+        return try {
+            file.contentsToByteArray()
+        } catch (e: ProcessCanceledException) {
+            throw e
+        } catch (e: Exception) {
+            // Expected (chmod 000, dangling symlink): counted and named in the notice, not an IDE error.
+            logger.warn("Failed to read ${file.path}: ${e.message}")
+            null
+        }
+    }
+
     private fun processDirectory(
         directory: VirtualFile,
         fileContents: MutableList<String>,
@@ -461,14 +659,15 @@ class CopyFileContentAction : AnAction() {
             if (!directoryPassesFilters(directory, session)) null
             else (directory.canonicalPath ?: directory.path) to directory.children.map { it to it.isDirectory }
         } ?: return
+        // Include mode names a folder that cannot be listed: VFS shows it as empty.
+        if (session.includeNonText && !session.countingOnly && snapshot.second.isEmpty()) {
+            noteIfUnlistable(directory, session)
+        }
         // Track only current ancestors: normal package aliases keep their selected paths.
         if (!session.directoryAncestors.add(snapshot.first)) return
         try {
             for ((childFile, childIsDirectory) in snapshot.second) {
-                if (settings.state.setMaxFileCount && session.fileCount >= settings.state.fileCountLimit) {
-                    session.fileLimitReached = true
-                    break
-                }
+                if (stopForFileLimit(session, settings)) break
                 if (childIsDirectory) {
                     // Not through a link. Ancestor-cycle tracking stops a loop but still
                     // admits every non-cyclic alias across cross-linked siblings, so a
@@ -485,6 +684,16 @@ class CopyFileContentAction : AnAction() {
         } finally {
             session.directoryAncestors.remove(snapshot.first)
         }
+    }
+
+    private fun noteIfUnlistable(directory: VirtualFile, session: CopySession) {
+        val nioPath = ApplicationManager.getApplication().runReadAction<java.nio.file.Path?> {
+            directory.fileSystem.getNioPath(directory)
+        } ?: return
+        if (java.nio.file.Files.isReadable(nioPath)) return
+        session.skippedUnreadableCount++
+        session.unreadablePaths.add(CopyPathFormatter.displayPath(session.pathResolver, directory.path))
+        logger.info("Skipping directory: ${directory.name} - cannot be listed")
     }
 
     /** 目錄層級的 include/exclude PATH 過濾。呼叫端需持有 read lock（會讀 directory.path/name）。 */
@@ -657,7 +866,18 @@ class CopyFileContentAction : AnAction() {
         // drop the user is never told about is indistinguishable from the file not being
         // there. Mirror of copy.ts CopyState.skippedUnreadableCount.
         var skippedUnreadableCount: Int = 0,
-        var fileLimitReached: Boolean = false
+        var fileLimitReached: Boolean = false,
+        // Include mode (spec non-text-files.md): non-text files are carried as Base64. False is
+        // today's copy, byte for byte.
+        val includeNonText: Boolean = false,
+        val maxNonTextBytes: Long = 2048L * 1024,
+        /** Include mode past the file-count limit: files are only counted into [limitLeftOut]. */
+        var countingOnly: Boolean = false,
+        var limitLeftOut: Int = 0,
+        val nonTextCarried: MutableList<NonTextCopySummary.Item> = mutableListOf(),
+        var nonTextOverLimit: Int = 0,
+        var unreadOverLimit: Int = 0,
+        val unreadablePaths: MutableList<String> = mutableListOf()
     )
 
     @IdeBoundCode

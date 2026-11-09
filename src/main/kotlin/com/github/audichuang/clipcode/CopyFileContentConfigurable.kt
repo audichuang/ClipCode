@@ -57,6 +57,7 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
     private val extraLineCheckBox = JBCheckBox("Add an extra line between files")
     private val setMaxFilesCheckBox = JBCheckBox("Set maximum number of files to have their content copied")
     private val maxFilesField = JBTextField(10)
+    private val maxNonTextSizeField = JBTextField(10)
     private val warningLabel = com.intellij.ui.components.JBLabel().apply {
         icon = com.intellij.icons.AllIcons.General.WarningDialog
         text = "Not setting a maximum number of files may cause high memory usage"
@@ -348,6 +349,12 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
                 warningPanel.add(Box.createHorizontalStrut(25))
                 warningPanel.add(warningLabel)
                 it.add(warningPanel)
+
+                val maxNonTextPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+                maxNonTextPanel.add(JLabel("Max non-text file size (KB)"))
+                maxNonTextPanel.add(Box.createHorizontalStrut(10))
+                maxNonTextPanel.add(maxNonTextSizeField)
+                it.add(maxNonTextPanel)
                 it.add(Box.createVerticalStrut(10))
                 
                 // Filtering section
@@ -534,6 +541,7 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
                     extraLineCheckBox.isSelected != it.state.addExtraLineBetweenFiles ||
                     setMaxFilesCheckBox.isSelected != it.state.setMaxFileCount ||
                     (setMaxFilesCheckBox.isSelected && maxFilesField.text.toIntOrNull() != it.state.fileCountLimit) ||
+                    maxNonTextSizeField.text.trim() != it.state.maxNonTextFileSizeKB.toString() ||
                     showNotificationCheckBox.isSelected != it.state.showCopyNotification ||
                     useFiltersCheckBox.isSelected != it.state.useFilters ||
                     useIncludeFiltersCheckBox.isSelected != it.state.useIncludeFilters ||
@@ -542,7 +550,13 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
     }
 
     override fun apply() {
+        // Validated before anything is written, so a bad value leaves every setting untouched.
+        val maxNonTextKB = maxNonTextSizeField.text.trim().toIntOrNull()?.takeIf { it > 0 }
+            ?: throw com.intellij.openapi.options.ConfigurationException(
+                "Max non-text file size (KB) must be a positive whole number."
+            )
         settings?.let {
+            it.state.maxNonTextFileSizeKB = maxNonTextKB
             it.state.filterRules.clear()
             it.state.filterRules.addAll(tableRules())
             it.state.headerFormat = headerFormatArea.text
@@ -568,6 +582,7 @@ class CopyFileContentConfigurable(private val project: Project) : Configurable {
             extraLineCheckBox.isSelected = it.state.addExtraLineBetweenFiles
             setMaxFilesCheckBox.isSelected = it.state.setMaxFileCount
             maxFilesField.text = it.state.fileCountLimit.toString()
+            maxNonTextSizeField.text = it.state.maxNonTextFileSizeKB.toString()
             showNotificationCheckBox.isSelected = it.state.showCopyNotification
             useFiltersCheckBox.isSelected = it.state.useFilters
             useIncludeFiltersCheckBox.isSelected = it.state.useIncludeFilters

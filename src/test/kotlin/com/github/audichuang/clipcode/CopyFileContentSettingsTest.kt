@@ -13,6 +13,7 @@ class CopyFileContentSettingsTest : BasePlatformTestCase() {
         assertEquals("", state.postText)
         assertEquals(30, state.fileCountLimit)
         assertEquals(500, state.maxFileSizeKB)
+        assertEquals(2048, state.maxNonTextFileSizeKB)
         assertTrue(state.addExtraLineBetweenFiles)
         assertTrue(state.setMaxFileCount)
         assertTrue(state.showCopyNotification)
@@ -31,6 +32,7 @@ class CopyFileContentSettingsTest : BasePlatformTestCase() {
             postText = "POST",
             fileCountLimit = 99,
             maxFileSizeKB = 1024,
+            maxNonTextFileSizeKB = 10000,
             addExtraLineBetweenFiles = false,
             setMaxFileCount = false,
             showCopyNotification = false,
@@ -46,6 +48,7 @@ class CopyFileContentSettingsTest : BasePlatformTestCase() {
         assertEquals("POST", got.postText)
         assertEquals(99, got.fileCountLimit)
         assertEquals(1024, got.maxFileSizeKB)
+        assertEquals(10000, got.maxNonTextFileSizeKB)
         assertTrue(!got.addExtraLineBetweenFiles)
         assertTrue(!got.setMaxFileCount)
         assertTrue(!got.showCopyNotification)
@@ -92,5 +95,12 @@ class CopyFileContentSettingsTest : BasePlatformTestCase() {
     fun testGetInstanceReturnsNonNullForRealProject() {
         val settings = CopyFileContentSettings.getInstance(project)
         assertNotNull(settings)
+    }
+
+    fun testMaxNonTextFileSizePersistsThroughSerialization() {
+        val state = CopyFileContentSettings.State(maxNonTextFileSizeKB = 4096)
+        val element = com.intellij.util.xmlb.XmlSerializer.serialize(state)
+        val back = com.intellij.util.xmlb.XmlSerializer.deserialize(element, CopyFileContentSettings.State::class.java)
+        assertEquals(4096, back.maxNonTextFileSizeKB)
     }
 }

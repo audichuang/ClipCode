@@ -406,7 +406,8 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
             }
         )
 
-        CopyFileContentAction().performCopyFilesContent(project, arrayOf(readable, big5))
+        // Big5 is a non-text file now: Exclude is today's behaviour, which this test pins.
+        CopyFileContentAction(RecordingChooser(NonTextChoice.EXCLUDE)).performCopyFilesContent(project, arrayOf(readable, big5))
 
         val text = clipboardText()
         assertContains(text, "readable")
@@ -448,6 +449,213 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         assertContains(text, "BBB")
     }
 
+    // ---- Non-text files (spec non-text-files.md) ----
+
+    private class RecordingChooser(private val choice: NonTextChoice) : NonTextChooser {
+        val summaries = mutableListOf<NonTextCopySummary>()
+        override fun choose(project: com.intellij.openapi.project.Project, summary: NonTextCopySummary): NonTextChoice {
+            summaries.add(summary)
+            return choice
+        }
+    }
+
+    private fun binaryFile(path: String, bytes: ByteArray): VirtualFile {
+        val file = myFixture.addFileToProject(path, "placeholder").virtualFile
+        ApplicationManager.getApplication().runWriteAction { file.setBinaryContent(bytes) }
+        return file
+    }
+
+    private fun pngBytes(seed: Int, size: Int = 64): ByteArray =
+        ByteArray(size) { i -> if (i == 0) 0x89.toByte() else if (i == 1) 0 else (i * 31 + seed).toByte() }
+
+    private val big5Bytes = byteArrayOf(0xA4.toByte(), 0xA4.toByte(), 0xA4.toByte(), 0xE5.toByte(), 0x2C, 0x31)
+
+    private fun pathResolver(): ClipboardPathResolver =
+        com.intellij.openapi.application.ReadAction.compute<ClipboardPathResolver, RuntimeException> {
+            ClipboardPathResolver.fromProject(project)
+        }
+
+    private fun formatterPayload(files: List<ClipboardPayloadFormatter.PayloadFile>): String =
+        ClipboardPayloadFormatter.buildPayload(
+            ClipboardPayloadFormatter.Options(
+                headerFormat = "// file: \$FILE_PATH",
+                addExtraLineBetweenFiles = false,
+                files = files,
+                sourceRoot = pathResolver().singleRootName()
+            )
+        )
+
+    private fun collectNotifications(): MutableList<String> {
+        val messages = mutableListOf<String>()
+        project.messageBus.connect(testRootDisposable).subscribe(
+            Notifications.TOPIC,
+            object : Notifications {
+                override fun notify(notification: Notification) {
+                    messages.add(notification.content)
+                }
+            }
+        )
+        return messages
+    }
+
+    /** The inline copy path and the shared formatter produce identical bytes for text + non-text files. */
+    fun testIncludeNonTextMatchesSharedFormatter() {
+        val text = myFixture.addFileToProject("mix/A.kt", "alpha();").virtualFile
+        val png = binaryFile("mix/logo.png", pngBytes(1))
+        val csv = binaryFile("mix/data.csv", big5Bytes)
+        val chooser = RecordingChooser(NonTextChoice.INCLUDE)
+        CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(text, png, csv))
+
+        val r = pathResolver()
+        val expected = formatterPayload(
+            listOf(
+                ClipboardPayloadFormatter.PayloadFile(r.toClipboardPath(text.path), "alpha();"),
+                ClipboardPayloadFormatter.PayloadFile(r.toClipboardPath(png.path), nonText = pngBytes(1)),
+                ClipboardPayloadFormatter.PayloadFile(r.toClipboardPath(csv.path), nonText = big5Bytes)
+            )
+        )
+        val actual = clipboardText()
+        assertEquals(expected, actual)
+        val summary = chooser.summaries.single()
+        assertEquals(
+            listOf(r.toClipboardPath(png.path) to 64L, r.toClipboardPath(csv.path) to big5Bytes.size.toLong()),
+            summary.carried.map { it.path to it.size }
+        )
+        assertEquals(NonTextCopy.utf8Length(actual), summary.estimatedPayloadBytes)
+    }
+
+    /** A placeholder-shaped first text line is escaped by the inline path exactly as by the formatter. */
+    fun testTextBodyUsesPlaceholderEscapeInBothModes() {
+        val shaped = NonText.placeholderLine(3, "0".repeat(64)) + "\nYWJj"
+        val file = myFixture.addFileToProject("shaped.txt", shaped).virtualFile
+        val chooser = RecordingChooser(NonTextChoice.INCLUDE)
+        CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(file))
+        assertTrue(chooser.summaries.isEmpty())
+        val expected = formatterPayload(
+            listOf(ClipboardPayloadFormatter.PayloadFile(pathResolver().toClipboardPath(file.path), shaped))
+        )
+        assertEquals(expected, clipboardText())
+    }
+
+    fun testExcludeKeepsTodaysPayloadForFolderWithPng() {
+        myFixture.addFileToProject("assets/readme.txt", "read me")
+        binaryFile("assets/logo.png", pngBytes(2))
+        val dir = myFixture.findFileInTempDir("assets") ?: error("dir not found")
+        val readme = dir.findChild("readme.txt")!!
+        val chooser = RecordingChooser(NonTextChoice.EXCLUDE)
+        CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(dir))
+
+        assertEquals(1, chooser.summaries.size)
+        val actual = clipboardText()
+        assertFalse(actual.contains("base64 follows"))
+        assertEquals(
+            formatterPayload(
+                listOf(ClipboardPayloadFormatter.PayloadFile(pathResolver().toClipboardPath(readme.path), "read me"))
+            ),
+            actual
+        )
+    }
+
+    fun testCancelCopiesNothing() {
+        Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection("untouched"), null)
+        val png = binaryFile("c/logo.png", pngBytes(3))
+        val chooser = RecordingChooser(NonTextChoice.CANCEL)
+        CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(png))
+        assertEquals(1, chooser.summaries.size)
+        assertEquals("untouched", clipboardText())
+    }
+
+    fun testNoNonTextFileNeverAsks() {
+        val a = myFixture.addFileToProject("plain/A.kt", "alpha").virtualFile
+        val chooser = RecordingChooser(NonTextChoice.CANCEL)
+        CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(a))
+        assertTrue(chooser.summaries.isEmpty())
+        assertEquals(
+            formatterPayload(listOf(ClipboardPayloadFormatter.PayloadFile(pathResolver().toClipboardPath(a.path), "alpha"))),
+            clipboardText()
+        )
+    }
+
+    /** 40 small non-text files, limit 30, two size placeholders first: dialog numbers equal the Include payload. */
+    fun testFileCountLimitDialogMatchesIncludePayload() {
+        val state = CopyFileContentSettings.getInstance(project)!!.state
+        state.setMaxFileCount = true
+        state.fileCountLimit = 30
+        state.maxFileSizeKB = 1
+        state.maxNonTextFileSizeKB = 1
+        state.showCopyNotification = true
+        val messages = collectNotifications()
+        val big = (1..2).map { myFixture.addFileToProject("lim/big$it.txt", "x".repeat(3000)).virtualFile }
+        val images = (1..40).map { binaryFile("lim/img%02d.png".format(it), pngBytes(it)) }
+        val chooser = RecordingChooser(NonTextChoice.INCLUDE)
+        CopyFileContentAction(chooser).performCopyFilesContent(project, (big + images).toTypedArray())
+
+        val summary = chooser.summaries.single()
+        val actual = clipboardText()
+        val r = pathResolver()
+        assertEquals(images.take(30).map { r.toClipboardPath(it.path) }, summary.carried.map { it.path })
+        assertEquals(30, actual.split("base64 follows").size - 1)
+        assertEquals(2, actual.split("size exceeds limit").size - 1)
+        assertEquals(2, summary.unreadOverLimit)
+        assertEquals(10, summary.limitLeftOut)
+        assertEquals(NonTextCopy.utf8Length(actual), summary.estimatedPayloadBytes)
+        assertTrue(messages.any { it.contains("Non-text files copied as Base64: 30.") }, "$messages")
+        assertTrue(messages.any { it.contains("left out 10 files") }, "$messages")
+    }
+
+    /** Text files fill the limit before any non-text file: no dialog, notice reports what was left out. */
+    fun testTextFirstFillsLimitWithoutDialog() {
+        val state = CopyFileContentSettings.getInstance(project)!!.state
+        state.setMaxFileCount = true
+        state.fileCountLimit = 30
+        val messages = collectNotifications()
+        val texts = (1..30).map { myFixture.addFileToProject("tf/t%02d.kt".format(it), "text-$it").virtualFile }
+        val images = (1..5).map { binaryFile("tf/i$it.png", pngBytes(it)) }
+        val chooser = RecordingChooser(NonTextChoice.INCLUDE)
+        CopyFileContentAction(chooser).performCopyFilesContent(project, (texts + images).toTypedArray())
+
+        assertTrue(chooser.summaries.isEmpty(), "no dialog when Include would carry no non-text file")
+        val actual = clipboardText()
+        assertFalse(actual.contains("base64 follows"))
+        assertContains(actual, "text-30")
+        assertTrue(messages.any { it.contains("left out 5 files") }, "$messages")
+    }
+
+    /** chmod 000 file, dangling symlink and an unlistable folder are named after Include. */
+    fun testIncludeNamesUnreadableItems() {
+        val root = Files.createTempDirectory("clipcode-unreadable")
+        val locked = root.resolve("locked.txt").also { Files.writeString(it, "secret") }
+        val lockedDir = root.resolve("lockedDir").createDirectories()
+        Files.writeString(lockedDir.resolve("inner.txt"), "inner")
+        Files.write(root.resolve("ok.png"), pngBytes(9))
+        Files.createSymbolicLink(root.resolve("dangling.txt"), root.resolve("missing-target"))
+        try {
+            locked.toFile().setReadable(false, false)
+            lockedDir.toFile().setReadable(false, false)
+            lockedDir.toFile().setExecutable(false, false)
+            val dir = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root) ?: error("no vfs dir")
+            com.intellij.openapi.vfs.VfsUtil.markDirtyAndRefresh(false, true, true, dir)
+            val state = CopyFileContentSettings.getInstance(project)!!.state
+            state.showCopyNotification = true
+            val messages = collectNotifications()
+            val chooser = RecordingChooser(NonTextChoice.INCLUDE)
+            CopyFileContentAction(chooser).performCopyFilesContent(project, arrayOf(dir))
+
+            assertEquals(1, chooser.summaries.size)
+            val notice = messages.firstOrNull { it.contains("Non-text files copied as Base64: 1.") } ?: error("$messages")
+            assertContains(notice, "Unreadable: 3")
+            assertContains(notice, "locked.txt")
+            assertContains(notice, "dangling.txt")
+            assertContains(notice, "lockedDir")
+            assertFalse(clipboardText().contains("secret"))
+        } finally {
+            lockedDir.toFile().setReadable(true, false)
+            lockedDir.toFile().setExecutable(true, false)
+            locked.toFile().setReadable(true, false)
+            root.toFile().deleteRecursively()
+        }
+    }
+
     private fun configureSettings() {
         val state = CopyFileContentSettings.getInstance(project)!!.state
         state.headerFormat = "// file: \$FILE_PATH"
@@ -461,6 +669,7 @@ class CopyFileContentActionTest : BasePlatformTestCase() {
         state.useExcludeFilters = true
         state.filterRules = mutableListOf()
         state.maxFileSizeKB = 500
+        state.maxNonTextFileSizeKB = 2048
         state.fileCountLimit = 30
     }
 

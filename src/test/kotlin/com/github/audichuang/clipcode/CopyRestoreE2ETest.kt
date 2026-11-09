@@ -226,7 +226,8 @@ class CopyRestoreE2ETest : BasePlatformTestCase() {
             ?: error("Failed to refresh UTF-16 file")
 
         val pathResolver = ClipboardPathResolver.fromRootPaths(listOf(repoRootPath), repoRootPath)
-        CopyFileContentAction().performCopyFilesContent(project, arrayOf(vFile)) { _, _ ->
+        // Exclude: today's behaviour, which this scenario pins. Include is covered below.
+        CopyFileContentAction { _, _ -> NonTextChoice.EXCLUDE }.performCopyFilesContent(project, arrayOf(vFile)) { _, _ ->
             "// file: ${pathResolver.toClipboardPath(vFile.path)}"
         }
         val output = clipboardText()
@@ -238,6 +239,42 @@ class CopyRestoreE2ETest : BasePlatformTestCase() {
         // something that cannot come back. Never mojibake either way.
         assertFalse(output.contains("\u4f60\u597d\u4e16\u754c"), "a file that cannot round-trip must not be copied")
         assertFalse(output.contains('\uFFFD'), "and it must certainly never be mojibake")
+    }
+
+    /** Include mode: a folder with a PNG, a docx-like zip and a Big5 csv round-trips byte for byte. */
+    fun testNonTextFolderRoundTripsInIncludeMode() {
+        val files = mapOf(
+            "nontext/logo.png" to byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D) +
+                ByteArray(300) { (it * 7).toByte() },
+            "nontext/doc/report.docx" to byteArrayOf(0x50, 0x4B, 0x03, 0x04, 0x14, 0, 0x06, 0) + ByteArray(5000) { (it % 256).toByte() },
+            "nontext/data.csv" to byteArrayOf(0xA4.toByte(), 0xA4.toByte(), 0xA4.toByte(), 0xE5.toByte(), 0x2C, 0x31, 0x0D, 0x0A),
+            "nontext/notes.txt" to "plain text".toByteArray()
+        )
+        for ((rel, bytes) in files) File(repoRoot, rel).apply { parentFile.mkdirs(); writeBytes(bytes) }
+        val dir = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(File(repoRoot, "nontext"))
+            ?: error("Failed to refresh nontext dir")
+        dir.refresh(false, true)
+
+        val pathResolver = ClipboardPathResolver.fromRootPaths(listOf(repoRootPath), repoRootPath)
+        var asked = 0
+        CopyFileContentAction { _, summary ->
+            asked++
+            assertEquals(3, summary.carried.size)
+            NonTextChoice.INCLUDE
+        }.performCopyFilesContent(project, arrayOf(dir)) { file, _ ->
+            "// file: ${pathResolver.toClipboardPath(file.path)}"
+        }
+        assertEquals(1, asked)
+        val copied = clipboardText()
+
+        val targetRoot = createTargetRoot("clipcode-e2e-nontext")
+        val plan = RestorePlanBuilder(targetResolver(targetRoot)).build(ClipboardRestoreParser().parse(copied, HEADER_FORMAT))
+        val result = RestoreExecutor(project).execute(plan, overwriteExisting = false, skipExisting = false)
+        assertTrue(result.errors.isEmpty(), "Restore errors: ${result.errors}")
+        assertEquals(files.size, result.createdCount)
+        for ((rel, bytes) in files) {
+            assertTrue(Files.readAllBytes(targetRoot.resolve(rel)).contentEquals(bytes), "bytes differ for $rel")
+        }
     }
 
     /**
