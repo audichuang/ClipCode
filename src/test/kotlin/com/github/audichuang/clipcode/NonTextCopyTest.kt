@@ -1,0 +1,405 @@
+package com.github.audichuang.clipcode
+
+import kotlin.test.Test
+import kotlin.test.assertContentEquals
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertIs
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+class NonTextCopyTest {
+    private val kb = 1024L
+    private val textLimit = 500 * kb
+    private val nonTextLimit = 2048 * kb
+
+    private fun nonTextBytes(size: Int) = ByteArray(size) { if (it % 7 == 0) 0 else (it % 251).toByte() }
+    private fun textBytes(size: Int) = ByteArray(size) { 'a'.code.toByte() }
+
+    private fun classify(bytes: ByteArray, text: Long = textLimit, nonText: Long = nonTextLimit) =
+        NonTextCopy.classify(bytes.size.toLong(), text, nonText) { bytes }
+
+    @Test
+    fun `700 KB json over the text limit becomes a size placeholder`() {
+        val r = assertIs<NonTextCopy.Outcome.SizePlaceholder>(classify(textBytes(700 * 1024)))
+        assertEquals(700L * 1024, r.size)
+        assertFalse(r.unread)
+        assertFalse(r.nonTextOverLimit)
+    }
+
+    @Test
+    fun `700 KB non-text file is carried`() {
+        val bytes = nonTextBytes(700 * 1024)
+        val r = assertIs<NonTextCopy.Outcome.Carried>(classify(bytes))
+        assertContentEquals(bytes, r.bytes)
+    }
+
+    @Test
+    fun `3 MB non-text over both limits is not read and becomes a placeholder`() {
+        var read = false
+        val size = 3L * 1024 * 1024
+        val r = NonTextCopy.classify(size, textLimit, nonTextLimit) { read = true; ByteArray(0) }
+        val p = assertIs<NonTextCopy.Outcome.SizePlaceholder>(r)
+        assertTrue(p.unread)
+        assertFalse(read, "a file over both limits must not be read")
+    }
+
+    @Test
+    fun `3 MB non-text under the text limit is held to the non-text limit`() {
+        val r = assertIs<NonTextCopy.Outcome.SizePlaceholder>(classify(nonTextBytes(3 * 1024 * 1024), text = 5000 * kb))
+        assertTrue(r.nonTextOverLimit)
+        assertFalse(r.unread)
+    }
+
+    @Test
+    fun `text under the limit is text, a read failure is unreadable`() {
+        assertEquals("abc", assertIs<NonTextCopy.Outcome.Text>(classify("abc".toByteArray())).content)
+        assertIs<NonTextCopy.Outcome.Unreadable>(NonTextCopy.classify(3, textLimit, nonTextLimit) { null })
+    }
+
+    @Test
+    fun `classification uses the bytes only, never the IDE file type`() {
+        // X16: a binary-typed file whose bytes are strict UTF-8 is text, in Include and Exclude alike.
+        assertEquals("plain", assertIs<NonTextCopy.Outcome.Text>(classify("plain".toByteArray())).content)
+        assertIs<NonTextCopy.Outcome.Carried>(classify(byteArrayOf(0x89.toByte(), 0x50, 0)))
+    }
+
+    @Test
+    fun `Big5 bytes without NUL are non-text`() {
+        assertIs<NonTextCopy.Outcome.Carried>(classify(byteArrayOf(0xA4.toByte(), 0xA4.toByte(), 0xA4.toByte(), 0xE5.toByte())))
+    }
+
+    @Test
+    fun `UTF-16 file with BOM is non-text`() {
+        val bytes = byteArrayOf(0xFF.toByte(), 0xFE.toByte(), 'h'.code.toByte(), 0, 'i'.code.toByte(), 0)
+        assertIs<NonTextCopy.Outcome.Carried>(classify(bytes))
+    }
+
+    @Test
+    fun `empty file is text`() {
+        assertEquals("", assertIs<NonTextCopy.Outcome.Text>(classify(ByteArray(0))).content)
+    }
+
+    @Test
+    fun `svg xml in UTF-8 is text`() {
+        val svg = "<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M0 0\"/></svg>"
+        assertEquals(svg, assertIs<NonTextCopy.Outcome.Text>(classify(svg.toByteArray())).content)
+    }
+
+    @Test
+    fun `non-text file exactly at the limit is carried and one byte more is a size placeholder`() {
+        val limit = 8 * kb
+        assertIs<NonTextCopy.Outcome.Carried>(classify(nonTextBytes(limit.toInt()), text = 16 * kb, nonText = limit))
+        val over = assertIs<NonTextCopy.Outcome.SizePlaceholder>(
+            classify(nonTextBytes(limit.toInt() + 1), text = 16 * kb, nonText = limit)
+        )
+        assertEquals(limit + 1, over.size)
+        assertTrue(over.nonTextOverLimit)
+    }
+
+    @Test
+    fun `text file exactly at the limit is text and one byte more is a size placeholder`() {
+        val limit = 4 * kb
+        assertIs<NonTextCopy.Outcome.Text>(classify(textBytes(limit.toInt()), text = limit, nonText = 8 * kb))
+        val over = assertIs<NonTextCopy.Outcome.SizePlaceholder>(
+            classify(textBytes(limit.toInt() + 1), text = limit, nonText = 8 * kb)
+        )
+        assertFalse(over.nonTextOverLimit)
+    }
+
+    @Test
+    fun `formatter uses the shared non-text body`() {
+        val bytes = nonTextBytes(200)
+        val hf = "// file: \$FILE_PATH"
+        val expectedBody = ClipboardRestoreParser.escapeContent(
+            NonText.placeholderLine(200, NonText.sha256Hex(bytes)) + "\n" + NonText.encodeWrapped(bytes), hf
+        )
+        assertEquals(expectedBody, ClipboardPayloadFormatter.nonTextBody(bytes, hf))
+        val payload = ClipboardPayloadFormatter.buildPayload(
+            ClipboardPayloadFormatter.Options(
+                headerFormat = hf, addExtraLineBetweenFiles = false,
+                files = listOf(ClipboardPayloadFormatter.PayloadFile("a.png", nonText = bytes))
+            )
+        )
+        assertEquals("\n// file: a.png\n$expectedBody\n", payload)
+    }
+
+    @Test
+    fun `size formatting is one format everywhere`() {
+        val cases = listOf(
+            0L to "0 B", 1L to "1 B", 83L to "83 B", 1023L to "1023 B",
+            1024L to "1.0 KB", 4096L to "4.0 KB", 10_239L to "10.0 KB", 10_240L to "10 KB",
+            12L * 1024 to "12 KB", 1024L * 1024 - 1 to "1024 KB",
+            1024L * 1024 to "1.0 MB", (1.5 * 1024 * 1024).toLong() to "1.5 MB",
+            2L * 1024 * 1024 to "2.0 MB", 50L * 1024 * 1024 to "50 MB",
+            1024L * 1024 * 1024 to "1.0 GB", 5L * 1024 * 1024 * 1024 to "5.0 GB"
+        )
+        for ((bytes, expected) in cases) assertEquals(expected, NonTextCopy.formatSize(bytes), "$bytes")
+    }
+
+    @Test
+    fun `short path is unchanged`() {
+        assertEquals("static/logo.png", NonTextCopy.shortenMiddle("static/logo.png"))
+    }
+
+    @Test
+    fun `three long names sharing a prefix stay distinguishable under a long folder`() {
+        val names = listOf("alpha", "beta", "gamma1").map { "settings-dialog-screenshot-dark-mode-long-name-$it-01.png" }
+        assertEquals(listOf(59, 58, 60), names.map { it.length })
+        val folder = "d11long/" + "a-really-long-folder-name-".repeat(3) + "end"
+        val shown = names.map { NonTextCopy.shortenMiddle("$folder/$it") }
+        shown.zip(names).forEach { (s, name) ->
+            assertTrue(s.codePointCount(0, s.length) <= 70, s)
+            assertTrue(s.endsWith("…/$name"), "folder shrinks before the name: $s")
+            assertTrue(s.startsWith("d11long"), s)
+        }
+        assertEquals(3, shown.toSet().size)
+    }
+
+    @Test
+    fun `150 char folder keeps the whole file name`() {
+        val folder = (1..15).joinToString("/") { "segment-%02d".format(it) }
+        assertTrue(folder.length >= 150, "folder length ${folder.length}")
+        val name = "important-report-final.pdf"
+        val s = NonTextCopy.shortenMiddle("$folder/$name")
+        assertTrue(s.endsWith("…/$name"), s)
+        assertTrue(s.startsWith("segment-01/"), s)
+        assertEquals(70, s.length, "folder keeps as much as fits: $s")
+    }
+
+    @Test
+    fun `a name that alone does not fit is shortened in the middle keeping its extension`() {
+        val name = "n".repeat(60) + "-tail-end.png"
+        val s = NonTextCopy.shortenMiddle("dir/sub/$name", 40)
+        assertEquals(40, s.length, s)
+        assertTrue(s.endsWith("-tail-end.png"), s)
+        assertTrue(s.startsWith("dir…/n"), s)
+        assertEquals(2, s.count { it == '…' }, s)
+    }
+
+    @Test
+    fun `shortening never splits a surrogate pair`() {
+        val emoji = "😀"
+        for (max in 20..40) {
+            val s = NonTextCopy.shortenMiddle("${emoji.repeat(30)}/${emoji.repeat(50)}.png", max)
+            assertTrue(s.codePointCount(0, s.length) <= max, "max $max: $s")
+            for (i in s.indices) {
+                val c = s[i]
+                if (Character.isHighSurrogate(c)) assertTrue(i + 1 < s.length && Character.isLowSurrogate(s[i + 1]), s)
+                if (Character.isLowSurrogate(c)) assertTrue(i > 0 && Character.isHighSurrogate(s[i - 1]), s)
+            }
+            assertTrue(s.endsWith(".png"), s)
+        }
+    }
+
+    private fun summary(
+        n: Int,
+        overLimit: Int = 0,
+        unread: Int = 0,
+        leftOut: Int = 0,
+        headerFormat: String = "// file: \$FILE_PATH"
+    ) = NonTextCopySummary(
+        carried = (1..n).map { NonTextCopySummary.Item("img/p$it.png", 1024L * it) },
+        estimatedPayloadBytes = 123_456,
+        nonTextOverLimit = overLimit,
+        unreadOverLimit = unread,
+        limitLeftOut = leftOut,
+        nonTextLimitBytes = 2048 * kb,
+        headerFormat = headerFormat
+    )
+
+    @Test
+    fun `left-out sentence shows 1000+ when capped`() {
+        assertEquals("The file-count limit left out 1000+ files", NonTextCopy.limitLeftOutSentence(1000, capped = true))
+        assertEquals("The file-count limit left out 1000 files", NonTextCopy.limitLeftOutSentence(1000))
+        val capped = NonTextCopy.dialogText(summary(1, leftOut = 1000).copy(limitLeftOutCapped = true))
+        assertTrue(capped.notes.contains("The file-count limit left out 1000+ files"), "${capped.notes}")
+    }
+
+    /** Only unlisted folders remained past the limit: the number is unknown, but the cut is still reported. */
+    @Test
+    fun `left-out sentence with nothing counted but more unlisted`() {
+        // X9: a zero count omits the left-out clause, even when counting stopped early; never "0+".
+        assertFalse(NonTextCopy.hasLimitLeftOut(0, capped = true))
+        assertFalse(NonTextCopy.hasLimitLeftOut(0, capped = false))
+        assertTrue(NonTextCopy.hasLimitLeftOut(1, capped = false))
+        val unknown = NonTextCopy.dialogText(summary(1, leftOut = 0).copy(limitLeftOutCapped = true))
+        assertTrue(unknown.notes.isEmpty(), "${unknown.notes}")
+    }
+
+    @Test
+    fun `dialog text for one file`() {
+        val lines = NonTextCopy.dialogText(summary(1))
+        assertEquals("Non-text files found: 1 (total 1.0 KB).", lines.found)
+        assertEquals("Estimated payload with them: 121 KB", lines.estimate)
+        assertEquals(listOf("img/p1.png" to "1.0 KB"), lines.paths)
+        assertNull(lines.more)
+        assertTrue(lines.notes.isEmpty())
+        assertNull(lines.includeUnavailable)
+    }
+
+    @Test
+    fun `dialog text lists ten and the rest`() {
+        val lines = NonTextCopy.dialogText(summary(12, overLimit = 2, unread = 1, leftOut = 1))
+        assertEquals(10, lines.paths.size)
+        assertEquals("and 2 more", lines.more)
+        assertEquals(
+            listOf(
+                "Non-text files over the 2.0 MB limit, not copied: 2",
+                "Files over both size limits, not read, copied as size placeholders: 1",
+                "The file-count limit left out 1 file"
+            ),
+            lines.notes
+        )
+        assertEquals(
+            "The file-count limit left out 5 files",
+            NonTextCopy.dialogText(summary(1, leftOut = 5)).notes.single()
+        )
+    }
+
+    @Test
+    fun `unescapable header format disables include with the reason`() {
+        val lines = NonTextCopy.dialogText(summary(1, headerFormat = "\$FILE_PATH"))
+        assertEquals(
+            "Include is unavailable: the header format \"\$FILE_PATH\" would make Base64 lines read as file headers.",
+            lines.includeUnavailable
+        )
+    }
+
+    @Test
+    fun `include is allowed at exactly 50 MiB and disabled one byte over`() {
+        val cap = 50L * 1024 * 1024
+        assertEquals(52_428_800L, cap)
+        assertNull(NonTextCopy.dialogText(summary(1).copy(estimatedPayloadBytes = cap)).includeUnavailable)
+        val over = NonTextCopy.dialogText(summary(1).copy(estimatedPayloadBytes = cap + 1))
+        assertEquals(
+            "Include is unavailable: the payload with non-text files would be over the 50 MiB clipboard limit.",
+            over.includeUnavailable
+        )
+    }
+
+    @Test
+    fun `estimate is never lower than the raw total of the carried files`() {
+        val cap = 50L * 1024 * 1024
+        val s = summary(1).copy(carried = listOf(NonTextCopySummary.Item("a.bin", cap + 1)), estimatedPayloadBytes = 10)
+        assertEquals(cap + 1, s.effectiveEstimateBytes)
+        val lines = NonTextCopy.dialogText(s)
+        assertNotNull(lines.includeUnavailable)
+        assertEquals("Estimated payload with them: 50 MB", lines.estimate)
+    }
+
+    @Test
+    fun `both reasons are named when the header is unescapable and the payload is too large`() {
+        val s = summary(1, headerFormat = "\$FILE_PATH").copy(estimatedPayloadBytes = 50L * 1024 * 1024 + 1)
+        val reason = NonTextCopy.dialogText(s).includeUnavailable!!
+        assertTrue(reason.contains("50 MiB") && reason.contains("header format"), reason)
+    }
+
+    @Test
+    fun `include notice lines, one category per line`() {
+        assertEquals(
+            listOf("Non-text files copied as Base64: 1."),
+            NonTextCopy.includeNoticeLines(1, SkipNotes())
+        )
+        val notes = SkipNotes()
+        (1..7).forEach { notes.note(SkipCategory.UNREADABLE, "u$it") }
+        assertEquals(
+            listOf("Non-text files copied as Base64: 3.", "Unreadable: 7", "u1", "u2", "u3", "u4", "u5", "and 2 more"),
+            NonTextCopy.includeNoticeLines(3, notes)
+        )
+    }
+
+    /** Spec "What is carried": each skip reason has its own block, named with the real name. */
+    @Test
+    fun `symlinked folders and unportable names get their own category`() {
+        val notes = SkipNotes()
+        notes.note(SkipCategory.NAME_NOT_PORTABLE, "odd/back\\slash.txt")
+        notes.note(SkipCategory.UNREADABLE, "odd/locked.txt")
+        notes.note(SkipCategory.SYMLINKED_FOLDER, "odd/linkdir")
+        notes.note(SkipCategory.NAME_NOT_PORTABLE, "odd/tab\tname.txt")
+        assertEquals(1, notes.count(SkipCategory.UNREADABLE))
+        assertEquals(2, notes.count(SkipCategory.NAME_NOT_PORTABLE))
+        assertTrue(notes.hasNamedSkips)
+        assertEquals(
+            listOf(
+                "Non-text files copied as Base64: 1.",
+                "Unreadable: 1", "odd/locked.txt",
+                "Symlinked folder: 1", "odd/linkdir",
+                "Name not portable: 2", "odd/back\\slash.txt", "odd/tab\\tname.txt"
+            ),
+            NonTextCopy.includeNoticeLines(1, notes)
+        )
+        // Exclude / no dialog: today's sentence carries the unreadable count, so its block drops the count line.
+        assertEquals(
+            listOf(
+                "odd/locked.txt",
+                "Symlinked folder: 1", "odd/linkdir",
+                "Name not portable: 2", "odd/back\\slash.txt", "odd/tab\\tname.txt"
+            ),
+            NonTextCopy.excludeNoticeLines(notes)
+        )
+        assertEquals(emptyList(), NonTextCopy.excludeNoticeLines(SkipNotes()))
+        assertFalse(SkipNotes().also { it.note(SkipCategory.UNREADABLE, "x") }.hasNamedSkips)
+    }
+
+    /** B5: an item reached twice (selected with its parent) is counted and named once per category. */
+    @Test
+    fun `skip notes count a name once per category`() {
+        val notes = SkipNotes()
+        notes.note(SkipCategory.SYMLINKED_FOLDER, "a/link")
+        notes.note(SkipCategory.SYMLINKED_FOLDER, "a/link")
+        notes.note(SkipCategory.NAME_NOT_PORTABLE, "a/link")
+        assertEquals(1, notes.count(SkipCategory.SYMLINKED_FOLDER))
+        assertEquals(listOf("a/link"), notes.names(SkipCategory.SYMLINKED_FOLDER))
+        assertEquals(1, notes.count(SkipCategory.NAME_NOT_PORTABLE))
+    }
+
+    @Test
+    fun `skip notes keep only the names a notice shows`() {
+        val notes = SkipNotes()
+        (1..2000).forEach { notes.note(SkipCategory.SYMLINKED_FOLDER, "l$it") }
+        assertEquals(2000, notes.count(SkipCategory.SYMLINKED_FOLDER))
+        assertEquals((1..NonTextCopy.NOTICE_PATH_LIMIT).map { "l$it" }, notes.names(SkipCategory.SYMLINKED_FOLDER))
+    }
+
+    /** "and N more" counts what the count names but the list does not show, so the two always agree. */
+    @Test
+    fun `unreadable lines count the paths not shown`() {
+        assertEquals(listOf("Unreadable: 2", "p", "and 1 more"), NonTextCopy.unreadableLines(2, listOf("p")))
+        val paths = (1..6).map { "u$it" }
+        assertEquals(
+            listOf("Unreadable: 8", "u1", "u2", "u3", "u4", "u5", "and 3 more"),
+            NonTextCopy.unreadableLines(8, paths)
+        )
+    }
+
+    /** X3: one line per reason under "Nothing to copy", the same sentences as the normal notice. */
+    @Test
+    fun `nothing to copy lines name every category`() {
+        val notes = SkipNotes().apply {
+            note(SkipCategory.UNREADABLE, "locked")
+            note(SkipCategory.SYMLINKED_FOLDER, "linkdir")
+            note(SkipCategory.NAME_NOT_PORTABLE, "a:b.txt")
+        }
+        assertEquals(
+            listOf(
+                "2 skipped: size exceeded.",
+                "1 skipped: not UTF-8 text or unreadable.",
+                "locked",
+                "Symlinked folder: 1",
+                "linkdir",
+                "Name not portable: 1",
+                "a:b.txt"
+            ),
+            NonTextCopy.nothingToCopyLines(2, notes)
+        )
+        assertEquals(emptyList(), NonTextCopy.nothingToCopyLines(0, SkipNotes()))
+    }
+
+    @Test
+    fun `utf8 length`() {
+        assertEquals(0L, NonTextCopy.utf8Length(""))
+        assertEquals("a中😀".toByteArray(Charsets.UTF_8).size.toLong(), NonTextCopy.utf8Length("a中😀"))
+    }
+}

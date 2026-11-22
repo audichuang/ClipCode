@@ -26,7 +26,10 @@ import javax.swing.JPanel
  * 所有 Git/VFS 存取都在 [Task.Backgroundable] 內完成；Swing 更新只在 onSuccess()（EDT）內做。
  */
 @IdeBoundCode
-class ClipCodePrPanel(private val project: Project) : JPanel(BorderLayout()) {
+class ClipCodePrPanel(
+    private val project: Project,
+    private val nonTextChooser: NonTextChooser = NonTextCopyDialog.CHOOSER
+) : JPanel(BorderLayout()) {
     private val logger = Logger.getInstance(ClipCodePrPanel::class.java)
     private val branchDiffProvider = BranchDiffProvider(logger)
     private val pathResolver = ClipboardPathResolver.fromProject(project)
@@ -176,8 +179,9 @@ class ClipCodePrPanel(private val project: Project) : JPanel(BorderLayout()) {
         val settings = CopyFileContentSettings.getInstance(project)
 
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Copying ClipCode PR diff…", true) {
-            private var payload: GitClipboardPayloadBuilder.Payload? = null
-            private var noChangesToCopy = false
+            private var includeBuild: GitClipboardPayloadBuilder.Payload? = null
+            private var rebuildEntries: Pair<List<GitContentResolver.ResolvedGitEntry>, List<GitContentResolver.ResolvedGitEntry>>? = null
+            private var nothingResolved: GitClipboardPayloadBuilder.Payload? = null
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
@@ -195,12 +199,14 @@ class ClipCodePrPanel(private val project: Project) : JPanel(BorderLayout()) {
                         entries.filter { it.changeType == ChangeTypeLabel.DELETED && !it.hasContent }
                 }
                 if (content.isEmpty() && deleted.isEmpty()) {
-                    noChangesToCopy = true
+                    // X3: nothing could be read (a binary revision, say); named by category, clipboard untouched.
+                    nothingResolved = GitClipboardPayloadBuilder.unresolvedOnly(entries, pathResolver, settings, indicator)
                     return
                 }
                 indicator.checkCanceled()
                 // GitClipboardPayloadBuilder 內部逐檔取 ReadAction，這裡不再額外包一層
-                payload = GitClipboardPayloadBuilder.build(content, deleted, pathResolver, settings, indicator)
+                includeBuild = GitClipboardPayloadBuilder.build(content, deleted, pathResolver, settings, indicator, includeNonText = true)
+                rebuildEntries = content to deleted
             }
 
             override fun onCancel() {
@@ -217,20 +223,29 @@ class ClipCodePrPanel(private val project: Project) : JPanel(BorderLayout()) {
                 if (project.isDisposed) return
                 updateCopyEnabled()
 
-                if (noChangesToCopy) {
-                    CopyFileContentAction.showNotification("No changes to copy.", NotificationType.WARNING, project)
+                nothingResolved?.let {
+                    GitClipboardPayloadBuilder.showNothingToCopy(project, it)
                     return
                 }
 
-                val result = payload ?: return
-                Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(result.text), null)
-                if (settings?.state?.showCopyNotification == true) {
-                    CopyFileContentAction.showPayloadNotification(
-                        "<b>${result.summary}</b><br>",
-                        result.text,
-                        project
-                    )
-                }
+                val include = includeBuild ?: return
+                val (content, deleted) = rebuildEntries ?: return
+                GitClipboardPayloadBuilder.chooseAndDeliver(
+                    project, settings, include, nonTextChooser,
+                    rebuildToday = { indicator ->
+                        GitClipboardPayloadBuilder.build(content, deleted, pathResolver, settings, indicator, includeNonText = false)
+                    },
+                    deliver = { result ->
+                        Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(result.text), null)
+                        if (settings?.state?.showCopyNotification == true) {
+                            CopyFileContentAction.showPayloadNotification(
+                                result.noticeHtml(),
+                                result.text,
+                                project
+                            )
+                        }
+                    }
+                )
             }
         })
     }

@@ -462,6 +462,277 @@ class RestorePlanBuilderTest {
             "the original bytes must survive")
     }
 
+    // ---- non-text files (spec: non-text-files.md) ----
+
+    private fun nonTextEntry(path: String, bytes: ByteArray, sha: String = NonText.sha256Hex(bytes)) =
+        ClipboardRestoreParser.ParsedClipboardEntry(
+            path = path,
+            content = NonText.placeholderLine(bytes.size.toLong(), sha) + "\n" + NonText.encodeWrapped(bytes)
+        )
+
+    @Test
+    fun `non-text entry plans decoded bytes with empty content`() {
+        val root = Files.createTempDirectory("clipcode-nt-plan").toRealPath()
+        val bytes = ByteArray(200) { (it * 7).toByte() }
+        val plan = planFor(root, listOf(nonTextEntry("img/a.png", bytes)))
+        val op = plan.createOperations.single()
+        assertTrue(op.nonTextBytes!!.contentEquals(bytes))
+        assertEquals("", op.content)
+        assertEquals(false, op.identical)
+        assertTrue(plan.skippedOperations.isEmpty())
+    }
+
+    /** OpenIDEA's parse_body reads line 0, but its parser drops leading blank lines first; so does joinContent. */
+    @Test
+    fun `blank lines before a real placeholder still decode to the bytes`() {
+        val root = Files.createTempDirectory("clipcode-nt-blank").toRealPath()
+        val bytes = ByteArray(40) { (it * 5 + 1).toByte() }
+        val body = NonText.placeholderLine(bytes.size.toLong(), NonText.sha256Hex(bytes)) + "\n" + NonText.encodeWrapped(bytes)
+        val payload = "// file: a.bin\n\n  \n$body\n// file: b.txt\nhi"
+        val entries = ClipboardRestoreParser().parse(payload, "// file: \$FILE_PATH")
+        assertEquals(listOf("a.bin", "b.txt"), entries.map { it.path })
+        val plan = planFor(root, entries)
+        assertTrue(plan.createOperations.first { it.relativePath == "a.bin" }.nonTextBytes!!.contentEquals(bytes))
+    }
+
+    @Test
+    fun `an escaped fake placeholder after a blank line is text not bytes`() {
+        val root = Files.createTempDirectory("clipcode-nt-blankfake").toRealPath()
+        val fake = NonText.placeholderLine(3, "0".repeat(64)) + "\nYWJj"
+        val payload = ClipboardPayloadFormatter.buildPayload(
+            ClipboardPayloadFormatter.Options(
+                headerFormat = "// file: \$FILE_PATH",
+                addExtraLineBetweenFiles = false,
+                files = listOf(ClipboardPayloadFormatter.PayloadFile("t.txt", "\n" + fake))
+            )
+        )
+        val plan = planFor(root, ClipboardRestoreParser().parse(payload, "// file: \$FILE_PATH"))
+        assertEquals(null, plan.createOperations.single().nonTextBytes)
+    }
+
+    @Test
+    fun `corrupted non-text entries skip only that file`() {
+        val root = Files.createTempDirectory("clipcode-nt-corrupt").toRealPath()
+        val bytes = ByteArray(50) { it.toByte() }
+        val badHash = nonTextEntry("bad.png", bytes, sha = "0".repeat(64))
+        val truncated = nonTextEntry("cut.png", bytes).let { it.copy(content = it.content.dropLast(8)) }
+        val plan = planFor(
+            root,
+            listOf(badHash, truncated, ClipboardRestoreParser.ParsedClipboardEntry("ok.txt", "ok"))
+        )
+        assertEquals(listOf("ok.txt"), plan.createOperations.map { it.relativePath })
+        assertEquals(
+            listOf("bad.png" to RestorePlan.SkipReason.CORRUPT_NON_TEXT, "cut.png" to RestorePlan.SkipReason.CORRUPT_NON_TEXT),
+            plan.skippedOperations.map { it.rawPath to it.reason }
+        )
+        assertTrue(plan.skippedOperations.all { it.relativePath == null })
+    }
+
+    @Test
+    fun `a reader without non-text support still matches the generic placeholder guard`() {
+        // The first line of a non-text entry is a "// File skipped: " line, which is what makes a
+        // reader that predates the feature skip it instead of writing Base64 text into logo.png.
+        val entry = nonTextEntry("logo.png", byteArrayOf(0, 1, 2))
+        assertTrue(entry.content.substringBefore('\n').startsWith("// File skipped: "))
+    }
+
+    @Test
+    fun `identical target is flagged and a different one is a plain overwrite`() {
+        val root = Files.createTempDirectory("clipcode-nt-identical").toRealPath()
+        val bytes = byteArrayOf(0, 5, 9, 1)
+        Files.write(root.resolve("same.bin"), bytes)
+        Files.write(root.resolve("diff.bin"), byteArrayOf(0, 5, 9, 2))
+        val plan = planFor(root, listOf(nonTextEntry("same.bin", bytes), nonTextEntry("diff.bin", bytes), nonTextEntry("new.bin", bytes)))
+        assertEquals(listOf(true, true, false), plan.createOperations.map { it.existed })
+        assertEquals(listOf(true, false, false), plan.createOperations.map { it.identical })
+    }
+
+    @Test
+    fun `text that starts like a placeholder restores as text`() {
+        val root = Files.createTempDirectory("clipcode-nt-text").toRealPath()
+        val fake = NonText.placeholderLine(3, "a".repeat(64)) + "\nYWJj"
+        val plan = planFor(
+            root,
+            listOf(ClipboardRestoreParser.ParsedClipboardEntry("fake.txt", fake, escapedPlaceholder = true))
+        )
+        assertEquals(fake, plan.createOperations.single().content)
+        assertEquals(null, plan.createOperations.single().nonTextBytes)
+        assertTrue(plan.skippedOperations.isEmpty())
+    }
+
+    @Test
+    fun `a directory at the target skips only that row`() {
+        val root = Files.createTempDirectory("clipcode-nt-dir").toRealPath()
+        root.resolve("d1").createDirectories()
+        val plan = planFor(
+            root,
+            listOf(
+                nonTextEntry("d1", byteArrayOf(0)),
+                ClipboardRestoreParser.ParsedClipboardEntry("d1", "text over a folder"),
+                ClipboardRestoreParser.ParsedClipboardEntry("ok.txt", "ok")
+            )
+        )
+        assertEquals(listOf("ok.txt"), plan.createOperations.map { it.relativePath })
+        assertEquals(
+            listOf(RestorePlan.SkipReason.TARGET_NOT_FILE, RestorePlan.SkipReason.TARGET_NOT_FILE),
+            plan.skippedOperations.map { it.reason }
+        )
+        assertEquals(listOf("d1", "d1"), plan.skippedOperations.map { it.relativePath })
+    }
+
+    @Test
+    fun `a file where a parent folder is needed skips only that row`() {
+        val root = Files.createTempDirectory("clipcode-nt-parent").toRealPath()
+        root.resolve("d3").createDirectories()
+        root.resolve("d3/a").writeText("i am a file")
+        val plan = planFor(
+            root,
+            listOf(
+                nonTextEntry("d3/a/deep.png", byteArrayOf(0, 1)),
+                ClipboardRestoreParser.ParsedClipboardEntry("d3/a/deep.txt", "t"),
+                ClipboardRestoreParser.ParsedClipboardEntry("d3/ok.txt", "ok")
+            )
+        )
+        assertEquals(listOf("d3/ok.txt"), plan.createOperations.map { it.relativePath })
+        assertEquals(listOf(RestorePlan.SkipReason.PARENT_NOT_FOLDER, RestorePlan.SkipReason.PARENT_NOT_FOLDER), plan.skippedOperations.map { it.reason })
+        assertEquals(listOf("d3/a/deep.png", "d3/a/deep.txt"), plan.skippedOperations.map { it.relativePath })
+    }
+
+    @Test
+    fun `entries that differ only by letter case collide exactly when the file system folds case`() {
+        val root = Files.createTempDirectory("clipcode-nt-case").toRealPath()
+        // Same probe the builder uses, done independently: an existing file under the other case.
+        Files.write(root.resolve("probe.tmp"), byteArrayOf(1))
+        val folds = Files.exists(root.resolve("PROBE.TMP"))
+        val plan = planFor(
+            root,
+            listOf(
+                nonTextEntry("IMG.png", byteArrayOf(0, 1)),
+                nonTextEntry("img.png", byteArrayOf(0, 2)),
+                ClipboardRestoreParser.ParsedClipboardEntry("other.txt", "ok")
+            )
+        )
+        if (folds) {
+            assertEquals(listOf("other.txt"), plan.createOperations.map { it.relativePath })
+            assertEquals(
+                listOf("IMG.png" to RestorePlan.SkipReason.TARGET_COLLISION, "img.png" to RestorePlan.SkipReason.TARGET_COLLISION),
+                plan.skippedOperations.map { it.relativePath to it.reason }
+            )
+        } else {
+            assertEquals(listOf("IMG.png", "img.png", "other.txt"), plan.createOperations.map { it.relativePath })
+            assertTrue(plan.skippedOperations.isEmpty())
+        }
+    }
+
+    @Test
+    fun `NFC and NFD spellings of one name collide exactly when the file system folds normalization`() {
+        val root = Files.createTempDirectory("clipcode-nt-nfc").toRealPath()
+        val nfc = java.text.Normalizer.normalize("caf\u00e9.txt", java.text.Normalizer.Form.NFC)
+        val nfd = java.text.Normalizer.normalize("caf\u00e9.txt", java.text.Normalizer.Form.NFD)
+        assertTrue(nfc != nfd)
+        val mac = System.getProperty("os.name").orEmpty().lowercase().contains("mac")
+        val plan = planFor(
+            root,
+            listOf(
+                ClipboardRestoreParser.ParsedClipboardEntry(nfc, "1"),
+                ClipboardRestoreParser.ParsedClipboardEntry(nfd, "2")
+            )
+        )
+        if (mac) {
+            assertEquals(emptyList(), plan.createOperations.map { it.relativePath })
+            assertEquals(
+                listOf(nfc to RestorePlan.SkipReason.TARGET_COLLISION, nfd to RestorePlan.SkipReason.TARGET_COLLISION),
+                plan.skippedOperations.map { it.relativePath to it.reason }
+            )
+        } else {
+            // No NFC folding outside macOS: two distinct names (when the file system keeps them distinct).
+            org.junit.Assume.assumeTrue("file system folds normalization here", !Files.exists(root.resolve("probe\u00e9").also { Files.createFile(it) }.parent.resolve(java.text.Normalizer.normalize("probe\u00e9", java.text.Normalizer.Form.NFD))))
+            assertEquals(2, plan.createOperations.size)
+            assertTrue(plan.skippedOperations.isEmpty())
+        }
+    }
+
+    /**
+     * Spec case 32: non-text `café.png` spelled in NFC and in NFD next to `other.png`. On macOS both café
+     * rows are skipped with the collision reason and other.png is still created; elsewhere (no normalization
+     * folding) all three are planned as today.
+     */
+    @Test
+    fun `non-text NFC and NFD spellings collide on macOS and the other entry is still planned`() {
+        val root = Files.createTempDirectory("clipcode-nt-nfc-png").toRealPath()
+        val nfc = java.text.Normalizer.normalize("café.png", java.text.Normalizer.Form.NFC)
+        val nfd = java.text.Normalizer.normalize("café.png", java.text.Normalizer.Form.NFD)
+        assertTrue(nfc != nfd)
+        val mac = System.getProperty("os.name").orEmpty().lowercase().contains("mac")
+        val plan = planFor(
+            root,
+            listOf(nonTextEntry(nfc, byteArrayOf(0, 1)), nonTextEntry(nfd, byteArrayOf(0, 2)), nonTextEntry("other.png", byteArrayOf(0, 3)))
+        )
+        if (mac) {
+            assertEquals(listOf("other.png"), plan.createOperations.map { it.relativePath })
+            assertEquals(
+                listOf(nfc to RestorePlan.SkipReason.TARGET_COLLISION, nfd to RestorePlan.SkipReason.TARGET_COLLISION),
+                plan.skippedOperations.map { it.relativePath to it.reason }
+            )
+        } else {
+            org.junit.Assume.assumeTrue(
+                "file system folds normalization here",
+                !Files.exists(root.resolve("probeé").also { Files.createFile(it) }.parent.resolve(java.text.Normalizer.normalize("probeé", java.text.Normalizer.Form.NFD)))
+            )
+            assertEquals(listOf(nfc, nfd, "other.png"), plan.createOperations.map { it.relativePath })
+            assertTrue(plan.skippedOperations.isEmpty())
+        }
+    }
+
+    /**
+     * Spec case 34: `real/x.png` and `link/x.png` where `link` is a symlink to `real` inside the root are one
+     * file. Both rows are skipped with the collision reason; the other entry is planned.
+     */
+    @Test
+    fun `entries meeting through a symlinked parent folder collide`() {
+        val root = Files.createTempDirectory("clipcode-nt-linkparent").toRealPath()
+        root.resolve("real").createDirectories()
+        val linked = runCatching { Files.createSymbolicLink(root.resolve("link"), root.resolve("real")) }.isSuccess
+        if (!System.getProperty("os.name").orEmpty().lowercase().contains("win")) assertTrue(linked, "test setup: the symlink must exist on POSIX")
+        org.junit.Assume.assumeTrue("cannot create symlinks here (Windows without the privilege)", linked)
+        // Each alone is an ordinary create: the collision is not a resolver refusal.
+        assertEquals(listOf("link/x.png"), planFor(root, listOf(nonTextEntry("link/x.png", byteArrayOf(1)))).createOperations.map { it.relativePath })
+
+        for (existing in listOf(false, true)) {
+            if (existing) Files.write(root.resolve("real/x.png"), byteArrayOf(9))
+            val plan = planFor(
+                root,
+                listOf(
+                    nonTextEntry("real/x.png", byteArrayOf(0, 1)),
+                    nonTextEntry("link/x.png", byteArrayOf(0, 2)),
+                    ClipboardRestoreParser.ParsedClipboardEntry("link/new/y.txt", "text"),
+                    ClipboardRestoreParser.ParsedClipboardEntry("other.txt", "ok")
+                )
+            )
+            assertEquals(listOf("link/new/y.txt", "other.txt"), plan.createOperations.map { it.relativePath }, "existing=$existing")
+            assertEquals(
+                listOf("real/x.png" to RestorePlan.SkipReason.TARGET_COLLISION, "link/x.png" to RestorePlan.SkipReason.TARGET_COLLISION),
+                plan.skippedOperations.map { it.relativePath to it.reason },
+                "existing=$existing"
+            )
+            assertTrue(plan.skippedOperations.all { skipReasonText(it.reason) == "Another entry writes the same file" })
+        }
+    }
+
+    @Test
+    fun `exact duplicate paths are not collisions`() {
+        val root = Files.createTempDirectory("clipcode-nt-dup").toRealPath()
+        val plan = planFor(
+            root,
+            listOf(
+                ClipboardRestoreParser.ParsedClipboardEntry("a.txt", "1"),
+                ClipboardRestoreParser.ParsedClipboardEntry("a.txt", "2")
+            )
+        )
+        assertEquals(2, plan.createOperations.size)
+        assertTrue(plan.skippedOperations.isEmpty())
+    }
+
     private fun planFor(root: Path, entries: List<ClipboardRestoreParser.ParsedClipboardEntry>): RestorePlan {
         val resolver = ClipboardPathResolver.fromRootPaths(
             listOf(root.systemIndependentPath()),

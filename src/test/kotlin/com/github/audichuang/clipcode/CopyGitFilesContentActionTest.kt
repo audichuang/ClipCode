@@ -191,6 +191,71 @@ class CopyGitFilesContentActionTest : BasePlatformTestCase() {
         assertContains(clipboardText(), "history-content")
     }
 
+    // === non-text files: Include -> dialog -> Exclude flow ===
+
+    private class RecordingChooser(private val choice: NonTextChoice) : NonTextChooser {
+        val summaries = mutableListOf<NonTextCopySummary>()
+        override fun choose(project: Project, summary: NonTextCopySummary): NonTextChoice {
+            summaries.add(summary)
+            return choice
+        }
+    }
+
+    private fun nonTextVfEntry(): GitContentResolver.ResolvedGitEntry {
+        val file = myFixture.addFileToProject("img/logo.png", "placeholder").virtualFile
+        val bytes = ByteArray(64) { i -> if (i == 1) 0 else (i * 7).toByte() }
+        com.intellij.openapi.application.ApplicationManager.getApplication().runWriteAction { file.setBinaryContent(bytes) }
+        return GitContentResolver.ResolvedGitEntry(ChangeTypeLabel.NEW, file.path, file, null)
+    }
+
+    private fun copyWithChooser(chooser: NonTextChooser, entries: List<GitContentResolver.ResolvedGitEntry>) {
+        val method = CopyGitFilesContentAction::class.java.getDeclaredMethod(
+            "copyResolvedEntries", Project::class.java, List::class.java, List::class.java,
+            ClipboardPathResolver::class.java, CopyFileContentSettings::class.java
+        )
+        method.isAccessible = true
+        method.invoke(
+            CopyGitFilesContentAction(chooser), project, entries, emptyList<GitContentResolver.ResolvedGitEntry>(),
+            ClipboardPathResolver.fromProject(project), CopyFileContentSettings.getInstance(project)
+        )
+    }
+
+    fun testNonTextIncludeChoiceCopiesBase64() {
+        val chooser = RecordingChooser(NonTextChoice.INCLUDE)
+        copyWithChooser(chooser, listOf(nonTextVfEntry()))
+        assertEquals(1, chooser.summaries.size)
+        assertEquals(1, chooser.summaries[0].carried.size)
+        assertContains(clipboardText(), "base64 follows")
+    }
+
+    fun testNonTextExcludeChoiceOfALoneNonTextFileCopiesNothing() {
+        Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection("untouched"), null)
+        val messages = collectNotifications()
+        val chooser = RecordingChooser(NonTextChoice.EXCLUDE)
+        copyWithChooser(chooser, listOf(nonTextVfEntry()))
+        // The Exclude rebuild is a second Task.Backgroundable; flush the EDT so its onSuccess has run.
+        com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertEquals(1, chooser.summaries.size)
+        // X3: the lone non-text file is skipped under Exclude, so nothing is copied and the clipboard stays.
+        assertEquals("untouched", clipboardText())
+        val notice = messages.singleOrNull { it.contains("<b>Nothing to copy</b>") } ?: error("$messages")
+        assertContains(notice, "img/logo.png")
+    }
+
+    fun testNonTextCancelChoiceCopiesNothing() {
+        Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection("untouched"), null)
+        copyWithChooser(RecordingChooser(NonTextChoice.CANCEL), listOf(nonTextVfEntry()))
+        assertEquals("untouched", clipboardText())
+    }
+
+    fun testNoNonTextFileNeverAsks() {
+        val chooser = RecordingChooser(NonTextChoice.CANCEL)
+        val entry = GitContentResolver.ResolvedGitEntry(ChangeTypeLabel.MODIFIED, "src/T.kt", null, "plain text")
+        copyWithChooser(chooser, listOf(entry))
+        assertTrue(chooser.summaries.isEmpty())
+        assertContains(clipboardText(), "plain text")
+    }
+
     // === helpers ===
 
     private fun configureSettings() {
@@ -290,6 +355,19 @@ class CopyGitFilesContentActionTest : BasePlatformTestCase() {
 
             override fun rebuildTree() = Unit
         }
+    }
+
+    private fun collectNotifications(): MutableList<String> {
+        val messages: MutableList<String> = java.util.concurrent.CopyOnWriteArrayList()
+        project.messageBus.connect(testRootDisposable).subscribe(
+            com.intellij.notification.Notifications.TOPIC,
+            object : com.intellij.notification.Notifications {
+                override fun notify(notification: com.intellij.notification.Notification) {
+                    messages.add(notification.content)
+                }
+            }
+        )
+        return messages
     }
 
     private fun clipboardText(): String =

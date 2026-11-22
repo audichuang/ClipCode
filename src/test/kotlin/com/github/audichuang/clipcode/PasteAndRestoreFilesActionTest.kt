@@ -211,6 +211,89 @@ class PasteAndRestoreFilesActionTest : BasePlatformTestCase() {
         assertFalse(event.presentation.isEnabledAndVisible)
     }
 
+    fun testPreviewLabelUsesTheSharedSizeFormat() {
+        val op = RestorePlan.CreateOperation("a.png", "/x/a.png", "/x", "", false, ByteArray(12 * 1024))
+        assertEquals("a.png  (non-text file \u00B7 12 KB)", previewLabel(op))
+    }
+
+    fun testNonTextRowsShowSizeAndIdenticalTargetsGetTheirOwnSection() {
+        val bytes = ByteArray(4096)
+        val plan = RestorePlan(
+            createOperations = listOf(
+                createOp("img/new.png", "/r/img/new.png", existed = false).copy(content = "", nonTextBytes = bytes),
+                createOp("img/diff.png", "/r/img/diff.png", existed = true).copy(content = "", nonTextBytes = bytes),
+                createOp("img/same.png", "/r/img/same.png", existed = true).copy(content = "", nonTextBytes = bytes, identical = true)
+            ),
+            deleteOperations = emptyList(),
+            skippedOperations = emptyList(),
+            roots = emptyList()
+        )
+        val message = PasteAndRestoreFilesAction().confirmationMessage(plan)
+        assertContains(message, "+ img/new.png  (non-text file \u00B7 4.0 KB)")
+        assertContains(message, "Files to OVERWRITE (existing) (1):")
+        assertContains(message, "UNCHANGED (identical) (1):")
+        assertContains(message, "= img/same.png")
+        assertFalse(message.contains("Files to OVERWRITE (existing) (2):"))
+    }
+
+    fun testSkippedSummaryHasUserTextForEveryNewReason() {
+        val action = PasteAndRestoreFilesAction()
+        val summary = action.skippedSummary(
+            listOf(
+                skipped("a", null, RestorePlan.SkipReason.CORRUPT_NON_TEXT),
+                skipped("b", "b", RestorePlan.SkipReason.TARGET_NOT_FILE),
+                skipped("c", "c", RestorePlan.SkipReason.PARENT_NOT_FOLDER),
+                skipped("d", "d", RestorePlan.SkipReason.TARGET_COLLISION)
+            )
+        )
+        assertContains(summary, "Corrupt non-text file: 1")
+        assertContains(summary, "The target is a folder: 1")
+        assertContains(summary, "A file is in the way of its parent folder: 1")
+        assertContains(summary, "Another entry writes the same file: 1")
+        RestorePlan.SkipReason.values().forEach {
+            assertFalse(skipDetailText(it).contains("_"), "raw enum name leaked for $it")
+        }
+    }
+
+    /**
+     * Spec case 34: a real plan built on disk taken through to the preview text. `IMG.png` / `img.png` on a
+     * file system that folds case are one file: both rows read "Another entry writes the same file" and
+     * neither is listed to create; other.txt is. Where case is not folded (Linux) both are ordinary creates.
+     */
+    fun testCaseCollisionFromARealPlanReachesThePreviewText() {
+        val root = java.nio.file.Files.createTempDirectory("clipcode-preview-case").toRealPath()
+        try {
+            java.nio.file.Files.write(root.resolve("probe.tmp"), byteArrayOf(1))
+            val folds = java.nio.file.Files.exists(root.resolve("PROBE.TMP"))
+            java.nio.file.Files.delete(root.resolve("probe.tmp"))
+            val rootPath = root.toString().replace('\\', '/')
+            val bytes = byteArrayOf(0, 1)
+            val png = NonText.placeholderLine(2, NonText.sha256Hex(bytes)) + "\n" + NonText.encodeWrapped(bytes)
+            val plan = RestorePlanBuilder(ClipboardPathResolver.fromRootPaths(listOf(rootPath), rootPath)).build(
+                listOf(
+                    ClipboardRestoreParser.ParsedClipboardEntry("IMG.png", png),
+                    ClipboardRestoreParser.ParsedClipboardEntry("img.png", png),
+                    ClipboardRestoreParser.ParsedClipboardEntry("other.txt", "ok")
+                )
+            )
+            val message = PasteAndRestoreFilesAction().confirmationMessage(plan)
+            if (folds) {
+                assertContains(message, "Will be SKIPPED:")
+                assertContains(message, "Another entry writes the same file: 2")
+                assertContains(message, "Files to CREATE (new) (1):")
+                assertContains(message, "+ other.txt")
+                assertFalse(message.contains("+ IMG.png"), message)
+                assertFalse(message.contains("+ img.png"), message)
+                assertFalse(message.contains("TARGET_COLLISION"), message)
+            } else {
+                assertContains(message, "Files to CREATE (new) (3):")
+                assertFalse(message.contains("Another entry writes the same file"), message)
+            }
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     // === reflection helpers ===
 
     private fun PasteAndRestoreFilesAction.confirmationMessage(plan: RestorePlan): String =
